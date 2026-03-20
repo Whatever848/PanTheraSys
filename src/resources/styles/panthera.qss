@@ -1,0 +1,95 @@
+QWidget {
+    background-color: #081018;
+    color: #e8f1fb;
+    font-family: "Microsoft YaHei UI";
+    font-size: 10pt;
+}
+
+QMainWindow, QFrame[class="pageCard"], QGroupBox, QTabWidget::pane, QListWidget, QTableWidget, QPlainTextEdit, QTextBrowser, QStackedWidget {
+    background-color: #0d1b2c;
+}
+
+QFrame#navBar {
+    background-color: #10233b;
+    border-bottom: 1px solid #19426b;
+}
+
+QFrame#sectionCard, QGroupBox {
+    border: 1px solid #1b426d;
+    border-radius: 10px;
+    padding-top: 10px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 4px;
+    color: #21d4ff;
+    font-weight: 700;
+}
+
+QPushButton {
+    background-color: #17304c;
+    border: 1px solid #24547f;
+    border-radius: 8px;
+    padding: 8px 14px;
+    color: #ffffff;
+}
+
+QPushButton:hover {
+    background-color: #21466d;
+}
+
+QPushButton:checked {
+    background-color: #0085ff;
+    border-color: #00b7ff;
+}
+
+QPushButton:disabled {
+    color: #7c97b7;
+    border-color: #29415d;
+}
+
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateEdit, QTextEdit, QPlainTextEdit {
+    background-color: #10233b;
+    border: 1px solid #2a4d73;
+    border-radius: 6px;
+    padding: 6px 8px;
+}
+
+QTableWidget, QListWidget, QTextBrowser, QPlainTextEdit {
+    border: 1px solid #234c79;
+    border-radius: 8px;
+    gridline-color: #1c3554;
+}
+
+QHeaderView::section {
+    background-color: #153252;
+    color: white;
+    padding: 6px;
+    border: 0;
+}
+
+QProgressBar {
+    border: 1px solid #2a4d73;
+    border-radius: 6px;
+    text-align: center;
+    background-color: #10233b;
+}
+
+QProgressBar::chunk {
+    background-color: #35cc6d;
+    border-radius: 5px;
+}
+
+QTabBar::tab {
+    background-color: #13304f;
+    padding: 8px 12px;
+    margin-right: 2px;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+}
+
+QTabBar::tab:selected {
+    background-color: #0085ff;
+}

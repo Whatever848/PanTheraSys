@@ -1,0 +1,41 @@
+name: windows-ci
+
+on:
+  push:
+    branches: ["main", "feature/**", "release/**", "hotfix/**"]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.2.0"
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          toolset: 14.29
+
+      - name: Validate UTF-8
+        shell: powershell
+        run: .\scripts\validate-utf8.ps1
+
+      - name: Configure
+        shell: powershell
+        run: cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="$env:Qt6_DIR/../../"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -C Release

@@ -1,0 +1,12 @@
+root = true
+
+[*.{cpp,h,hpp,cmake,txt,md,ps1,yml,yaml,sql,ini,qss}]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.md]
+trim_trailing_whitespace = false

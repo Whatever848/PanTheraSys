@@ -1,0 +1,32 @@
+name: Bug Report
+description: Report a defect, regression, or safety concern
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened and why it matters
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction
+      description: Step-by-step reproduction details
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Safety / risk impact
+      description: Describe any clinical, data, or device risk exposure
+    validations:
+      required: true
