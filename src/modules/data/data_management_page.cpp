@@ -1,4 +1,4 @@
-﻿#include "modules/data/data_management_page.h"
+#include "modules/data/data_management_page.h"
 
 #include <QAbstractItemView>
 #include <QDateTime>
