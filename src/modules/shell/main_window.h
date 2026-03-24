@@ -8,6 +8,7 @@
 
 #include "adapters/sim/simulation_device_facade.h"
 #include "core/application/application_context.h"
+#include "core/repositories/clinical_data_repository.h"
 #include "core/safety/safety_kernel.h"
 #include "core/services/audit_service.h"
 
@@ -28,6 +29,7 @@ public:
         panthera::core::ApplicationContext* context,
         panthera::core::SafetyKernel* safetyKernel,
         panthera::core::AuditService* auditService,
+        const panthera::core::IClinicalDataRepository* clinicalDataRepository,
         panthera::adapters::SimulationDeviceFacade* simulationDevice,
         QWidget* parent = nullptr);
 
@@ -44,6 +46,7 @@ private:
 
     panthera::core::ApplicationContext* m_context {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
+    const panthera::core::IClinicalDataRepository* m_clinicalDataRepository {nullptr};
     panthera::adapters::SimulationDeviceFacade* m_simulationDevice {nullptr};
 
     QStackedWidget* m_stack {nullptr};

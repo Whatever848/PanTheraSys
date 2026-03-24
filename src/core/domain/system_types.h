@@ -86,6 +86,9 @@ struct PatientRecord {
     QString gender;
     QString diagnosis;
     QString contact;
+    QDateTime createdAt;
+    QDateTime updatedAt;
+    QDateTime deletedAt;
 };
 
 struct ImageSeriesRecord {
@@ -95,6 +98,7 @@ struct ImageSeriesRecord {
     QString storagePath;
     QDate acquisitionDate;
     QString notes;
+    QDateTime createdAt;
 };
 
 // 规划模块输出的治疗点数据在下游应视为只读。
@@ -133,12 +137,15 @@ struct TreatmentSessionRecord {
     QString patientId;
     QString planId;
     QString lesionType;
+    QString pathSummary;
+    QDateTime treatmentDate;
     QDateTime startedAt;
     QDateTime endedAt;
     double totalEnergyJ {0.0};
     double totalDurationSeconds {0.0};
     double dose {0.0};
     QString status;
+    QDateTime createdAt;
 };
 
 struct TreatmentRecord {
@@ -149,6 +156,16 @@ struct TreatmentRecord {
     QDateTime executedAt;
     double deliveredEnergyJ {0.0};
     double deliveredDose {0.0};
+};
+
+struct TreatmentReportRecord {
+    QString id;
+    QString patientId;
+    QString treatmentSessionId;
+    QDateTime generatedAt;
+    QString title;
+    QString contentHtml;
+    QString notes;
 };
 
 // DeviceSnapshot 是适配层向界面层和安全逻辑输出的统一设备遥测快照。

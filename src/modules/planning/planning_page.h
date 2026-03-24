@@ -10,6 +10,7 @@
 #include <QWidget>
 
 #include "core/application/application_context.h"
+#include "core/repositories/clinical_data_repository.h"
 #include "core/safety/safety_kernel.h"
 #include "core/services/audit_service.h"
 #include "modules/shared/mock_ultrasound_view.h"
@@ -22,7 +23,12 @@ class PlanningPage final : public QWidget {
     Q_OBJECT
 
 public:
-    PlanningPage(panthera::core::ApplicationContext* context, panthera::core::SafetyKernel* safetyKernel, panthera::core::AuditService* auditService, QWidget* parent = nullptr);
+    PlanningPage(
+        panthera::core::ApplicationContext* context,
+        panthera::core::SafetyKernel* safetyKernel,
+        panthera::core::AuditService* auditService,
+        const panthera::core::IClinicalDataRepository* clinicalDataRepository,
+        QWidget* parent = nullptr);
 
 private slots:
     void loadDemoPatient();
@@ -33,11 +39,16 @@ private slots:
 
 private:
     panthera::core::TherapyPlan buildPlanFromUi(panthera::core::ApprovalState approvalState) const;
+    void populatePatientSelector();
+    void refreshImagingPaths(const QString& patientId);
+    void syncPatientSelector(const QString& patientId);
 
     panthera::core::ApplicationContext* m_context {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
     panthera::core::AuditService* m_auditService {nullptr};
+    const panthera::core::IClinicalDataRepository* m_clinicalDataRepository {nullptr};
 
+    QComboBox* m_patientCombo {nullptr};
     QListWidget* m_pathList {nullptr};
     MockUltrasoundView* m_preview {nullptr};
     QComboBox* m_patternCombo {nullptr};

@@ -21,6 +21,8 @@ public:
 
     bool open(const DatabaseConnectionSettings& settings);
     void close();
+    bool isOpen() const;
+    QSqlDatabase database() const;
     bool initializeSchemaFromFile(const QString& schemaFilePath);
     QString lastError() const;
 

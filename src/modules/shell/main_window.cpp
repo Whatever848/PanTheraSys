@@ -19,11 +19,13 @@ MainWindow::MainWindow(
     ApplicationContext* context,
     SafetyKernel* safetyKernel,
     AuditService* auditService,
+    const IClinicalDataRepository* clinicalDataRepository,
     adapters::SimulationDeviceFacade* simulationDevice,
     QWidget* parent)
     : QMainWindow(parent)
     , m_context(context)
     , m_safetyKernel(safetyKernel)
+    , m_clinicalDataRepository(clinicalDataRepository)
     , m_simulationDevice(simulationDevice)
 {
     auto* centralWidget = new QWidget();
@@ -72,9 +74,9 @@ MainWindow::MainWindow(
     // 页面之间不直接调用，而是通过 ApplicationContext 和 SafetyKernel 协同。
     m_stack = new QStackedWidget();
     m_stack->addWidget(new DeviceMonitorPage(simulationDevice, safetyKernel));
-    m_stack->addWidget(new PlanningPage(context, safetyKernel, auditService));
+    m_stack->addWidget(new PlanningPage(context, safetyKernel, auditService, m_clinicalDataRepository));
     m_stack->addWidget(new TreatmentPage(context, safetyKernel, auditService, simulationDevice));
-    m_stack->addWidget(new DataManagementPage(context, auditService));
+    m_stack->addWidget(new DataManagementPage(context, auditService, m_clinicalDataRepository));
     rootLayout->addWidget(m_stack, 1);
 
     setCentralWidget(centralWidget);

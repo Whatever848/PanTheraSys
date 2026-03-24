@@ -6,6 +6,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 namespace panthera::modules {
@@ -14,15 +15,15 @@ using namespace panthera::core;
 
 namespace {
 
-PatientRecord buildDemoPatient()
+PatientRecord buildFallbackPatient()
 {
     return PatientRecord {
         QStringLiteral("P2026001"),
         QStringLiteral("张三"),
-        42,
+        24,
         QStringLiteral("女"),
         QStringLiteral("右乳浸润性导管癌 II 期"),
-        QStringLiteral("13800000000")
+        QStringLiteral("13800000001")
     };
 }
 
@@ -31,13 +32,24 @@ QString createPlanId()
     return QStringLiteral("PLAN-%1").arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMddhhmmss")));
 }
 
-}  // 匿名命名空间
+QString patientDisplayLabel(const PatientRecord& patient)
+{
+    return QStringLiteral("%1 | %2 | %3岁").arg(patient.name).arg(patient.id).arg(patient.age);
+}
 
-PlanningPage::PlanningPage(ApplicationContext* context, SafetyKernel* safetyKernel, AuditService* auditService, QWidget* parent)
+}  // namespace
+
+PlanningPage::PlanningPage(
+    ApplicationContext* context,
+    SafetyKernel* safetyKernel,
+    AuditService* auditService,
+    const IClinicalDataRepository* clinicalDataRepository,
+    QWidget* parent)
     : QWidget(parent)
     , m_context(context)
     , m_safetyKernel(safetyKernel)
     , m_auditService(auditService)
+    , m_clinicalDataRepository(clinicalDataRepository)
 {
     auto* rootLayout = new QHBoxLayout(this);
     rootLayout->setContentsMargins(18, 18, 18, 18);
@@ -46,13 +58,9 @@ PlanningPage::PlanningPage(ApplicationContext* context, SafetyKernel* safetyKern
     auto* leftCard = new QGroupBox(QStringLiteral("图像通道与参数"));
     auto* leftLayout = new QVBoxLayout(leftCard);
     m_pathList = new QListWidget();
-    m_pathList->addItems({
-        QStringLiteral("[1] 图像通道采集路径 1"),
-        QStringLiteral("[2] 图像通道采集路径 2"),
-        QStringLiteral("[3] 图像通道采集路径 3")
-    });
 
     auto* formLayout = new QFormLayout();
+    m_patientCombo = new QComboBox();
     m_patternCombo = new QComboBox();
     m_patternCombo->addItems({QStringLiteral("点治疗"), QStringLiteral("线治疗"), QStringLiteral("分段治疗")});
 
@@ -77,13 +85,14 @@ PlanningPage::PlanningPage(ApplicationContext* context, SafetyKernel* safetyKern
 
     m_respiratoryTrackingCheck = new QCheckBox(QStringLiteral("启用呼吸跟随"));
 
+    formLayout->addRow(QStringLiteral("治疗患者"), m_patientCombo);
     formLayout->addRow(QStringLiteral("治疗模式"), m_patternCombo);
     formLayout->addRow(QStringLiteral("采集层数"), m_layerCountSpin);
     formLayout->addRow(QStringLiteral("治疗行距"), m_spacingSpin);
     formLayout->addRow(QStringLiteral("点疗时长"), m_dwellSpin);
     formLayout->addRow(QStringLiteral("治疗功率"), m_powerSpin);
 
-    auto* loadPatientButton = new QPushButton(QStringLiteral("加载示例患者"));
+    auto* loadPatientButton = new QPushButton(QStringLiteral("加载当前患者"));
     auto* generateButton = new QPushButton(QStringLiteral("生成方案草案"));
     auto* approveButton = new QPushButton(QStringLiteral("审批并锁定"));
     auto* revertButton = new QPushButton(QStringLiteral("撤销审批"));
@@ -121,16 +130,31 @@ PlanningPage::PlanningPage(ApplicationContext* context, SafetyKernel* safetyKern
     connect(revertButton, &QPushButton::clicked, this, &PlanningPage::revertPlanToDraft);
     connect(m_context, &ApplicationContext::selectedPatientChanged, this, &PlanningPage::updateContextSummary);
     connect(m_context, &ApplicationContext::activePlanChanged, this, &PlanningPage::updateContextSummary);
+    connect(m_context, &ApplicationContext::activePlanCleared, this, &PlanningPage::updateContextSummary);
 
+    populatePatientSelector();
     updateContextSummary();
 }
 
 void PlanningPage::loadDemoPatient()
 {
-    // 当前启动骨架使用固定的示例患者，保证在患者管理和数据库查询尚未接通时，
-    // 仍然可以完整演示方案到治疗的主流程。
-    m_context->selectPatient(buildDemoPatient());
-    m_safetyKernel->setPatientSelected(true);
+    if (m_clinicalDataRepository != nullptr && m_patientCombo->count() > 0) {
+        PatientRecord patient;
+        const QString patientId = m_patientCombo->currentData().toString();
+        if (m_clinicalDataRepository->findPatientById(patientId, &patient)) {
+            m_context->selectPatient(patient);
+            if (m_safetyKernel != nullptr) {
+                m_safetyKernel->setPatientSelected(true);
+            }
+            return;
+        }
+    }
+
+    const PatientRecord fallbackPatient = buildFallbackPatient();
+    m_context->selectPatient(fallbackPatient);
+    if (m_safetyKernel != nullptr) {
+        m_safetyKernel->setPatientSelected(true);
+    }
 }
 
 void PlanningPage::generateDraftPlan()
@@ -141,7 +165,9 @@ void PlanningPage::generateDraftPlan()
 
     TherapyPlan draftPlan = buildPlanFromUi(ApprovalState::Draft);
     m_context->setActivePlan(draftPlan);
-    m_safetyKernel->setPlanApprovalState(draftPlan.approvalState);
+    if (m_safetyKernel != nullptr) {
+        m_safetyKernel->setPlanApprovalState(draftPlan.approvalState);
+    }
     m_preview->setPlan(draftPlan);
     m_preview->setCompletedPointCount(0);
 
@@ -161,7 +187,9 @@ void PlanningPage::approveCurrentPlan()
     approvedPlan.approvedAt = QDateTime::currentDateTime();
 
     m_context->setActivePlan(approvedPlan);
-    m_safetyKernel->setPlanApprovalState(approvedPlan.approvalState);
+    if (m_safetyKernel != nullptr) {
+        m_safetyKernel->setPlanApprovalState(approvedPlan.approvalState);
+    }
     m_preview->setPlan(approvedPlan);
 
     if (m_auditService != nullptr) {
@@ -179,7 +207,9 @@ void PlanningPage::revertPlanToDraft()
     plan.approvalState = ApprovalState::Draft;
     plan.approvedAt = QDateTime {};
     m_context->setActivePlan(plan);
-    m_safetyKernel->setPlanApprovalState(plan.approvalState);
+    if (m_safetyKernel != nullptr) {
+        m_safetyKernel->setPlanApprovalState(plan.approvalState);
+    }
     m_preview->setPlan(plan);
 
     if (m_auditService != nullptr) {
@@ -189,11 +219,18 @@ void PlanningPage::revertPlanToDraft()
 
 void PlanningPage::updateContextSummary()
 {
-    // 右侧摘要区相当于操作员的“治疗准备清单”，用于快速确认患者和方案是否齐备。
     if (m_context->hasSelectedPatient()) {
         const PatientRecord& patient = m_context->selectedPatient();
-        m_patientSummaryLabel->setText(QStringLiteral("患者：%1\n编号：%2\n诊断：%3").arg(patient.name, patient.id, patient.diagnosis));
+        syncPatientSelector(patient.id);
+        refreshImagingPaths(patient.id);
+        m_patientSummaryLabel->setText(
+            QStringLiteral("患者：%1\n编号：%2\n年龄：%3\n诊断：%4")
+                .arg(patient.name)
+                .arg(patient.id)
+                .arg(patient.age)
+                .arg(patient.diagnosis));
     } else {
+        refreshImagingPaths(QString());
         m_patientSummaryLabel->setText(QStringLiteral("患者：未选择"));
     }
 
@@ -205,7 +242,9 @@ void PlanningPage::updateContextSummary()
         }
         m_planSummaryLabel->setText(
             QStringLiteral("方案：%1\n状态：%2\n模式：%3\n治疗点数：%4\n功率：%5 W")
-                .arg(plan.id, toDisplayString(plan.approvalState), toDisplayString(plan.pattern))
+                .arg(plan.id)
+                .arg(toDisplayString(plan.approvalState))
+                .arg(toDisplayString(plan.pattern))
                 .arg(pointCount)
                 .arg(plan.plannedPowerWatts, 0, 'f', 0));
     } else {
@@ -215,8 +254,6 @@ void PlanningPage::updateContextSummary()
 
 TherapyPlan PlanningPage::buildPlanFromUi(ApprovalState approvalState) const
 {
-    // 这里采用的是可重复的模拟点位生成逻辑，方便原型阶段稳定演示。
-    // 正式版本应改为基于病灶轮廓和约束条件的真实路径规划，并补充更严格的参数校验。
     TherapyPlan plan;
     plan.id = m_context->hasActivePlan() ? m_context->activePlan().id : createPlanId();
     plan.patientId = m_context->selectedPatient().id;
@@ -269,4 +306,52 @@ TherapyPlan PlanningPage::buildPlanFromUi(ApprovalState approvalState) const
     return plan;
 }
 
-}  // panthera::modules 命名空间
+void PlanningPage::populatePatientSelector()
+{
+    m_patientCombo->clear();
+    if (m_clinicalDataRepository == nullptr) {
+        return;
+    }
+
+    const QVector<PatientRecord> patients = m_clinicalDataRepository->listPatients();
+    for (const PatientRecord& patient : patients) {
+        m_patientCombo->addItem(patientDisplayLabel(patient), patient.id);
+    }
+}
+
+void PlanningPage::refreshImagingPaths(const QString& patientId)
+{
+    m_pathList->clear();
+
+    QVector<ImageSeriesRecord> imageSeries;
+    if (m_clinicalDataRepository != nullptr && !patientId.isEmpty()) {
+        imageSeries = m_clinicalDataRepository->listImageSeriesForPatient(patientId);
+    }
+
+    if (imageSeries.isEmpty()) {
+        m_pathList->addItems({
+            QStringLiteral("[1] 图像通道采集路径 1"),
+            QStringLiteral("[2] 图像通道采集路径 2"),
+            QStringLiteral("[3] 图像通道采集路径 3")
+        });
+        return;
+    }
+
+    int index = 1;
+    for (const ImageSeriesRecord& series : imageSeries) {
+        m_pathList->addItem(QStringLiteral("[%1] %2 | %3").arg(index++).arg(series.type).arg(series.storagePath));
+    }
+}
+
+void PlanningPage::syncPatientSelector(const QString& patientId)
+{
+    const int index = m_patientCombo->findData(patientId);
+    if (index < 0 || index == m_patientCombo->currentIndex()) {
+        return;
+    }
+
+    const QSignalBlocker blocker(m_patientCombo);
+    m_patientCombo->setCurrentIndex(index);
+}
+
+}  // namespace panthera::modules

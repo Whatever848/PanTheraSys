@@ -55,6 +55,21 @@ void MySqlRepositoryFacade::close()
     m_connectionName.clear();
 }
 
+bool MySqlRepositoryFacade::isOpen() const
+{
+    if (m_connectionName.isEmpty()) {
+        return false;
+    }
+
+    const QSqlDatabase database = QSqlDatabase::database(m_connectionName, false);
+    return database.isValid() && database.isOpen();
+}
+
+QSqlDatabase MySqlRepositoryFacade::database() const
+{
+    return m_connectionName.isEmpty() ? QSqlDatabase() : QSqlDatabase::database(m_connectionName, false);
+}
+
 bool MySqlRepositoryFacade::initializeSchemaFromFile(const QString& schemaFilePath)
 {
     if (m_connectionName.isEmpty()) {

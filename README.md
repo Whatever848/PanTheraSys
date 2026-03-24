@@ -48,6 +48,7 @@ ctest --test-dir build\msvc2019 --output-on-failure -C Debug
 
 - Architecture overview: [docs/architecture/overview.md](docs/architecture/overview.md)
 - Developer onboarding: [docs/architecture/developer-onboarding.md](docs/architecture/developer-onboarding.md)
+- Enterprise development plan: [docs/architecture/enterprise-development-plan-cn.md](docs/architecture/enterprise-development-plan-cn.md)
 - 中文项目说明: [docs/architecture/project-overview-cn.md](docs/architecture/project-overview-cn.md)
 
 ## Encoding Policy

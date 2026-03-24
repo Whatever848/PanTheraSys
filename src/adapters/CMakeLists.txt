@@ -1,6 +1,8 @@
 set(PANTHERA_ADAPTERS_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/config/local_settings_store.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/mysql/mysql_clinical_data_repository.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mysql/mysql_repository_facade.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/seed/seed_clinical_data_repository.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/sim/simulation_device_facade.cpp
 )
 

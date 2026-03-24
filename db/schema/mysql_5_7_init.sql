@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS treatment_report (
     patient_id VARCHAR(64) NOT NULL,
     treatment_session_id VARCHAR(64) NOT NULL,
     generated_at DATETIME NOT NULL,
+    title VARCHAR(128) NOT NULL,
     content_html MEDIUMTEXT NOT NULL,
     notes VARCHAR(255) NULL,
     CONSTRAINT fk_treatment_report_patient FOREIGN KEY (patient_id) REFERENCES patient(id),

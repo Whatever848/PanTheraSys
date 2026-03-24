@@ -24,6 +24,11 @@ const PatientRecord& ApplicationContext::selectedPatient() const
 
 void ApplicationContext::selectPatient(const PatientRecord& patient)
 {
+    const bool patientChanged = !m_hasSelectedPatient || m_selectedPatient.id != patient.id;
+    if (patientChanged && m_hasActivePlan && m_activePlan.patientId != patient.id) {
+        clearActivePlan();
+    }
+
     // 在统一入口广播患者上下文变化，保证所有页面看到的是同一份会话状态。
     m_selectedPatient = patient;
     m_hasSelectedPatient = true;
