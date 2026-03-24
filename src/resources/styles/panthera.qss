@@ -1,30 +1,64 @@
 QWidget {
-    background-color: #081018;
-    color: #e8f1fb;
+    background-color: #020505;
+    color: #eaf4ff;
     font-family: "Microsoft YaHei UI";
     font-size: 10pt;
 }
 
-QMainWindow, QFrame[class="pageCard"], QGroupBox, QTabWidget::pane, QListWidget, QTableWidget, QPlainTextEdit, QTextBrowser, QStackedWidget {
-    background-color: #0d1b2c;
+QMainWindow,
+QFrame[class="pageCard"],
+QGroupBox,
+QListWidget,
+QTableWidget,
+QPlainTextEdit,
+QTextBrowser,
+QStackedWidget {
+    background-color: #09182b;
 }
 
 QFrame#navBar {
-    background-color: #10233b;
-    border-bottom: 1px solid #19426b;
+    background-color: #11223b;
+    border-bottom: 1px solid #16395e;
+    min-height: 78px;
 }
 
-QFrame#sectionCard, QGroupBox {
-    border: 1px solid #1b426d;
-    border-radius: 10px;
-    padding-top: 10px;
+QFrame#navTitleBlock {
+    background-color: #132742;
+    border-right: 1px solid #54697f;
+    min-width: 320px;
+}
+
+QLabel#navTitleIcon {
+    background: transparent;
+}
+
+QLabel#navTitleLabel {
+    color: #10d6ff;
+    font-size: 16pt;
+    font-weight: 700;
+    background: transparent;
+}
+
+QLabel#navStatusLabel {
+    color: #afc1d4;
+    padding: 0 8px 0 18px;
+    background: transparent;
+    font-weight: 600;
+}
+
+QFrame#sectionCard,
+QGroupBox {
+    border: 1px solid #143456;
+    border-radius: 12px;
+    padding-top: 12px;
+    background-color: #0b1a2b;
 }
 
 QGroupBox::title {
     subcontrol-origin: margin;
-    left: 12px;
+    left: 14px;
     padding: 0 4px;
-    color: #21d4ff;
+    color: #18dbff;
     font-weight: 700;
 }
 
@@ -50,24 +84,303 @@ QPushButton:disabled {
     border-color: #29415d;
 }
 
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateEdit, QTextEdit, QPlainTextEdit {
-    background-color: #10233b;
-    border: 1px solid #2a4d73;
-    border-radius: 6px;
-    padding: 6px 8px;
+QPushButton#panelActionButton {
+    min-width: 106px;
+    padding: 9px 16px;
+    background-color: #314b70;
+    border: 1px solid #425c80;
+    color: #ffffff;
+    font-weight: 700;
 }
 
-QTableWidget, QListWidget, QTextBrowser, QPlainTextEdit {
-    border: 1px solid #234c79;
+QPushButton#panelActionButton:hover {
+    background-color: #3a5a84;
+}
+
+QPushButton#panelDangerButton {
+    min-width: 86px;
+    padding: 9px 16px;
+    color: #ff5d50;
+    background-color: transparent;
+    border: 1px solid #df4338;
+    font-weight: 700;
+}
+
+QPushButton#panelDangerButton:hover {
+    background-color: rgba(116, 18, 14, 0.32);
+}
+
+QPushButton#sidebarActionButton {
+    min-height: 34px;
+    border-radius: 0;
+    background-color: #203654;
+    border: 1px solid #5a6f87;
+    color: #d7e8f8;
+    font-weight: 700;
+}
+
+QPushButton#sidebarActionButton:hover {
+    background-color: #27405f;
+}
+
+QToolButton[navButton="true"] {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 27px 24px 21px 24px;
+    color: #f2f7ff;
+    font-size: 14pt;
+    font-weight: 700;
+    qproperty-iconSize: 18px 18px;
+}
+
+QToolButton[navButton="true"]:hover {
+    background-color: rgba(18, 44, 72, 0.82);
+    color: #7be8ff;
+}
+
+QToolButton[navButton="true"]:checked {
+    color: #12ddff;
+    border-bottom: 3px solid #12ddff;
+    background-color: rgba(8, 25, 42, 0.92);
+}
+
+QToolButton[navButton="true"]::menu-indicator {
+    subcontrol-origin: padding;
+    subcontrol-position: right center;
+    right: 8px;
+}
+
+QMenu#navDropMenu {
+    background-color: #10243c;
+    border: 1px solid #1a496f;
+    padding: 6px 0;
+    color: #f4f8ff;
+}
+
+QMenu#navDropMenu::item {
+    padding: 9px 22px;
+    margin: 0 4px;
+    border-radius: 0;
+    background-color: transparent;
+}
+
+QMenu#navDropMenu::item:selected {
+    background-color: #123858;
+    color: #1de1ff;
+}
+
+QMenu#navDropMenu::item:checked {
+    background-color: #113653;
+    color: #1de1ff;
+}
+
+QFrame#patientDetailPanel {
+    background-color: #0c1929;
+    border: 1px solid #143759;
+    border-radius: 12px;
+}
+
+QFrame#imagingPanel {
+    background-color: #0c1929;
+    border: 1px solid #143759;
+    border-radius: 12px;
+}
+
+QGroupBox#dataSidebarCard {
+    background-color: #0b1a2b;
+    border: 1px solid #143759;
+    border-radius: 10px;
+}
+
+QWidget#patientInfoPage,
+QWidget#imagingPage,
+QStackedWidget#dataSectionStack {
+    background-color: transparent;
+}
+
+QLineEdit,
+QComboBox,
+QSpinBox,
+QDoubleSpinBox,
+QDateEdit,
+QTextEdit,
+QPlainTextEdit {
+    background-color: #162c46;
+    border: 1px solid #244664;
+    border-radius: 6px;
+    padding: 7px 10px;
+    selection-background-color: #0f7f93;
+    selection-color: #ffffff;
+}
+
+QTableWidget,
+QListWidget,
+QTextBrowser,
+QPlainTextEdit {
+    border: 1px solid #1c4266;
     border-radius: 8px;
-    gridline-color: #1c3554;
+    gridline-color: #193650;
+    background-color: #0f2238;
+}
+
+QLineEdit#patientSearchEdit {
+    min-height: 30px;
+    background-color: #203452;
+    border: 1px solid #53657f;
+    border-radius: 2px;
+    color: #d7e6f8;
+    padding-left: 12px;
+}
+
+QLineEdit#patientSearchEdit:focus {
+    border: 1px solid #14d7ff;
+}
+
+QListWidget#patientList {
+    background-color: #0d1622;
+    border: none;
+    border-radius: 0;
+}
+
+QListWidget#patientList::item {
+    border: none;
+    border-bottom: 1px solid #12273d;
+    padding: 12px 14px;
+    background-color: #111316;
+    color: #f4f9ff;
+}
+
+QListWidget#patientList::item:selected {
+    background-color: #0d6d78;
+    color: #ffffff;
+}
+
+QListWidget#patientList::item:hover:!selected {
+    background-color: #172a40;
 }
 
 QHeaderView::section {
-    background-color: #153252;
-    color: white;
+    background-color: #132c47;
+    color: #f6fbff;
     padding: 6px;
     border: 0;
+}
+
+QLabel#dataSectionTitle {
+    color: #f5fbff;
+    font-size: 18pt;
+    font-weight: 700;
+    padding: 0 2px 12px 4px;
+}
+
+QFrame#patientDetailPanel QLabel {
+    color: #16d8ff;
+    font-weight: 700;
+    background: transparent;
+}
+
+QLabel#patientPanelTitle {
+    color: #ffffff;
+    font-size: 20pt;
+    font-weight: 700;
+    background: transparent;
+}
+
+QLabel#imagingPatientNameLabel {
+    color: #10d6ff;
+    font-size: 22pt;
+    font-weight: 700;
+    padding-left: 6px;
+    background: transparent;
+}
+
+QFrame#imagingDivider {
+    color: #1bbad6;
+    background-color: #1bbad6;
+    min-height: 1px;
+    max-height: 1px;
+    border: none;
+}
+
+QScrollArea#imagingScrollArea,
+QWidget#imagingGridContainer {
+    background: transparent;
+    border: none;
+}
+
+QFrame#imagingThumbnailCard {
+    background: transparent;
+    border: none;
+}
+
+QLabel#imagingThumbnailPreview {
+    background-color: #f7f7f5;
+    border: 1px solid #c9d0d7;
+}
+
+QLabel#imagingThumbnailCaption {
+    color: #93aeca;
+    font-size: 9pt;
+    font-weight: 600;
+    background: transparent;
+    padding-left: 2px;
+}
+
+QLabel#imagingEmptyStateLabel {
+    color: #88a6c5;
+    font-size: 11pt;
+    font-weight: 600;
+    background: transparent;
+    padding: 48px 0;
+}
+
+QScrollBar:vertical {
+    background-color: #203247;
+    width: 12px;
+    margin: 2px 0;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #d8e2ee;
+    min-height: 56px;
+    border-radius: 6px;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: transparent;
+    border: none;
+    height: 0;
+}
+
+QLineEdit#patientReadOnlyField {
+    background-color: #203755;
+    border-color: #203755;
+    color: #d8e5f3;
+    font-weight: 700;
+}
+
+QFrame#patientDetailPanel QLineEdit,
+QFrame#patientDetailPanel QSpinBox,
+QFrame#patientDetailPanel QComboBox,
+QFrame#patientDetailPanel QPlainTextEdit {
+    min-height: 26px;
+    background-color: #1f3552;
+    border: 1px solid #1f3552;
+    color: #dce9f8;
+}
+
+QFrame#patientDetailPanel QPlainTextEdit {
+    min-height: 220px;
+}
+
+QFrame#patientDetailPanel QGroupBox {
+    background-color: #12253c;
+    border: 1px solid #173759;
 }
 
 QProgressBar {
@@ -80,16 +393,4 @@ QProgressBar {
 QProgressBar::chunk {
     background-color: #35cc6d;
     border-radius: 5px;
-}
-
-QTabBar::tab {
-    background-color: #13304f;
-    padding: 8px 12px;
-    margin-right: 2px;
-    border-top-left-radius: 6px;
-    border-top-right-radius: 6px;
-}
-
-QTabBar::tab:selected {
-    background-color: #0085ff;
 }

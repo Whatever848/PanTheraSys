@@ -1,9 +1,11 @@
 #include "modules/shell/main_window.h"
 
+#include <QAction>
+#include <QActionGroup>
 #include <QFrame>
 #include <QHBoxLayout>
-#include <QMainWindow>
-#include <QStatusBar>
+#include <QMenu>
+#include <QStyle>
 #include <QVBoxLayout>
 
 #include "modules/dashboard/device_monitor_page.h"
@@ -19,11 +21,10 @@ MainWindow::MainWindow(
     ApplicationContext* context,
     SafetyKernel* safetyKernel,
     AuditService* auditService,
-    const IClinicalDataRepository* clinicalDataRepository,
+    IClinicalDataRepository* clinicalDataRepository,
     adapters::SimulationDeviceFacade* simulationDevice,
     QWidget* parent)
     : QMainWindow(parent)
-    , m_context(context)
     , m_safetyKernel(safetyKernel)
     , m_clinicalDataRepository(clinicalDataRepository)
     , m_simulationDevice(simulationDevice)
@@ -36,66 +37,109 @@ MainWindow::MainWindow(
     auto* navBar = new QFrame();
     navBar->setObjectName(QStringLiteral("navBar"));
     auto* navLayout = new QHBoxLayout(navBar);
-    navLayout->setContentsMargins(18, 12, 18, 12);
-    navLayout->setSpacing(10);
+    navLayout->setContentsMargins(0, 0, 18, 0);
+    navLayout->setSpacing(0);
+
+    auto* titleBlock = new QFrame();
+    titleBlock->setObjectName(QStringLiteral("navTitleBlock"));
+    auto* titleLayout = new QHBoxLayout(titleBlock);
+    titleLayout->setContentsMargins(24, 0, 26, 0);
+    titleLayout->setSpacing(12);
+
+    auto* titleIcon = new QLabel();
+    titleIcon->setObjectName(QStringLiteral("navTitleIcon"));
+    titleIcon->setPixmap(style()->standardIcon(QStyle::SP_DriveNetIcon).pixmap(24, 24));
 
     auto* titleLabel = new QLabel(QStringLiteral("乳腺超声消融医疗系统 V1.0"));
-    titleLabel->setStyleSheet(QStringLiteral("font-size: 18pt; font-weight: 700; color: #18d4ff;"));
+    titleLabel->setObjectName(QStringLiteral("navTitleLabel"));
 
-    m_dashboardButton = new QPushButton(QStringLiteral("设备监控"));
-    m_dashboardButton->setCheckable(true);
-    m_planningButton = new QPushButton(QStringLiteral("治疗方案"));
-    m_planningButton->setCheckable(true);
-    m_treatmentButton = new QPushButton(QStringLiteral("治疗"));
-    m_treatmentButton->setCheckable(true);
-    m_dataButton = new QPushButton(QStringLiteral("数据管理"));
-    m_dataButton->setCheckable(true);
+    titleLayout->addWidget(titleIcon);
+    titleLayout->addWidget(titleLabel);
+    navLayout->addWidget(titleBlock);
 
-    m_statusLabel = new QLabel();
-    m_roleCombo = new QComboBox();
-    m_roleCombo->addItem(toDisplayString(RoleType::Physician), static_cast<int>(RoleType::Physician));
-    m_roleCombo->addItem(toDisplayString(RoleType::Engineer), static_cast<int>(RoleType::Engineer));
-    m_roleCombo->addItem(toDisplayString(RoleType::Administrator), static_cast<int>(RoleType::Administrator));
+    auto createNavButton = [this](const QString& text, QStyle::StandardPixmap iconType) {
+        auto* button = new QToolButton();
+        button->setText(text);
+        button->setIcon(style()->standardIcon(iconType));
+        button->setCheckable(true);
+        button->setAutoRaise(true);
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        button->setProperty("navButton", true);
+        return button;
+    };
 
-    navLayout->addWidget(titleLabel);
-    navLayout->addSpacing(24);
+    m_dashboardButton = createNavButton(QStringLiteral("设备监控"), QStyle::SP_ComputerIcon);
+    m_planningButton = createNavButton(QStringLiteral("治疗方案"), QStyle::SP_FileDialogDetailedView);
+    m_treatmentButton = createNavButton(QStringLiteral("治疗"), QStyle::SP_MediaPlay);
+    m_dataButton = createNavButton(QStringLiteral("数据管理"), QStyle::SP_DirIcon);
+    m_dataButton->setPopupMode(QToolButton::MenuButtonPopup);
+    m_dataButton->setProperty("navMenuButton", true);
+
+    auto* dataMenu = new QMenu(m_dataButton);
+    dataMenu->setObjectName(QStringLiteral("navDropMenu"));
+    auto* dataActionGroup = new QActionGroup(dataMenu);
+    dataActionGroup->setExclusive(true);
+
+    m_dataPatientInfoAction = dataMenu->addAction(QStringLiteral("患者信息"));
+    m_dataPatientInfoAction->setCheckable(true);
+    m_dataImagingAction = dataMenu->addAction(QStringLiteral("影像数据"));
+    m_dataImagingAction->setCheckable(true);
+    m_dataReportAction = dataMenu->addAction(QStringLiteral("治疗报告"));
+    m_dataReportAction->setCheckable(true);
+    m_dataTreatmentDataAction = dataMenu->addAction(QStringLiteral("治疗数据"));
+    m_dataTreatmentDataAction->setCheckable(true);
+
+    dataActionGroup->addAction(m_dataPatientInfoAction);
+    dataActionGroup->addAction(m_dataImagingAction);
+    dataActionGroup->addAction(m_dataReportAction);
+    dataActionGroup->addAction(m_dataTreatmentDataAction);
+    m_dataPatientInfoAction->setChecked(true);
+    m_dataButton->setMenu(dataMenu);
+
+    navLayout->addSpacing(18);
     navLayout->addWidget(m_dashboardButton);
     navLayout->addWidget(m_planningButton);
     navLayout->addWidget(m_treatmentButton);
     navLayout->addWidget(m_dataButton);
     navLayout->addStretch();
-    navLayout->addWidget(new QLabel(QStringLiteral("当前角色")));
-    navLayout->addWidget(m_roleCombo);
-    navLayout->addSpacing(16);
+
+    m_statusLabel = new QLabel();
+    m_statusLabel->setObjectName(QStringLiteral("navStatusLabel"));
     navLayout->addWidget(m_statusLabel);
+
     rootLayout->addWidget(navBar);
 
-    // 主窗口统一持有顶层页面实例，并在构造时把核心服务传入各页面。
-    // 页面之间不直接调用，而是通过 ApplicationContext 和 SafetyKernel 协同。
     m_stack = new QStackedWidget();
     m_stack->addWidget(new DeviceMonitorPage(simulationDevice, safetyKernel));
     m_stack->addWidget(new PlanningPage(context, safetyKernel, auditService, m_clinicalDataRepository));
     m_stack->addWidget(new TreatmentPage(context, safetyKernel, auditService, simulationDevice));
-    m_stack->addWidget(new DataManagementPage(context, auditService, m_clinicalDataRepository));
+    m_dataManagementPage = new DataManagementPage(context, auditService, m_clinicalDataRepository);
+    m_stack->addWidget(m_dataManagementPage);
     rootLayout->addWidget(m_stack, 1);
 
     setCentralWidget(centralWidget);
     resize(1480, 920);
     setWindowTitle(QStringLiteral("PanTheraSys Console"));
 
-    connect(m_dashboardButton, &QPushButton::clicked, this, &MainWindow::showDashboard);
-    connect(m_planningButton, &QPushButton::clicked, this, &MainWindow::showPlanning);
-    connect(m_treatmentButton, &QPushButton::clicked, this, &MainWindow::showTreatment);
-    connect(m_dataButton, &QPushButton::clicked, this, &MainWindow::showDataManagement);
+    connect(m_dashboardButton, &QToolButton::clicked, this, &MainWindow::showDashboard);
+    connect(m_planningButton, &QToolButton::clicked, this, &MainWindow::showPlanning);
+    connect(m_treatmentButton, &QToolButton::clicked, this, &MainWindow::showTreatment);
+    connect(m_dataButton, &QToolButton::clicked, this, &MainWindow::showDataManagement);
+    connect(m_dataPatientInfoAction, &QAction::triggered, this, [this]() {
+        showDataManagementSection(DataManagementPage::Section::PatientInfo);
+    });
+    connect(m_dataImagingAction, &QAction::triggered, this, [this]() {
+        showDataManagementSection(DataManagementPage::Section::ImagingData);
+    });
+    connect(m_dataReportAction, &QAction::triggered, this, [this]() {
+        showDataManagementSection(DataManagementPage::Section::TreatmentReport);
+    });
+    connect(m_dataTreatmentDataAction, &QAction::triggered, this, [this]() {
+        showDataManagementSection(DataManagementPage::Section::TreatmentData);
+    });
     connect(m_safetyKernel, &SafetyKernel::safetySnapshotChanged, this, &MainWindow::updateStatusBarSummary);
     connect(m_safetyKernel, &SafetyKernel::systemModeChanged, this, &MainWindow::updateStatusBarSummary);
-    connect(m_roleCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
-        const auto role = static_cast<RoleType>(m_roleCombo->itemData(index).toInt());
-        m_context->setCurrentRole(role);
-    });
-    connect(m_context, &ApplicationContext::currentRoleChanged, this, &MainWindow::applyRoleVisibility);
 
-    applyRoleVisibility(m_context->currentRole());
     updateStatusBarSummary();
     showDashboard();
 }
@@ -119,8 +163,25 @@ void MainWindow::showTreatment()
 
 void MainWindow::showDataManagement()
 {
-    if (!m_dataButton->isVisible()) {
-        return;
+    showDataManagementSection(DataManagementPage::Section::PatientInfo);
+}
+
+void MainWindow::showDataManagementSection(DataManagementPage::Section section)
+{
+    if (m_dataPatientInfoAction != nullptr) {
+        m_dataPatientInfoAction->setChecked(section == DataManagementPage::Section::PatientInfo);
+    }
+    if (m_dataImagingAction != nullptr) {
+        m_dataImagingAction->setChecked(section == DataManagementPage::Section::ImagingData);
+    }
+    if (m_dataReportAction != nullptr) {
+        m_dataReportAction->setChecked(section == DataManagementPage::Section::TreatmentReport);
+    }
+    if (m_dataTreatmentDataAction != nullptr) {
+        m_dataTreatmentDataAction->setChecked(section == DataManagementPage::Section::TreatmentData);
+    }
+    if (m_dataManagementPage != nullptr) {
+        m_dataManagementPage->showSection(section);
     }
     setActivePage(3, m_dataButton);
 }
@@ -133,24 +194,13 @@ void MainWindow::updateStatusBarSummary()
             .arg(toDisplayString(snapshot.state), toDisplayString(m_safetyKernel->mode()), snapshot.message));
 }
 
-void MainWindow::applyRoleVisibility(RoleType role)
+void MainWindow::setActivePage(int index, QAbstractButton* activeButton)
 {
-    // 当前原型阶段按需求将“数据管理”默认隐藏，只对工程师和管理员角色开放。
-    const bool canSeeDataManagement = role == RoleType::Engineer || role == RoleType::Administrator;
-    m_dataButton->setVisible(canSeeDataManagement);
-    if (!canSeeDataManagement && m_stack->currentIndex() == 3) {
-        showDashboard();
-    }
-}
-
-void MainWindow::setActivePage(int index, QPushButton* activeButton)
-{
-    // 导航按钮选中状态和页面切换统一在这里维护，保证重定向时界面表现一致。
     m_stack->setCurrentIndex(index);
-    const QList<QPushButton*> buttons {m_dashboardButton, m_planningButton, m_treatmentButton, m_dataButton};
-    for (QPushButton* button : buttons) {
+    const QList<QAbstractButton*> buttons {m_dashboardButton, m_planningButton, m_treatmentButton, m_dataButton};
+    for (QAbstractButton* button : buttons) {
         button->setChecked(button == activeButton);
     }
 }
 
-}  // panthera::modules 命名空间
+}  // namespace panthera::modules

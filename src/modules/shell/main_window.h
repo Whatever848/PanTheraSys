@@ -1,26 +1,25 @@
 #pragma once
 
-#include <QComboBox>
+#include <QAction>
+#include <QAbstractButton>
 #include <QLabel>
 #include <QMainWindow>
-#include <QPushButton>
 #include <QStackedWidget>
+#include <QToolButton>
 
 #include "adapters/sim/simulation_device_facade.h"
 #include "core/application/application_context.h"
 #include "core/repositories/clinical_data_repository.h"
 #include "core/safety/safety_kernel.h"
 #include "core/services/audit_service.h"
+#include "modules/data/data_management_page.h"
 
 namespace panthera::modules {
 
-class DataManagementPage;
 class DeviceMonitorPage;
 class PlanningPage;
 class TreatmentPage;
 
-// MainWindow 是原型工作站的主导航壳层。
-// 它负责把共享服务注入到各个主工作区，并执行基础的角色可见性控制。
 class MainWindow final : public QMainWindow {
     Q_OBJECT
 
@@ -29,7 +28,7 @@ public:
         panthera::core::ApplicationContext* context,
         panthera::core::SafetyKernel* safetyKernel,
         panthera::core::AuditService* auditService,
-        const panthera::core::IClinicalDataRepository* clinicalDataRepository,
+        panthera::core::IClinicalDataRepository* clinicalDataRepository,
         panthera::adapters::SimulationDeviceFacade* simulationDevice,
         QWidget* parent = nullptr);
 
@@ -39,23 +38,26 @@ private slots:
     void showTreatment();
     void showDataManagement();
     void updateStatusBarSummary();
-    void applyRoleVisibility(panthera::core::RoleType role);
 
 private:
-    void setActivePage(int index, QPushButton* activeButton);
+    void showDataManagementSection(DataManagementPage::Section section);
+    void setActivePage(int index, QAbstractButton* activeButton);
 
-    panthera::core::ApplicationContext* m_context {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
-    const panthera::core::IClinicalDataRepository* m_clinicalDataRepository {nullptr};
+    panthera::core::IClinicalDataRepository* m_clinicalDataRepository {nullptr};
     panthera::adapters::SimulationDeviceFacade* m_simulationDevice {nullptr};
 
     QStackedWidget* m_stack {nullptr};
-    QPushButton* m_dashboardButton {nullptr};
-    QPushButton* m_planningButton {nullptr};
-    QPushButton* m_treatmentButton {nullptr};
-    QPushButton* m_dataButton {nullptr};
+    QToolButton* m_dashboardButton {nullptr};
+    QToolButton* m_planningButton {nullptr};
+    QToolButton* m_treatmentButton {nullptr};
+    QToolButton* m_dataButton {nullptr};
     QLabel* m_statusLabel {nullptr};
-    QComboBox* m_roleCombo {nullptr};
+    DataManagementPage* m_dataManagementPage {nullptr};
+    QAction* m_dataPatientInfoAction {nullptr};
+    QAction* m_dataImagingAction {nullptr};
+    QAction* m_dataReportAction {nullptr};
+    QAction* m_dataTreatmentDataAction {nullptr};
 };
 
-}  // panthera::modules 命名空间
+}  // namespace panthera::modules

@@ -2,6 +2,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QResource>
 #include <QSettings>
 
 #include "adapters/config/local_settings_store.h"
@@ -58,6 +59,7 @@ int main(int argc, char* argv[])
     QApplication application(argc, argv);
     application.setOrganizationName(QStringLiteral("PanTheraSys"));
     application.setApplicationName(QStringLiteral("PanTheraConsole"));
+    Q_INIT_RESOURCE(resources);
 
     qRegisterMetaType<panthera::core::PatientRecord>();
     qRegisterMetaType<panthera::core::TherapyPlan>();
@@ -78,7 +80,7 @@ int main(int argc, char* argv[])
     panthera::adapters::SeedClinicalDataRepository seedClinicalDataRepository;
     panthera::adapters::MySqlClinicalDataRepository mysqlClinicalDataRepository;
     panthera::adapters::SimulationDeviceFacade simulationDevice;
-    const panthera::core::IClinicalDataRepository* clinicalDataRepository = &seedClinicalDataRepository;
+    panthera::core::IClinicalDataRepository* clinicalDataRepository = &seedClinicalDataRepository;
 
     Q_UNUSED(settingsStore)
 
