@@ -112,13 +112,14 @@ MainWindow::MainWindow(
     m_stack = new QStackedWidget();
     m_stack->addWidget(new DeviceMonitorPage(simulationDevice, safetyKernel));
     m_stack->addWidget(new PlanningPage(context, safetyKernel, auditService, m_clinicalDataRepository));
-    m_stack->addWidget(new TreatmentPage(context, safetyKernel, auditService, simulationDevice));
+    m_stack->addWidget(new TreatmentPage(context, safetyKernel, auditService, m_clinicalDataRepository, simulationDevice));
     m_dataManagementPage = new DataManagementPage(context, auditService, m_clinicalDataRepository);
     m_stack->addWidget(m_dataManagementPage);
     rootLayout->addWidget(m_stack, 1);
 
     setCentralWidget(centralWidget);
     resize(1480, 920);
+    setMinimumSize(1380, 860);
     setWindowTitle(QStringLiteral("PanTheraSys Console"));
 
     connect(m_dashboardButton, &QToolButton::clicked, this, &MainWindow::showDashboard);

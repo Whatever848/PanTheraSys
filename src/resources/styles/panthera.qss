@@ -433,3 +433,301 @@ QProgressBar::chunk {
     background-color: #35cc6d;
     border-radius: 5px;
 }
+
+QFrame#planningSidebarCard,
+QFrame#planningControlFrame,
+QFrame#planningBottomCard {
+    background-color: #121f34;
+    border: 1px solid #1d3350;
+    border-radius: 14px;
+}
+
+QFrame#planningPreviewFrame {
+    background-color: #121b2f;
+    border: 1px solid #627089;
+    border-radius: 14px;
+}
+
+QFrame#planningModeCard {
+    background-color: #14233a;
+    border: 1px solid #2c3e59;
+    border-radius: 12px;
+}
+
+QLabel#planningCardTitle,
+QLabel#planningBottomTitle {
+    color: #f4fbff;
+    font-size: 15pt;
+    font-weight: 700;
+    background: transparent;
+}
+
+QLabel#planningHeaderIcon {
+    color: #f4fbff;
+    font-size: 16pt;
+    font-weight: 700;
+    background: transparent;
+}
+
+QListWidget#planningPathList,
+QListWidget#planningModelList {
+    background-color: #162337;
+    border: 1px solid #233a5a;
+    border-radius: 10px;
+    padding: 2px;
+}
+
+QListWidget#planningPathList::item,
+QListWidget#planningModelList::item {
+    min-height: 28px;
+    margin: 3px;
+    padding: 9px 12px;
+    border: 1px solid #28405f;
+    border-radius: 6px;
+    background-color: #1a2a43;
+    color: #cfe4fb;
+}
+
+QListWidget#planningPathList::item:selected,
+QListWidget#planningModelList::item:selected {
+    background-color: #1e3d6a;
+    border-color: #3d8cff;
+    color: #ffffff;
+}
+
+QPushButton#planningActionButton {
+    min-height: 30px;
+    padding: 6px 12px;
+    background-color: #22324a;
+    border: 1px solid #2f4564;
+    border-radius: 10px;
+    color: #f7fbff;
+    font-weight: 700;
+    font-size: 10.5pt;
+}
+
+QPushButton#planningActionButton:hover {
+    background-color: #2c4365;
+}
+
+QPushButton#planningGhostButton {
+    min-height: 30px;
+    padding: 6px 12px;
+    background-color: #1a2538;
+    border: 1px solid #2b3d59;
+    border-radius: 10px;
+    color: #eef5ff;
+    font-weight: 700;
+    font-size: 10.5pt;
+}
+
+QPushButton#planningGhostButton:hover {
+    background-color: #24344d;
+}
+
+QPushButton#planningPrimaryOutlineButton {
+    min-height: 32px;
+    padding: 6px 12px;
+    background-color: #17233a;
+    border: 1px solid #2088ff;
+    border-radius: 12px;
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 10.5pt;
+}
+
+QPushButton#planningPrimaryOutlineButton:hover {
+    background-color: #20314e;
+}
+
+QDoubleSpinBox#planningMetricSpin,
+QSpinBox#planningMetricSpin {
+    min-width: 108px;
+    min-height: 24px;
+    padding: 3px 10px;
+    background-color: #12233d;
+    border: 1px solid #365277;
+    border-radius: 12px;
+    color: #ffffff;
+    font-weight: 700;
+}
+
+QLabel#planningMetricValueLabel {
+    min-width: 108px;
+    min-height: 24px;
+    padding: 4px 10px;
+    background-color: #12233d;
+    border: 1px solid #365277;
+    border-radius: 0;
+    color: #ffffff;
+    font-size: 12pt;
+    font-weight: 700;
+}
+
+QLabel#planningSectionLabel,
+QLabel#planningChartSummaryLabel,
+QLabel#planningContextLabel {
+    color: #eff7ff;
+    font-weight: 700;
+    background: transparent;
+    font-size: 11pt;
+}
+
+QLabel#planningPowerValueLabel {
+    color: #12d5ff;
+    font-size: 16pt;
+    font-weight: 700;
+    background: transparent;
+}
+
+QSlider#planningPowerSlider::groove:horizontal {
+    height: 4px;
+    background-color: #6b5736;
+    border-radius: 2px;
+}
+
+QSlider#planningPowerSlider::handle:horizontal {
+    width: 18px;
+    margin: -7px 0;
+    background-color: #e8eef7;
+    border: 1px solid #d1dae7;
+    border-radius: 9px;
+}
+
+QCheckBox#planningToggleCheck {
+    spacing: 0;
+    background: transparent;
+}
+
+QCheckBox#planningToggleCheck::indicator {
+    width: 46px;
+    height: 24px;
+    border-radius: 12px;
+    background-color: #17314a;
+    border: 1px solid #17314a;
+}
+
+QCheckBox#planningToggleCheck::indicator:checked {
+    background-color: #163d39;
+    border-color: #163d39;
+}
+
+QCheckBox#planningToggleCheck::indicator:unchecked {
+    background-color: #17314a;
+    border-color: #17314a;
+}
+
+QRadioButton {
+    color: #eaf4ff;
+    background: transparent;
+    spacing: 8px;
+    font-weight: 700;
+}
+
+QRadioButton::indicator {
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    border: 1px solid #47627f;
+    background-color: transparent;
+}
+
+QRadioButton::indicator:checked {
+    background-color: #18d16b;
+    border-color: #18d16b;
+}
+
+QPlainTextEdit#planningSummaryEdit {
+    background-color: #18253d;
+    border: 1px solid #2d3f5a;
+    border-radius: 12px;
+    color: #dbe9f8;
+    padding: 8px;
+    font-size: 10pt;
+}
+
+QFrame#planningChartCanvas {
+    background-color: #18223a;
+    border: 1px solid #233858;
+    border-radius: 12px;
+}
+
+QToolButton#planningIconButton {
+    min-width: 42px;
+    min-height: 42px;
+    background-color: #2b3950;
+    border: 1px solid #7f8ba0;
+    border-radius: 12px;
+    color: #ffffff;
+    font-size: 16pt;
+    font-weight: 700;
+}
+
+QToolButton#planningIconButton:hover {
+    background-color: #364964;
+}
+
+QFrame#planningAnnotationPanel {
+    background-color: rgba(43, 57, 80, 0.96);
+    border: 1px solid #7f8ba0;
+    border-radius: 14px;
+    min-width: 52px;
+    max-width: 52px;
+}
+
+QToolButton#planningAnnotationToolButton {
+    min-width: 30px;
+    min-height: 30px;
+    max-width: 30px;
+    max-height: 30px;
+    background: transparent;
+    border: none;
+    color: #f6fbff;
+    font-size: 16pt;
+    font-weight: 700;
+}
+
+QToolButton#planningAnnotationToolButton:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+}
+
+QFrame#planningAnnotationSeparator {
+    min-height: 1px;
+    max-height: 1px;
+    background-color: #9aa6ba;
+    border: none;
+}
+
+QToolButton#planningAnnotationColorButton {
+    min-width: 20px;
+    min-height: 20px;
+    max-width: 20px;
+    max-height: 20px;
+    border-radius: 10px;
+    border: 2px solid #c9d6e7;
+    background: #2c4365;
+}
+
+QToolButton#planningAnnotationColorButton[swatchColor="red"] {
+    background-color: #c94733;
+}
+
+QToolButton#planningAnnotationColorButton[swatchColor="blue"] {
+    background-color: #5b9ee6;
+}
+
+QToolButton#planningAnnotationColorButton[swatchColor="green"] {
+    background-color: #a3ef4c;
+}
+
+QToolButton#planningAnnotationColorButton[swatchColor="orange"] {
+    background-color: #ffb14b;
+}
+
+QLabel#planningPreviewOverlayLabel {
+    color: rgba(244, 248, 255, 0.88);
+    font-size: 36pt;
+    font-weight: 700;
+    background: transparent;
+}

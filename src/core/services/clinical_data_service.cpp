@@ -92,6 +92,35 @@ bool ClinicalDataService::findImageSeriesById(const QString& imageSeriesId, Imag
     return true;
 }
 
+QVector<TherapyPlan> ClinicalDataService::listTherapyPlansForPatient(const QString& patientId) const
+{
+    if (!ensureRepositoryAvailable()) {
+        return {};
+    }
+
+    const QVector<TherapyPlan> therapyPlans = m_repository->listTherapyPlansForPatient(patientId);
+    setLastError(therapyPlans.isEmpty() ? m_repository->lastError() : QString());
+    return therapyPlans;
+}
+
+bool ClinicalDataService::findTherapyPlanById(const QString& therapyPlanId, TherapyPlan* therapyPlan) const
+{
+    if (!ensureRepositoryAvailable()) {
+        return false;
+    }
+    if (therapyPlanId.trimmed().isEmpty()) {
+        setLastError(QStringLiteral("Therapy plan id is required."));
+        return false;
+    }
+    if (!m_repository->findTherapyPlanById(therapyPlanId, therapyPlan)) {
+        setLastError(m_repository->lastError());
+        return false;
+    }
+
+    setLastError(QString());
+    return true;
+}
+
 QVector<TreatmentSessionRecord> ClinicalDataService::listTreatmentSessionsForPatient(const QString& patientId) const
 {
     if (!ensureRepositoryAvailable()) {
@@ -297,6 +326,98 @@ bool ClinicalDataService::deleteImageSeries(const QString& imageSeriesId)
     }
 
     if (!m_repository->deleteImageSeries(imageSeriesId)) {
+        setLastError(m_repository->lastError());
+        return false;
+    }
+
+    setLastError(QString());
+    return true;
+}
+
+bool ClinicalDataService::saveTherapyPlan(TherapyPlan* therapyPlan)
+{
+    if (!ensureWritableRepository()) {
+        return false;
+    }
+    if (therapyPlan == nullptr) {
+        setLastError(QStringLiteral("Therapy plan payload is null."));
+        return false;
+    }
+    if (therapyPlan->patientId.trimmed().isEmpty()) {
+        setLastError(QStringLiteral("Therapy plan patient id is required."));
+        return false;
+    }
+    if (therapyPlan->name.trimmed().isEmpty()) {
+        setLastError(QStringLiteral("Therapy plan name is required."));
+        return false;
+    }
+    if (therapyPlan->plannedPowerWatts < 0.0) {
+        setLastError(QStringLiteral("Therapy plan power cannot be negative."));
+        return false;
+    }
+    if (therapyPlan->spacingMm < 0.0) {
+        setLastError(QStringLiteral("Therapy plan spacing cannot be negative."));
+        return false;
+    }
+    if (therapyPlan->dwellSeconds < 0.0) {
+        setLastError(QStringLiteral("Therapy plan dwell seconds cannot be negative."));
+        return false;
+    }
+    PatientRecord patient;
+    if (!ensurePatientExists(therapyPlan->patientId, &patient)) {
+        return false;
+    }
+
+    const QDateTime now = QDateTime::currentDateTime();
+    if (therapyPlan->id.trimmed().isEmpty()) {
+        therapyPlan->id = makeId(QStringLiteral("PLAN"));
+    }
+    if (!therapyPlan->createdAt.isValid()) {
+        therapyPlan->createdAt = now;
+    }
+    if ((therapyPlan->approvalState == ApprovalState::Approved || therapyPlan->approvalState == ApprovalState::Locked)
+        && !therapyPlan->approvedAt.isValid()) {
+        therapyPlan->approvedAt = now;
+    }
+    if (!(therapyPlan->approvalState == ApprovalState::Approved || therapyPlan->approvalState == ApprovalState::Locked)) {
+        therapyPlan->approvedAt = QDateTime {};
+        therapyPlan->approvedBy.clear();
+    }
+
+    TherapyPlan existing;
+    const bool exists = m_repository->findTherapyPlanById(therapyPlan->id, &existing);
+    if (!exists && !isNotFoundError(m_repository->lastError())) {
+        setLastError(m_repository->lastError());
+        return false;
+    }
+
+    if (exists) {
+        if (!m_repository->updateTherapyPlan(*therapyPlan)) {
+            setLastError(m_repository->lastError());
+            return false;
+        }
+    } else {
+        if (!m_repository->createTherapyPlan(*therapyPlan)) {
+            setLastError(m_repository->lastError());
+            return false;
+        }
+    }
+
+    setLastError(QString());
+    return true;
+}
+
+bool ClinicalDataService::deleteTherapyPlan(const QString& therapyPlanId)
+{
+    if (!ensureWritableRepository()) {
+        return false;
+    }
+    if (therapyPlanId.trimmed().isEmpty()) {
+        setLastError(QStringLiteral("Therapy plan id is required."));
+        return false;
+    }
+
+    if (!m_repository->deleteTherapyPlan(therapyPlanId)) {
         setLastError(m_repository->lastError());
         return false;
     }
@@ -534,6 +655,21 @@ bool ClinicalDataService::bootstrapFrom(const IClinicalDataRepository& sourceRep
                     return false;
                 }
                 if (!m_repository->createImageSeries(image)) {
+                    setLastError(m_repository->lastError());
+                    return false;
+                }
+            }
+        }
+
+        const QVector<TherapyPlan> therapyPlans = sourceRepository.listTherapyPlansForPatient(patient.id);
+        for (TherapyPlan therapyPlan : therapyPlans) {
+            TherapyPlan existingPlan;
+            if (!m_repository->findTherapyPlanById(therapyPlan.id, &existingPlan)) {
+                if (!isNotFoundError(m_repository->lastError())) {
+                    setLastError(m_repository->lastError());
+                    return false;
+                }
+                if (!m_repository->createTherapyPlan(therapyPlan)) {
                     setLastError(m_repository->lastError());
                     return false;
                 }

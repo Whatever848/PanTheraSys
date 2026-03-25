@@ -1,6 +1,9 @@
 #include "adapters/mysql/mysql_clinical_data_repository.h"
 
 #include <QMetaType>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QVariant>
@@ -62,6 +65,226 @@ ImageSeriesRecord mapImageSeries(const QSqlQuery& query)
     imageSeries.notes = query.value(QStringLiteral("notes")).toString();
     imageSeries.createdAt = query.value(QStringLiteral("created_at")).toDateTime();
     return imageSeries;
+}
+
+QString approvalStateKey(ApprovalState state)
+{
+    switch (state) {
+    case ApprovalState::Draft:
+        return QStringLiteral("Draft");
+    case ApprovalState::UnderReview:
+        return QStringLiteral("UnderReview");
+    case ApprovalState::Approved:
+        return QStringLiteral("Approved");
+    case ApprovalState::Locked:
+        return QStringLiteral("Locked");
+    case ApprovalState::Superseded:
+        return QStringLiteral("Superseded");
+    }
+    return QStringLiteral("Draft");
+}
+
+ApprovalState approvalStateFromKey(const QString& key)
+{
+    if (key.compare(QStringLiteral("UnderReview"), Qt::CaseInsensitive) == 0) {
+        return ApprovalState::UnderReview;
+    }
+    if (key.compare(QStringLiteral("Approved"), Qt::CaseInsensitive) == 0) {
+        return ApprovalState::Approved;
+    }
+    if (key.compare(QStringLiteral("Locked"), Qt::CaseInsensitive) == 0) {
+        return ApprovalState::Locked;
+    }
+    if (key.compare(QStringLiteral("Superseded"), Qt::CaseInsensitive) == 0) {
+        return ApprovalState::Superseded;
+    }
+    return ApprovalState::Draft;
+}
+
+QString treatmentPatternKey(TreatmentPattern pattern)
+{
+    switch (pattern) {
+    case TreatmentPattern::Point:
+        return QStringLiteral("Point");
+    case TreatmentPattern::Line:
+        return QStringLiteral("Line");
+    case TreatmentPattern::Segmented:
+        return QStringLiteral("Segmented");
+    }
+    return QStringLiteral("Point");
+}
+
+TreatmentPattern treatmentPatternFromKey(const QString& key)
+{
+    if (key.compare(QStringLiteral("Line"), Qt::CaseInsensitive) == 0) {
+        return TreatmentPattern::Line;
+    }
+    if (key.compare(QStringLiteral("Segmented"), Qt::CaseInsensitive) == 0) {
+        return TreatmentPattern::Segmented;
+    }
+    return TreatmentPattern::Point;
+}
+
+QJsonObject therapyPointToJson(const TherapyPoint& point)
+{
+    QJsonObject json;
+    json.insert(QStringLiteral("index"), point.index);
+    json.insert(QStringLiteral("x"), point.positionMm.x());
+    json.insert(QStringLiteral("y"), point.positionMm.y());
+    json.insert(QStringLiteral("dwell_seconds"), point.dwellSeconds);
+    json.insert(QStringLiteral("power_watts"), point.powerWatts);
+    return json;
+}
+
+TherapyPoint therapyPointFromJson(const QJsonObject& json)
+{
+    TherapyPoint point;
+    point.index = json.value(QStringLiteral("index")).toInt();
+    point.positionMm = QPointF(json.value(QStringLiteral("x")).toDouble(), json.value(QStringLiteral("y")).toDouble());
+    point.dwellSeconds = json.value(QStringLiteral("dwell_seconds")).toDouble();
+    point.powerWatts = json.value(QStringLiteral("power_watts")).toDouble();
+    return point;
+}
+
+QString serializePlanPayload(const TherapyPlan& therapyPlan)
+{
+    QJsonObject root;
+    root.insert(QStringLiteral("delivery_mode"), therapyPlan.deliveryMode);
+    root.insert(QStringLiteral("coordinate_x"), therapyPlan.coordinateX);
+    root.insert(QStringLiteral("coordinate_y"), therapyPlan.coordinateY);
+    root.insert(QStringLiteral("coordinate_z"), therapyPlan.coordinateZ);
+    root.insert(QStringLiteral("depth_mm"), therapyPlan.depthMm);
+    root.insert(QStringLiteral("dwell_seconds"), therapyPlan.dwellSeconds);
+    root.insert(QStringLiteral("approved_by"), therapyPlan.approvedBy);
+    return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
+}
+
+void hydratePlanPayload(const QString& serializedPayload, TherapyPlan* therapyPlan)
+{
+    if (therapyPlan == nullptr || serializedPayload.trimmed().isEmpty()) {
+        return;
+    }
+
+    const QJsonDocument document = QJsonDocument::fromJson(serializedPayload.toUtf8());
+    if (!document.isObject()) {
+        return;
+    }
+
+    const QJsonObject root = document.object();
+    therapyPlan->deliveryMode = root.value(QStringLiteral("delivery_mode")).toString(therapyPlan->deliveryMode);
+    therapyPlan->coordinateX = root.value(QStringLiteral("coordinate_x")).toDouble(therapyPlan->coordinateX);
+    therapyPlan->coordinateY = root.value(QStringLiteral("coordinate_y")).toDouble(therapyPlan->coordinateY);
+    therapyPlan->coordinateZ = root.value(QStringLiteral("coordinate_z")).toDouble(therapyPlan->coordinateZ);
+    therapyPlan->depthMm = root.value(QStringLiteral("depth_mm")).toDouble(therapyPlan->depthMm);
+    therapyPlan->dwellSeconds = root.value(QStringLiteral("dwell_seconds")).toDouble(therapyPlan->dwellSeconds);
+    if (therapyPlan->approvedBy.isEmpty()) {
+        therapyPlan->approvedBy = root.value(QStringLiteral("approved_by")).toString();
+    }
+}
+
+QString serializeSegmentPayload(const TherapySegment& segment)
+{
+    QJsonObject root;
+    QJsonArray points;
+    for (const TherapyPoint& point : segment.points) {
+        points.push_back(therapyPointToJson(point));
+    }
+    root.insert(QStringLiteral("points"), points);
+    return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
+}
+
+TherapySegment mapTherapySegment(const QSqlQuery& query)
+{
+    TherapySegment segment;
+    segment.id = query.value(QStringLiteral("id")).toString();
+    segment.orderIndex = query.value(QStringLiteral("order_index")).toInt();
+    segment.label = query.value(QStringLiteral("label_name")).toString();
+    segment.plannedDurationSeconds = query.value(QStringLiteral("planned_duration_seconds")).toDouble();
+
+    const QJsonDocument document = QJsonDocument::fromJson(query.value(QStringLiteral("serialized_payload")).toString().toUtf8());
+    if (document.isObject()) {
+        const QJsonArray points = document.object().value(QStringLiteral("points")).toArray();
+        for (const QJsonValue& pointValue : points) {
+            if (pointValue.isObject()) {
+                segment.points.push_back(therapyPointFromJson(pointValue.toObject()));
+            }
+        }
+    }
+
+    return segment;
+}
+
+bool loadTherapySegments(QSqlDatabase database, const QString& planId, QVector<TherapySegment>* segments, QString* lastError)
+{
+    if (segments == nullptr) {
+        return true;
+    }
+
+    QSqlQuery query(database);
+    query.prepare(QStringLiteral(
+        "SELECT id, plan_id, order_index, label_name, planned_duration_seconds, serialized_payload "
+        "FROM therapy_segment WHERE plan_id = :plan_id ORDER BY order_index ASC"));
+    query.bindValue(QStringLiteral(":plan_id"), planId);
+    if (!executeQuery(&query, lastError, QStringLiteral("loadTherapySegments"))) {
+        return false;
+    }
+
+    segments->clear();
+    while (query.next()) {
+        segments->push_back(mapTherapySegment(query));
+    }
+    return true;
+}
+
+bool replaceTherapySegments(QSqlDatabase database, const TherapyPlan& therapyPlan, QString* lastError)
+{
+    QSqlQuery deleteQuery(database);
+    deleteQuery.prepare(QStringLiteral("DELETE FROM therapy_segment WHERE plan_id = :plan_id"));
+    deleteQuery.bindValue(QStringLiteral(":plan_id"), therapyPlan.id);
+    if (!executeQuery(&deleteQuery, lastError, QStringLiteral("replaceTherapySegments.deleteExisting"))) {
+        return false;
+    }
+
+    for (int index = 0; index < therapyPlan.segments.size(); ++index) {
+        TherapySegment segment = therapyPlan.segments.at(index);
+        if (segment.id.trimmed().isEmpty()) {
+            segment.id = QStringLiteral("%1-S%2").arg(therapyPlan.id).arg(index + 1);
+        }
+
+        QSqlQuery insertQuery(database);
+        insertQuery.prepare(QStringLiteral(
+            "INSERT INTO therapy_segment(id, plan_id, order_index, label_name, planned_duration_seconds, serialized_payload) "
+            "VALUES(:id, :plan_id, :order_index, :label_name, :planned_duration_seconds, :serialized_payload)"));
+        insertQuery.bindValue(QStringLiteral(":id"), segment.id);
+        insertQuery.bindValue(QStringLiteral(":plan_id"), therapyPlan.id);
+        insertQuery.bindValue(QStringLiteral(":order_index"), segment.orderIndex);
+        insertQuery.bindValue(QStringLiteral(":label_name"), segment.label);
+        insertQuery.bindValue(QStringLiteral(":planned_duration_seconds"), segment.plannedDurationSeconds);
+        insertQuery.bindValue(QStringLiteral(":serialized_payload"), serializeSegmentPayload(segment));
+        if (!executeQuery(&insertQuery, lastError, QStringLiteral("replaceTherapySegments.insertSegment"))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+TherapyPlan mapTherapyPlan(const QSqlQuery& query)
+{
+    TherapyPlan therapyPlan;
+    therapyPlan.id = query.value(QStringLiteral("id")).toString();
+    therapyPlan.patientId = query.value(QStringLiteral("patient_id")).toString();
+    therapyPlan.name = query.value(QStringLiteral("name")).toString();
+    therapyPlan.pattern = treatmentPatternFromKey(query.value(QStringLiteral("pattern")).toString());
+    therapyPlan.approvalState = approvalStateFromKey(query.value(QStringLiteral("approval_state")).toString());
+    therapyPlan.plannedPowerWatts = query.value(QStringLiteral("planned_power_watts")).toDouble();
+    therapyPlan.spacingMm = query.value(QStringLiteral("spacing_mm")).toDouble();
+    therapyPlan.respiratoryTrackingEnabled = query.value(QStringLiteral("respiratory_tracking_enabled")).toBool();
+    therapyPlan.createdAt = query.value(QStringLiteral("created_at")).toDateTime();
+    therapyPlan.approvedAt = query.value(QStringLiteral("approved_at")).toDateTime();
+    therapyPlan.approvedBy = query.value(QStringLiteral("approved_by")).toString();
+    hydratePlanPayload(query.value(QStringLiteral("serialized_payload")).toString(), &therapyPlan);
+    return therapyPlan;
 }
 
 TreatmentSessionRecord mapTreatmentSession(const QSqlQuery& query)
@@ -395,6 +618,209 @@ bool MySqlClinicalDataRepository::deleteImageSeries(const QString& imageSeriesId
 
     if (!executeQuery(&query, &m_lastError, QStringLiteral("deleteImageSeries"))
         || !ensureAffected(&query, &m_lastError, QStringLiteral("deleteImageSeries"))) {
+        return false;
+    }
+
+    setLastError(QString());
+    return true;
+}
+
+QVector<TherapyPlan> MySqlClinicalDataRepository::listTherapyPlansForPatient(const QString& patientId) const
+{
+    QVector<TherapyPlan> therapyPlans;
+    if (!m_facade.isOpen()) {
+        setLastError(QStringLiteral("MySQL connection is not open."));
+        return therapyPlans;
+    }
+
+    QSqlQuery query(m_facade.database());
+    query.prepare(QStringLiteral(
+        "SELECT id, patient_id, name, pattern, approval_state, planned_power_watts, spacing_mm, "
+        "respiratory_tracking_enabled, serialized_payload, created_at, approved_at, approved_by "
+        "FROM therapy_plan WHERE patient_id = :patient_id ORDER BY created_at DESC, id DESC"));
+    query.bindValue(QStringLiteral(":patient_id"), patientId);
+    if (!executeQuery(&query, &m_lastError, QStringLiteral("listTherapyPlansForPatient"))) {
+        return therapyPlans;
+    }
+
+    while (query.next()) {
+        TherapyPlan therapyPlan = mapTherapyPlan(query);
+        if (!loadTherapySegments(m_facade.database(), therapyPlan.id, &therapyPlan.segments, &m_lastError)) {
+            return {};
+        }
+        therapyPlans.push_back(therapyPlan);
+    }
+
+    setLastError(QString());
+    return therapyPlans;
+}
+
+bool MySqlClinicalDataRepository::findTherapyPlanById(const QString& therapyPlanId, TherapyPlan* therapyPlan) const
+{
+    if (!m_facade.isOpen()) {
+        setLastError(QStringLiteral("MySQL connection is not open."));
+        return false;
+    }
+
+    QSqlQuery query(m_facade.database());
+    query.prepare(QStringLiteral(
+        "SELECT id, patient_id, name, pattern, approval_state, planned_power_watts, spacing_mm, "
+        "respiratory_tracking_enabled, serialized_payload, created_at, approved_at, approved_by "
+        "FROM therapy_plan WHERE id = :id"));
+    query.bindValue(QStringLiteral(":id"), therapyPlanId);
+    if (!executeQuery(&query, &m_lastError, QStringLiteral("findTherapyPlanById"))) {
+        return false;
+    }
+    if (!query.next()) {
+        setLastError(QStringLiteral("Therapy plan not found: %1").arg(therapyPlanId));
+        return false;
+    }
+
+    if (therapyPlan != nullptr) {
+        *therapyPlan = mapTherapyPlan(query);
+        if (!loadTherapySegments(m_facade.database(), therapyPlan->id, &therapyPlan->segments, &m_lastError)) {
+            return false;
+        }
+    }
+
+    setLastError(QString());
+    return true;
+}
+
+bool MySqlClinicalDataRepository::createTherapyPlan(const TherapyPlan& therapyPlan)
+{
+    if (!m_facade.isOpen()) {
+        setLastError(QStringLiteral("MySQL connection is not open."));
+        return false;
+    }
+
+    QSqlDatabase database = m_facade.database();
+    if (!database.transaction()) {
+        setLastError(database.lastError().text());
+        return false;
+    }
+
+    QSqlQuery query(database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO therapy_plan(id, patient_id, name, pattern, approval_state, planned_power_watts, spacing_mm, "
+        "respiratory_tracking_enabled, serialized_payload, created_at, approved_at, approved_by) "
+        "VALUES(:id, :patient_id, :name, :pattern, :approval_state, :planned_power_watts, :spacing_mm, "
+        ":respiratory_tracking_enabled, :serialized_payload, :created_at, :approved_at, :approved_by)"));
+    query.bindValue(QStringLiteral(":id"), therapyPlan.id);
+    query.bindValue(QStringLiteral(":patient_id"), therapyPlan.patientId);
+    query.bindValue(QStringLiteral(":name"), therapyPlan.name);
+    query.bindValue(QStringLiteral(":pattern"), treatmentPatternKey(therapyPlan.pattern));
+    query.bindValue(QStringLiteral(":approval_state"), approvalStateKey(therapyPlan.approvalState));
+    query.bindValue(QStringLiteral(":planned_power_watts"), therapyPlan.plannedPowerWatts);
+    query.bindValue(QStringLiteral(":spacing_mm"), therapyPlan.spacingMm);
+    query.bindValue(QStringLiteral(":respiratory_tracking_enabled"), therapyPlan.respiratoryTrackingEnabled);
+    query.bindValue(QStringLiteral(":serialized_payload"), serializePlanPayload(therapyPlan));
+    query.bindValue(QStringLiteral(":created_at"), therapyPlan.createdAt);
+    query.bindValue(QStringLiteral(":approved_at"), therapyPlan.approvedAt.isValid()
+            ? QVariant(therapyPlan.approvedAt)
+            : QVariant(QMetaType::fromType<QDateTime>()));
+    query.bindValue(QStringLiteral(":approved_by"), QVariant(QMetaType::fromType<QString>()));
+
+    if (!executeQuery(&query, &m_lastError, QStringLiteral("createTherapyPlan"))
+        || !replaceTherapySegments(database, therapyPlan, &m_lastError)) {
+        database.rollback();
+        return false;
+    }
+
+    if (!database.commit()) {
+        setLastError(database.lastError().text());
+        database.rollback();
+        return false;
+    }
+
+    setLastError(QString());
+    return true;
+}
+
+bool MySqlClinicalDataRepository::updateTherapyPlan(const TherapyPlan& therapyPlan)
+{
+    if (!m_facade.isOpen()) {
+        setLastError(QStringLiteral("MySQL connection is not open."));
+        return false;
+    }
+
+    QSqlDatabase database = m_facade.database();
+    if (!database.transaction()) {
+        setLastError(database.lastError().text());
+        return false;
+    }
+
+    QSqlQuery query(database);
+    query.prepare(QStringLiteral(
+        "UPDATE therapy_plan SET patient_id = :patient_id, name = :name, pattern = :pattern, "
+        "approval_state = :approval_state, planned_power_watts = :planned_power_watts, spacing_mm = :spacing_mm, "
+        "respiratory_tracking_enabled = :respiratory_tracking_enabled, serialized_payload = :serialized_payload, "
+        "created_at = :created_at, approved_at = :approved_at, approved_by = :approved_by WHERE id = :id"));
+    query.bindValue(QStringLiteral(":id"), therapyPlan.id);
+    query.bindValue(QStringLiteral(":patient_id"), therapyPlan.patientId);
+    query.bindValue(QStringLiteral(":name"), therapyPlan.name);
+    query.bindValue(QStringLiteral(":pattern"), treatmentPatternKey(therapyPlan.pattern));
+    query.bindValue(QStringLiteral(":approval_state"), approvalStateKey(therapyPlan.approvalState));
+    query.bindValue(QStringLiteral(":planned_power_watts"), therapyPlan.plannedPowerWatts);
+    query.bindValue(QStringLiteral(":spacing_mm"), therapyPlan.spacingMm);
+    query.bindValue(QStringLiteral(":respiratory_tracking_enabled"), therapyPlan.respiratoryTrackingEnabled);
+    query.bindValue(QStringLiteral(":serialized_payload"), serializePlanPayload(therapyPlan));
+    query.bindValue(QStringLiteral(":created_at"), therapyPlan.createdAt);
+    query.bindValue(QStringLiteral(":approved_at"), therapyPlan.approvedAt.isValid()
+            ? QVariant(therapyPlan.approvedAt)
+            : QVariant(QMetaType::fromType<QDateTime>()));
+    query.bindValue(QStringLiteral(":approved_by"), QVariant(QMetaType::fromType<QString>()));
+
+    if (!executeQuery(&query, &m_lastError, QStringLiteral("updateTherapyPlan"))
+        || !ensureAffected(&query, &m_lastError, QStringLiteral("updateTherapyPlan"))
+        || !replaceTherapySegments(database, therapyPlan, &m_lastError)) {
+        database.rollback();
+        return false;
+    }
+
+    if (!database.commit()) {
+        setLastError(database.lastError().text());
+        database.rollback();
+        return false;
+    }
+
+    setLastError(QString());
+    return true;
+}
+
+bool MySqlClinicalDataRepository::deleteTherapyPlan(const QString& therapyPlanId)
+{
+    if (!m_facade.isOpen()) {
+        setLastError(QStringLiteral("MySQL connection is not open."));
+        return false;
+    }
+
+    QSqlDatabase database = m_facade.database();
+    if (!database.transaction()) {
+        setLastError(database.lastError().text());
+        return false;
+    }
+
+    QSqlQuery deleteSegments(database);
+    deleteSegments.prepare(QStringLiteral("DELETE FROM therapy_segment WHERE plan_id = :plan_id"));
+    deleteSegments.bindValue(QStringLiteral(":plan_id"), therapyPlanId);
+    if (!executeQuery(&deleteSegments, &m_lastError, QStringLiteral("deleteTherapyPlan.deleteSegments"))) {
+        database.rollback();
+        return false;
+    }
+
+    QSqlQuery deletePlan(database);
+    deletePlan.prepare(QStringLiteral("DELETE FROM therapy_plan WHERE id = :id"));
+    deletePlan.bindValue(QStringLiteral(":id"), therapyPlanId);
+    if (!executeQuery(&deletePlan, &m_lastError, QStringLiteral("deleteTherapyPlan.deletePlan"))
+        || !ensureAffected(&deletePlan, &m_lastError, QStringLiteral("deleteTherapyPlan.deletePlan"))) {
+        database.rollback();
+        return false;
+    }
+
+    if (!database.commit()) {
+        setLastError(database.lastError().text());
+        database.rollback();
         return false;
     }
 

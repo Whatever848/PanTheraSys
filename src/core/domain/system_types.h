@@ -127,9 +127,16 @@ struct TherapyPlan {
     QVector<TherapySegment> segments;
     double plannedPowerWatts {0.0};
     double spacingMm {0.0};
+    double dwellSeconds {0.0};
     bool respiratoryTrackingEnabled {false};
+    QString deliveryMode;
+    double coordinateX {0.0};
+    double coordinateY {0.0};
+    double coordinateZ {0.0};
+    double depthMm {0.0};
     QDateTime createdAt;
     QDateTime approvedAt;
+    QString approvedBy;
 };
 
 struct TreatmentSessionRecord {

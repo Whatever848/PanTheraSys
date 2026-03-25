@@ -29,6 +29,12 @@ public:
     virtual bool updateImageSeries(const ImageSeriesRecord& imageSeries) = 0;
     virtual bool deleteImageSeries(const QString& imageSeriesId) = 0;
 
+    virtual QVector<TherapyPlan> listTherapyPlansForPatient(const QString& patientId) const = 0;
+    virtual bool findTherapyPlanById(const QString& therapyPlanId, TherapyPlan* therapyPlan) const = 0;
+    virtual bool createTherapyPlan(const TherapyPlan& therapyPlan) = 0;
+    virtual bool updateTherapyPlan(const TherapyPlan& therapyPlan) = 0;
+    virtual bool deleteTherapyPlan(const QString& therapyPlanId) = 0;
+
     virtual QVector<TreatmentSessionRecord> listTreatmentSessionsForPatient(const QString& patientId) const = 0;
     virtual bool findTreatmentSessionById(const QString& treatmentSessionId, TreatmentSessionRecord* treatmentSession) const = 0;
     virtual bool createTreatmentSession(const TreatmentSessionRecord& treatmentSession) = 0;

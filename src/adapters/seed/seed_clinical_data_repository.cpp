@@ -211,6 +211,99 @@ bool SeedClinicalDataRepository::deleteImageSeries(const QString& imageSeriesId)
     return false;
 }
 
+QVector<TherapyPlan> SeedClinicalDataRepository::listTherapyPlansForPatient(const QString& patientId) const
+{
+    const SeedPatientBundle* bundle = findBundleByPatientId(patientId);
+    if (bundle == nullptr || bundle->patient.deletedAt.isValid()) {
+        setLastError(QString());
+        return {};
+    }
+    setLastError(QString());
+    return bundle->therapyPlans;
+}
+
+bool SeedClinicalDataRepository::findTherapyPlanById(const QString& therapyPlanId, TherapyPlan* therapyPlan) const
+{
+    for (const SeedPatientBundle& bundle : m_seedBundles) {
+        if (bundle.patient.deletedAt.isValid()) {
+            continue;
+        }
+        const auto it = std::find_if(bundle.therapyPlans.cbegin(), bundle.therapyPlans.cend(), [&therapyPlanId](const TherapyPlan& plan) {
+            return plan.id == therapyPlanId;
+        });
+        if (it == bundle.therapyPlans.cend()) {
+            continue;
+        }
+
+        if (therapyPlan != nullptr) {
+            *therapyPlan = *it;
+        }
+        setLastError(QString());
+        return true;
+    }
+
+    setLastError(QStringLiteral("Therapy plan not found: %1").arg(therapyPlanId));
+    return false;
+}
+
+bool SeedClinicalDataRepository::createTherapyPlan(const TherapyPlan& therapyPlan)
+{
+    SeedPatientBundle* bundle = findBundleByPatientId(therapyPlan.patientId);
+    if (bundle == nullptr) {
+        setLastError(QStringLiteral("Patient not found for therapy plan: %1").arg(therapyPlan.patientId));
+        return false;
+    }
+    if (containsId(bundle->therapyPlans, therapyPlan.id)) {
+        setLastError(QStringLiteral("Therapy plan already exists: %1").arg(therapyPlan.id));
+        return false;
+    }
+
+    bundle->therapyPlans.push_back(therapyPlan);
+    setLastError(QString());
+    return true;
+}
+
+bool SeedClinicalDataRepository::updateTherapyPlan(const TherapyPlan& therapyPlan)
+{
+    SeedPatientBundle* bundle = findBundleByPatientId(therapyPlan.patientId);
+    if (bundle == nullptr) {
+        setLastError(QStringLiteral("Patient not found for therapy plan: %1").arg(therapyPlan.patientId));
+        return false;
+    }
+
+    for (TherapyPlan& current : bundle->therapyPlans) {
+        if (current.id != therapyPlan.id) {
+            continue;
+        }
+
+        current = therapyPlan;
+        setLastError(QString());
+        return true;
+    }
+
+    setLastError(QStringLiteral("Therapy plan not found: %1").arg(therapyPlan.id));
+    return false;
+}
+
+bool SeedClinicalDataRepository::deleteTherapyPlan(const QString& therapyPlanId)
+{
+    for (SeedPatientBundle& bundle : m_seedBundles) {
+        auto it = std::find_if(bundle.therapyPlans.begin(), bundle.therapyPlans.end(), [&therapyPlanId](const TherapyPlan& plan) {
+            return plan.id == therapyPlanId;
+        });
+        if (it == bundle.therapyPlans.end()) {
+            continue;
+        }
+
+        bundle.therapyPlans.erase(it);
+        setLastError(QString());
+        return true;
+    }
+
+    setLastError(QStringLiteral("Therapy plan not found: %1").arg(therapyPlanId));
+    return false;
+}
+
 QVector<TreatmentSessionRecord> SeedClinicalDataRepository::listTreatmentSessionsForPatient(const QString& patientId) const
 {
     const SeedPatientBundle* bundle = findBundleByPatientId(patientId);
@@ -468,6 +561,40 @@ SeedClinicalDataRepository::SeedPatientBundle SeedClinicalDataRepository::buildF
         }
     };
 
+    bundle.therapyPlans = {
+        TherapyPlan {
+            QStringLiteral("PLAN-20260102091500"),
+            bundle.patient.id,
+            QStringLiteral("治疗方案1"),
+            TreatmentPattern::Point,
+            ApprovalState::Locked,
+            {
+                TherapySegment {
+                    QStringLiteral("PLAN-20260102091500-S1"),
+                    0,
+                    QStringLiteral("治疗段 1"),
+                    300.0,
+                    {
+                        TherapyPoint {0, QPointF(20.0, -5.23), 0.3, 400.0},
+                        TherapyPoint {1, QPointF(23.0, -5.23), 0.3, 400.0}
+                    }
+                }
+            },
+            400.0,
+            3.0,
+            0.3,
+            true,
+            QStringLiteral("Direct"),
+            20.0,
+            -5.23,
+            27.9,
+            124.0,
+            at(2026, 1, 2, 9, 5),
+            at(2026, 1, 2, 9, 10),
+            QString()
+        }
+    };
+
     bundle.treatmentSessions = {
         TreatmentSessionRecord {
             QStringLiteral("TX-800"),
@@ -532,6 +659,40 @@ SeedClinicalDataRepository::SeedPatientBundle SeedClinicalDataRepository::buildS
             QDate(2026, 1, 4),
             QStringLiteral("术前影像分层采集"),
             at(2026, 1, 4, 8, 15)
+        }
+    };
+
+    bundle.therapyPlans = {
+        TherapyPlan {
+            QStringLiteral("PLAN-20260104083000"),
+            bundle.patient.id,
+            QStringLiteral("治疗方案1"),
+            TreatmentPattern::Line,
+            ApprovalState::Approved,
+            {
+                TherapySegment {
+                    QStringLiteral("PLAN-20260104083000-S1"),
+                    0,
+                    QStringLiteral("治疗段 1"),
+                    240.0,
+                    {
+                        TherapyPoint {0, QPointF(18.0, -4.2), 0.4, 320.0},
+                        TherapyPoint {1, QPointF(21.0, -4.2), 0.4, 320.0}
+                    }
+                }
+            },
+            320.0,
+            2.5,
+            0.4,
+            false,
+            QStringLiteral("Direct"),
+            18.0,
+            -4.2,
+            26.5,
+            96.0,
+            at(2026, 1, 4, 8, 20),
+            at(2026, 1, 4, 8, 28),
+            QString()
         }
     };
 

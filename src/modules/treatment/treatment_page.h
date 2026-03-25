@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QComboBox>
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QProgressBar>
@@ -9,15 +10,14 @@
 
 #include "adapters/sim/simulation_device_facade.h"
 #include "core/application/application_context.h"
+#include "core/repositories/clinical_data_repository.h"
 #include "core/safety/safety_kernel.h"
 #include "core/services/audit_service.h"
+#include "core/services/clinical_data_service.h"
 #include "modules/shared/mock_ultrasound_view.h"
 
 namespace panthera::modules {
 
-// TreatmentPage 负责已审批方案的治疗执行演示。
-// 当前原型使用定时器驱动进度推进；后续接入真实硬件后，应改为响应设备回调、
-// 能量反馈和安全确认信号。
 class TreatmentPage final : public QWidget {
     Q_OBJECT
 
@@ -26,6 +26,7 @@ public:
         panthera::core::ApplicationContext* context,
         panthera::core::SafetyKernel* safetyKernel,
         panthera::core::AuditService* auditService,
+        panthera::core::IClinicalDataRepository* clinicalDataRepository,
         panthera::adapters::SimulationDeviceFacade* simulationDevice,
         QWidget* parent = nullptr);
 
@@ -39,16 +40,20 @@ private slots:
     void onPatientChanged(const panthera::core::PatientRecord& patient);
     void onSafetyChanged(const panthera::core::SafetySnapshot& snapshot);
     void onAbortRequested(const QString& reason);
+    void onPlanSelectionChanged(int index);
 
 private:
     void setButtonState(bool canStart, bool canPause, bool canResume, bool canStop);
     int totalPointCount() const;
     void appendLog(const QString& line);
     void finalizeTreatment(const QString& status);
+    void refreshAvailablePlans();
 
     panthera::core::ApplicationContext* m_context {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
     panthera::core::AuditService* m_auditService {nullptr};
+    panthera::core::IClinicalDataRepository* m_clinicalDataRepository {nullptr};
+    panthera::core::ClinicalDataService m_clinicalDataService;
     panthera::adapters::SimulationDeviceFacade* m_simulationDevice {nullptr};
 
     MockUltrasoundView* m_preview {nullptr};
@@ -59,6 +64,7 @@ private:
     QLabel* m_progressLabel {nullptr};
     QProgressBar* m_progressBar {nullptr};
     QPlainTextEdit* m_logView {nullptr};
+    QComboBox* m_planCombo {nullptr};
     QPushButton* m_startButton {nullptr};
     QPushButton* m_pauseButton {nullptr};
     QPushButton* m_resumeButton {nullptr};
@@ -68,4 +74,4 @@ private:
     double m_deliveredEnergyJ {0.0};
 };
 
-}  // panthera::modules 命名空间
+}  // namespace panthera::modules

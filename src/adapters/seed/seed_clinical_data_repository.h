@@ -27,6 +27,12 @@ public:
     bool updateImageSeries(const panthera::core::ImageSeriesRecord& imageSeries) override;
     bool deleteImageSeries(const QString& imageSeriesId) override;
 
+    QVector<panthera::core::TherapyPlan> listTherapyPlansForPatient(const QString& patientId) const override;
+    bool findTherapyPlanById(const QString& therapyPlanId, panthera::core::TherapyPlan* therapyPlan) const override;
+    bool createTherapyPlan(const panthera::core::TherapyPlan& therapyPlan) override;
+    bool updateTherapyPlan(const panthera::core::TherapyPlan& therapyPlan) override;
+    bool deleteTherapyPlan(const QString& therapyPlanId) override;
+
     QVector<panthera::core::TreatmentSessionRecord> listTreatmentSessionsForPatient(const QString& patientId) const override;
     bool findTreatmentSessionById(const QString& treatmentSessionId, panthera::core::TreatmentSessionRecord* treatmentSession) const override;
     bool createTreatmentSession(const panthera::core::TreatmentSessionRecord& treatmentSession) override;
@@ -43,6 +49,7 @@ private:
     struct SeedPatientBundle {
         panthera::core::PatientRecord patient;
         QVector<panthera::core::ImageSeriesRecord> imageSeries;
+        QVector<panthera::core::TherapyPlan> therapyPlans;
         QVector<panthera::core::TreatmentSessionRecord> treatmentSessions;
         QVector<panthera::core::TreatmentReportRecord> treatmentReports;
     };

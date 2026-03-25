@@ -22,6 +22,9 @@ public:
     QVector<ImageSeriesRecord> listImageSeriesForPatient(const QString& patientId) const;
     bool findImageSeriesById(const QString& imageSeriesId, ImageSeriesRecord* imageSeries) const;
 
+    QVector<TherapyPlan> listTherapyPlansForPatient(const QString& patientId) const;
+    bool findTherapyPlanById(const QString& therapyPlanId, TherapyPlan* therapyPlan) const;
+
     QVector<TreatmentSessionRecord> listTreatmentSessionsForPatient(const QString& patientId) const;
     bool findTreatmentSessionById(const QString& treatmentSessionId, TreatmentSessionRecord* treatmentSession) const;
 
@@ -33,6 +36,9 @@ public:
 
     bool saveImageSeries(ImageSeriesRecord* imageSeries);
     bool deleteImageSeries(const QString& imageSeriesId);
+
+    bool saveTherapyPlan(TherapyPlan* therapyPlan);
+    bool deleteTherapyPlan(const QString& therapyPlanId);
 
     bool saveTreatmentSession(TreatmentSessionRecord* treatmentSession);
     bool deleteTreatmentSession(const QString& treatmentSessionId);
