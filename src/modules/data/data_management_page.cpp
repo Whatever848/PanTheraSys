@@ -1,5 +1,7 @@
 #include "modules/data/data_management_page.h"
 
+#include <algorithm>
+
 #include <QAbstractItemView>
 #include <QDateTime>
 #include <QDir>
@@ -22,6 +24,7 @@
 #include <QSignalBlocker>
 #include <QTableWidgetItem>
 #include <QTextStream>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace panthera::modules {
@@ -32,7 +35,7 @@ namespace {
 
 QString toPatientListText(const PatientRecord& patient)
 {
-    return QStringLiteral("%1（%2岁）\nID:%3 | %4")
+    return QStringLiteral("%1 (%2岁)\nID:%3 | %4")
         .arg(patient.name)
         .arg(patient.age)
         .arg(patient.id)
@@ -53,14 +56,6 @@ bool matchesPatientKeyword(const PatientRecord& patient, const QString& keyword)
 QString wrapValue(const QString& value)
 {
     return value.toHtmlEscaped();
-}
-
-QGroupBox* createContentCard(const QString& title, QWidget* body)
-{
-    auto* card = new QGroupBox(title);
-    auto* layout = new QVBoxLayout(card);
-    layout->addWidget(body);
-    return card;
 }
 
 QString normalizeHeader(const QString& value)
@@ -88,6 +83,42 @@ void clearLayout(QLayout* layout)
         }
         delete item;
     }
+}
+
+QString previewPathForStorage(const QString& storagePath)
+{
+    if (storagePath.trimmed().isEmpty()) {
+        return {};
+    }
+
+    const QFileInfo storageInfo(storagePath);
+    if (!storageInfo.exists()) {
+        return {};
+    }
+    if (storageInfo.isFile()) {
+        return storageInfo.absoluteFilePath();
+    }
+    if (!storageInfo.isDir()) {
+        return {};
+    }
+
+    QDirIterator iterator(
+        storageInfo.absoluteFilePath(),
+        {QStringLiteral("*.png"),
+         QStringLiteral("*.jpg"),
+         QStringLiteral("*.jpeg"),
+         QStringLiteral("*.bmp")},
+        QDir::Files,
+        QDirIterator::Subdirectories);
+    return iterator.hasNext() ? iterator.next() : QString();
+}
+
+QString reportListText(const TreatmentReportRecord& report)
+{
+    const QString title = report.title.trimmed().isEmpty() ? QStringLiteral("治疗报告") : report.title.trimmed();
+    return QStringLiteral("%1\n%2")
+        .arg(title)
+        .arg(report.generatedAt.toString(QStringLiteral("yyyy-MM-dd hh:mm")));
 }
 
 }  // namespace
@@ -221,8 +252,26 @@ DataManagementPage::DataManagementPage(
     imagingLayout->setContentsMargins(28, 22, 16, 22);
     imagingLayout->setSpacing(16);
 
+    auto* imagingHeaderLayout = new QHBoxLayout();
+    imagingHeaderLayout->setSpacing(12);
+
     m_imagingPatientNameLabel = new QLabel(QStringLiteral("请选择左侧患者"));
     m_imagingPatientNameLabel->setObjectName(QStringLiteral("imagingPatientNameLabel"));
+
+    m_addImageSeriesButton = new QPushButton(QStringLiteral("新增影像"));
+    m_addImageSeriesButton->setObjectName(QStringLiteral("panelActionButton"));
+
+    m_saveImageSeriesButton = new QPushButton(QStringLiteral("保存影像"));
+    m_saveImageSeriesButton->setObjectName(QStringLiteral("panelActionButton"));
+
+    m_deleteImageSeriesButton = new QPushButton(QStringLiteral("删除影像"));
+    m_deleteImageSeriesButton->setObjectName(QStringLiteral("panelDangerButton"));
+
+    imagingHeaderLayout->addWidget(m_imagingPatientNameLabel);
+    imagingHeaderLayout->addStretch();
+    imagingHeaderLayout->addWidget(m_addImageSeriesButton);
+    imagingHeaderLayout->addWidget(m_saveImageSeriesButton);
+    imagingHeaderLayout->addWidget(m_deleteImageSeriesButton);
 
     auto* imagingDivider = new QFrame();
     imagingDivider->setObjectName(QStringLiteral("imagingDivider"));
@@ -235,6 +284,7 @@ DataManagementPage::DataManagementPage(
     m_imagingScrollArea->setFrameShape(QFrame::NoFrame);
     m_imagingScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_imagingScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    m_imagingScrollArea->setMinimumHeight(360);
 
     m_imagingGridContainer = new QWidget();
     m_imagingGridContainer->setObjectName(QStringLiteral("imagingGridContainer"));
@@ -245,30 +295,236 @@ DataManagementPage::DataManagementPage(
     imagingGridLayout->setAlignment(Qt::AlignTop | Qt::AlignLeft);
     m_imagingScrollArea->setWidget(m_imagingGridContainer);
 
-    imagingLayout->addWidget(m_imagingPatientNameLabel, 0, Qt::AlignLeft);
+    auto* imagingEditorFrame = new QFrame();
+    imagingEditorFrame->setObjectName(QStringLiteral("dataEditorPanel"));
+    auto* imagingEditorLayout = new QHBoxLayout(imagingEditorFrame);
+    imagingEditorLayout->setContentsMargins(18, 18, 18, 18);
+    imagingEditorLayout->setSpacing(18);
+
+    auto* imagingFormLayout = new QFormLayout();
+    imagingFormLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignTop);
+    imagingFormLayout->setHorizontalSpacing(20);
+    imagingFormLayout->setVerticalSpacing(14);
+
+    m_imageSeriesIdValue = new QLineEdit();
+    m_imageSeriesIdValue->setObjectName(QStringLiteral("patientReadOnlyField"));
+    m_imageSeriesIdValue->setReadOnly(true);
+
+    m_imageSeriesTypeEdit = new QLineEdit();
+    m_imageSeriesStoragePathEdit = new QLineEdit();
+    m_imageSeriesDateEdit = new QDateEdit();
+    m_imageSeriesDateEdit->setCalendarPopup(true);
+    m_imageSeriesDateEdit->setDisplayFormat(QStringLiteral("yyyy-MM-dd"));
+    m_imageSeriesNotesEdit = new QPlainTextEdit();
+    m_imageSeriesNotesEdit->setMinimumHeight(110);
+
+    imagingFormLayout->addRow(QStringLiteral("影像ID"), m_imageSeriesIdValue);
+    imagingFormLayout->addRow(QStringLiteral("影像类型"), m_imageSeriesTypeEdit);
+    imagingFormLayout->addRow(QStringLiteral("采集日期"), m_imageSeriesDateEdit);
+    imagingFormLayout->addRow(QStringLiteral("存储路径"), m_imageSeriesStoragePathEdit);
+    imagingFormLayout->addRow(QStringLiteral("备注"), m_imageSeriesNotesEdit);
+
+    auto* imagingFormWidget = new QWidget();
+    imagingFormWidget->setLayout(imagingFormLayout);
+
+    m_imageSeriesPreviewLabel = new QLabel();
+    m_imageSeriesPreviewLabel->setObjectName(QStringLiteral("imageSeriesPreviewLabel"));
+    m_imageSeriesPreviewLabel->setAlignment(Qt::AlignCenter);
+    m_imageSeriesPreviewLabel->setMinimumSize(320, 220);
+
+    imagingEditorLayout->addWidget(imagingFormWidget, 1);
+    imagingEditorLayout->addWidget(m_imageSeriesPreviewLabel, 0, Qt::AlignTop);
+
+    imagingLayout->addLayout(imagingHeaderLayout);
     imagingLayout->addWidget(imagingDivider);
     imagingLayout->addWidget(m_imagingScrollArea, 1);
+    imagingLayout->addWidget(imagingEditorFrame);
     imagingPageLayout->addWidget(imagingPanel, 1);
 
-    m_reportPreview = new QTextBrowser();
+    auto* reportPage = new QWidget();
+    auto* reportPageLayout = new QVBoxLayout(reportPage);
+    reportPageLayout->setContentsMargins(0, 0, 0, 0);
+    reportPageLayout->setSpacing(0);
 
-    m_treatmentTable = new QTableWidget(0, 6);
+    auto* reportPanel = new QFrame();
+    reportPanel->setObjectName(QStringLiteral("patientDetailPanel"));
+    auto* reportLayout = new QVBoxLayout(reportPanel);
+    reportLayout->setContentsMargins(24, 22, 24, 22);
+    reportLayout->setSpacing(18);
+
+    auto* reportHeaderLayout = new QHBoxLayout();
+    reportHeaderLayout->setSpacing(12);
+
+    auto* reportTitleLabel = new QLabel(QStringLiteral("治疗报告维护"));
+    reportTitleLabel->setObjectName(QStringLiteral("patientPanelTitle"));
+
+    m_addReportButton = new QPushButton(QStringLiteral("新增报告"));
+    m_addReportButton->setObjectName(QStringLiteral("panelActionButton"));
+
+    m_saveReportButton = new QPushButton(QStringLiteral("保存报告"));
+    m_saveReportButton->setObjectName(QStringLiteral("panelActionButton"));
+
+    m_deleteReportButton = new QPushButton(QStringLiteral("删除报告"));
+    m_deleteReportButton->setObjectName(QStringLiteral("panelDangerButton"));
+
+    reportHeaderLayout->addWidget(reportTitleLabel);
+    reportHeaderLayout->addStretch();
+    reportHeaderLayout->addWidget(m_addReportButton);
+    reportHeaderLayout->addWidget(m_saveReportButton);
+    reportHeaderLayout->addWidget(m_deleteReportButton);
+
+    auto* reportTopLayout = new QHBoxLayout();
+    reportTopLayout->setSpacing(18);
+
+    m_reportListWidget = new QListWidget();
+    m_reportListWidget->setObjectName(QStringLiteral("dataRecordList"));
+    m_reportListWidget->setMinimumWidth(280);
+    m_reportListWidget->setMaximumWidth(320);
+
+    m_reportPreview = new QTextBrowser();
+    m_reportPreview->setObjectName(QStringLiteral("reportPreviewBrowser"));
+    m_reportPreview->setMinimumHeight(240);
+
+    reportTopLayout->addWidget(m_reportListWidget);
+    reportTopLayout->addWidget(m_reportPreview, 1);
+
+    auto* reportFormLayout = new QFormLayout();
+    reportFormLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignTop);
+    reportFormLayout->setHorizontalSpacing(20);
+    reportFormLayout->setVerticalSpacing(14);
+
+    m_reportIdValue = new QLineEdit();
+    m_reportIdValue->setObjectName(QStringLiteral("patientReadOnlyField"));
+    m_reportIdValue->setReadOnly(true);
+
+    m_reportSessionCombo = new QComboBox();
+    m_reportTitleEdit = new QLineEdit();
+
+    m_reportGeneratedAtEdit = new QDateTimeEdit();
+    m_reportGeneratedAtEdit->setCalendarPopup(true);
+    m_reportGeneratedAtEdit->setDisplayFormat(QStringLiteral("yyyy-MM-dd hh:mm:ss"));
+
+    m_reportNotesEdit = new QPlainTextEdit();
+    m_reportNotesEdit->setMinimumHeight(80);
+
+    m_reportContentEdit = new QTextEdit();
+    m_reportContentEdit->setMinimumHeight(220);
+    m_reportContentEdit->setAcceptRichText(true);
+
+    reportFormLayout->addRow(QStringLiteral("报告ID"), m_reportIdValue);
+    reportFormLayout->addRow(QStringLiteral("关联治疗"), m_reportSessionCombo);
+    reportFormLayout->addRow(QStringLiteral("报告标题"), m_reportTitleEdit);
+    reportFormLayout->addRow(QStringLiteral("生成时间"), m_reportGeneratedAtEdit);
+    reportFormLayout->addRow(QStringLiteral("备注"), m_reportNotesEdit);
+    reportFormLayout->addRow(QStringLiteral("报告内容"), m_reportContentEdit);
+
+    reportLayout->addLayout(reportHeaderLayout);
+    reportLayout->addLayout(reportTopLayout, 1);
+    reportLayout->addLayout(reportFormLayout);
+    reportPageLayout->addWidget(reportPanel, 1);
+
+    auto* treatmentPage = new QWidget();
+    auto* treatmentPageLayout = new QVBoxLayout(treatmentPage);
+    treatmentPageLayout->setContentsMargins(0, 0, 0, 0);
+    treatmentPageLayout->setSpacing(0);
+
+    auto* treatmentPanel = new QFrame();
+    treatmentPanel->setObjectName(QStringLiteral("patientDetailPanel"));
+    auto* treatmentLayout = new QVBoxLayout(treatmentPanel);
+    treatmentLayout->setContentsMargins(24, 22, 24, 22);
+    treatmentLayout->setSpacing(18);
+
+    auto* treatmentHeaderLayout = new QHBoxLayout();
+    treatmentHeaderLayout->setSpacing(12);
+
+    auto* treatmentTitleLabel = new QLabel(QStringLiteral("治疗数据维护"));
+    treatmentTitleLabel->setObjectName(QStringLiteral("patientPanelTitle"));
+
+    m_addTreatmentButton = new QPushButton(QStringLiteral("新增治疗"));
+    m_addTreatmentButton->setObjectName(QStringLiteral("panelActionButton"));
+
+    m_saveTreatmentButton = new QPushButton(QStringLiteral("保存治疗"));
+    m_saveTreatmentButton->setObjectName(QStringLiteral("panelActionButton"));
+
+    m_deleteTreatmentButton = new QPushButton(QStringLiteral("删除治疗"));
+    m_deleteTreatmentButton->setObjectName(QStringLiteral("panelDangerButton"));
+
+    treatmentHeaderLayout->addWidget(treatmentTitleLabel);
+    treatmentHeaderLayout->addStretch();
+    treatmentHeaderLayout->addWidget(m_addTreatmentButton);
+    treatmentHeaderLayout->addWidget(m_saveTreatmentButton);
+    treatmentHeaderLayout->addWidget(m_deleteTreatmentButton);
+
+    m_treatmentTable = new QTableWidget(0, 7);
     m_treatmentTable->setHorizontalHeaderLabels(
         {QStringLiteral("治疗ID"),
          QStringLiteral("方案ID"),
          QStringLiteral("病灶类型"),
+         QStringLiteral("治疗日期"),
          QStringLiteral("总能量(J)"),
          QStringLiteral("总时长(s)"),
          QStringLiteral("状态")});
     m_treatmentTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     m_treatmentTable->verticalHeader()->setVisible(false);
     m_treatmentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_treatmentTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_treatmentTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_treatmentTable->setMinimumHeight(260);
+
+    auto* treatmentFormLayout = new QFormLayout();
+    treatmentFormLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignTop);
+    treatmentFormLayout->setHorizontalSpacing(20);
+    treatmentFormLayout->setVerticalSpacing(14);
+
+    m_treatmentIdValue = new QLineEdit();
+    m_treatmentIdValue->setObjectName(QStringLiteral("patientReadOnlyField"));
+    m_treatmentIdValue->setReadOnly(true);
+
+    m_treatmentPlanIdEdit = new QLineEdit();
+    m_treatmentLesionTypeEdit = new QLineEdit();
+
+    m_treatmentDateEdit = new QDateTimeEdit();
+    m_treatmentDateEdit->setCalendarPopup(true);
+    m_treatmentDateEdit->setDisplayFormat(QStringLiteral("yyyy-MM-dd hh:mm:ss"));
+
+    m_treatmentStatusEdit = new QLineEdit();
+
+    m_treatmentEnergySpin = new QDoubleSpinBox();
+    m_treatmentEnergySpin->setRange(0.0, 999999.0);
+    m_treatmentEnergySpin->setDecimals(1);
+    m_treatmentEnergySpin->setSuffix(QStringLiteral(" J"));
+
+    m_treatmentDurationSpin = new QDoubleSpinBox();
+    m_treatmentDurationSpin->setRange(0.0, 999999.0);
+    m_treatmentDurationSpin->setDecimals(1);
+    m_treatmentDurationSpin->setSuffix(QStringLiteral(" s"));
+
+    m_treatmentDoseSpin = new QDoubleSpinBox();
+    m_treatmentDoseSpin->setRange(0.0, 999999.0);
+    m_treatmentDoseSpin->setDecimals(2);
+
+    m_treatmentPathSummaryEdit = new QPlainTextEdit();
+    m_treatmentPathSummaryEdit->setMinimumHeight(120);
+
+    treatmentFormLayout->addRow(QStringLiteral("治疗ID"), m_treatmentIdValue);
+    treatmentFormLayout->addRow(QStringLiteral("方案ID"), m_treatmentPlanIdEdit);
+    treatmentFormLayout->addRow(QStringLiteral("病灶类型"), m_treatmentLesionTypeEdit);
+    treatmentFormLayout->addRow(QStringLiteral("治疗日期"), m_treatmentDateEdit);
+    treatmentFormLayout->addRow(QStringLiteral("治疗状态"), m_treatmentStatusEdit);
+    treatmentFormLayout->addRow(QStringLiteral("总能量"), m_treatmentEnergySpin);
+    treatmentFormLayout->addRow(QStringLiteral("总时长"), m_treatmentDurationSpin);
+    treatmentFormLayout->addRow(QStringLiteral("剂量"), m_treatmentDoseSpin);
+    treatmentFormLayout->addRow(QStringLiteral("路径摘要"), m_treatmentPathSummaryEdit);
+
+    treatmentLayout->addLayout(treatmentHeaderLayout);
+    treatmentLayout->addWidget(m_treatmentTable);
+    treatmentLayout->addLayout(treatmentFormLayout);
+    treatmentPageLayout->addWidget(treatmentPanel, 1);
 
     m_sectionStack->addWidget(patientInfoPage);
     m_sectionStack->addWidget(imagingPage);
-    m_sectionStack->addWidget(createContentCard(QStringLiteral("治疗报告"), m_reportPreview));
-    m_sectionStack->addWidget(createContentCard(QStringLiteral("治疗数据"), m_treatmentTable));
+    m_sectionStack->addWidget(reportPage);
+    m_sectionStack->addWidget(treatmentPage);
     contentLayout->addWidget(m_sectionStack, 1);
 
     rootLayout->addLayout(contentLayout, 3);
@@ -284,6 +540,31 @@ DataManagementPage::DataManagementPage(
     connect(m_batchImportButton, &QPushButton::clicked, this, &DataManagementPage::onBatchImportClicked);
     connect(m_editButton, &QPushButton::clicked, this, &DataManagementPage::onEditButtonClicked);
     connect(m_deleteButton, &QPushButton::clicked, this, &DataManagementPage::onDeleteButtonClicked);
+
+    connect(m_addImageSeriesButton, &QPushButton::clicked, this, &DataManagementPage::onAddImageSeriesClicked);
+    connect(m_saveImageSeriesButton, &QPushButton::clicked, this, &DataManagementPage::onSaveImageSeriesClicked);
+    connect(m_deleteImageSeriesButton, &QPushButton::clicked, this, &DataManagementPage::onDeleteImageSeriesClicked);
+    connect(m_imageSeriesStoragePathEdit, &QLineEdit::textChanged, this, &DataManagementPage::refreshImagePreview);
+
+    connect(m_addTreatmentButton, &QPushButton::clicked, this, &DataManagementPage::onAddTreatmentSessionClicked);
+    connect(m_saveTreatmentButton, &QPushButton::clicked, this, &DataManagementPage::onSaveTreatmentSessionClicked);
+    connect(m_deleteTreatmentButton, &QPushButton::clicked, this, &DataManagementPage::onDeleteTreatmentSessionClicked);
+    connect(m_treatmentTable, &QTableWidget::itemSelectionChanged, this, &DataManagementPage::onTreatmentSelectionChanged);
+
+    connect(m_addReportButton, &QPushButton::clicked, this, &DataManagementPage::onAddTreatmentReportClicked);
+    connect(m_saveReportButton, &QPushButton::clicked, this, &DataManagementPage::onSaveTreatmentReportClicked);
+    connect(m_deleteReportButton, &QPushButton::clicked, this, &DataManagementPage::onDeleteTreatmentReportClicked);
+    connect(m_reportListWidget, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* current, QListWidgetItem*) {
+        setSelectedTreatmentReport(current == nullptr ? QString() : current->data(Qt::UserRole).toString());
+    });
+    connect(m_reportContentEdit, &QTextEdit::textChanged, this, &DataManagementPage::syncReportPreview);
+    connect(m_reportTitleEdit, &QLineEdit::textChanged, this, &DataManagementPage::syncReportPreview);
+    connect(m_reportGeneratedAtEdit, &QDateTimeEdit::dateTimeChanged, this, &DataManagementPage::syncReportPreview);
+    connect(m_reportSessionCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        syncReportPreview();
+        refreshDataActionState();
+    });
+
     connect(m_context, &ApplicationContext::selectedPatientChanged, this, &DataManagementPage::refreshFromContext);
     connect(m_context, &ApplicationContext::selectedPatientCleared, this, &DataManagementPage::refreshFromContext);
     connect(m_context, &ApplicationContext::activePlanChanged, this, &DataManagementPage::refreshFromContext);
@@ -321,19 +602,32 @@ void DataManagementPage::showSection(Section section)
         break;
     }
 }
+
 void DataManagementPage::refreshFromContext()
 {
     if (m_panelMode == PatientPanelMode::Create) {
         refreshPatientActionState();
+        refreshDataActionState();
         return;
     }
 
     if (!m_context->hasSelectedPatient()) {
         refreshPatientOverview(nullptr);
+        m_currentImageSeries.clear();
+        m_currentTreatmentSessions.clear();
+        m_currentTreatmentReports.clear();
+        m_selectedImageSeriesId.clear();
+        m_selectedTreatmentSessionId.clear();
+        m_selectedTreatmentReportId.clear();
         fillImagingGallery(nullptr, {});
+        populateImageSeriesEditor(nullptr);
         fillTreatmentTable({});
-        m_reportPreview->setHtml(QStringLiteral("<h2>治疗报告</h2><p>当前未选择患者。</p>"));
+        populateTreatmentSessionEditor(nullptr);
+        fillReportList({});
+        populateTreatmentReportEditor(nullptr);
+        clearReportPreview(QStringLiteral("当前未选择患者。"));
         refreshPatientActionState();
+        refreshDataActionState();
         return;
     }
 
@@ -353,42 +647,31 @@ void DataManagementPage::refreshFromContext()
         break;
     }
 
-    const QVector<ImageSeriesRecord> imageSeries = m_clinicalDataService.listImageSeriesForPatient(patient.id);
-    const QVector<TreatmentSessionRecord> treatmentSessions = m_clinicalDataService.listTreatmentSessionsForPatient(patient.id);
-    const QVector<TreatmentReportRecord> reports = m_clinicalDataService.listTreatmentReportsForPatient(patient.id);
+    m_currentImageSeries = m_clinicalDataService.listImageSeriesForPatient(patient.id);
+    m_currentTreatmentSessions = m_clinicalDataService.listTreatmentSessionsForPatient(patient.id);
+    m_currentTreatmentReports = m_clinicalDataService.listTreatmentReportsForPatient(patient.id);
 
-    fillImagingGallery(&patient, imageSeries);
-    fillTreatmentTable(treatmentSessions);
-
-    QString reportHtml =
-        QStringLiteral("<h2>治疗报告</h2><p><b>患者ID：</b>%1</p><p><b>患者姓名：</b>%2</p><p><b>患者年龄：</b>%3</p><p><b>诊断结果：</b>%4</p>")
-            .arg(wrapValue(patient.id))
-            .arg(wrapValue(patient.name))
-            .arg(patient.age)
-            .arg(wrapValue(patient.diagnosis));
-
-    if (reports.isEmpty()) {
-        reportHtml += QStringLiteral("<p>当前没有已归档的治疗报告。</p>");
-    } else {
-        const TreatmentReportRecord& latestReport = reports.first();
-        reportHtml += QStringLiteral("<p><b>报告标题：</b>%1</p><p><b>生成时间：</b>%2</p>")
-                          .arg(wrapValue(latestReport.title))
-                          .arg(wrapValue(latestReport.generatedAt.toString(QStringLiteral("yyyy-MM-dd hh:mm"))));
-        reportHtml += latestReport.contentHtml;
+    if (findSelectedImageSeries() == nullptr) {
+        m_selectedImageSeriesId = m_currentImageSeries.isEmpty() ? QString() : m_currentImageSeries.first().id;
+    }
+    if (findSelectedTreatmentSession() == nullptr) {
+        m_selectedTreatmentSessionId = m_currentTreatmentSessions.isEmpty() ? QString() : m_currentTreatmentSessions.first().id;
+    }
+    if (findSelectedTreatmentReport() == nullptr) {
+        m_selectedTreatmentReportId = m_currentTreatmentReports.isEmpty() ? QString() : m_currentTreatmentReports.first().id;
     }
 
-    if (m_context->hasActivePlan() && m_context->activePlan().patientId == patient.id) {
-        const TherapyPlan& plan = m_context->activePlan();
-        reportHtml += QStringLiteral(
-            "<hr/><h3>当前工作站活动方案</h3><p><b>方案ID：</b>%1</p><p><b>状态：</b>%2</p><p><b>模式：</b>%3</p><p><b>功率：</b>%4 W</p>")
-                          .arg(wrapValue(plan.id))
-                          .arg(wrapValue(toDisplayString(plan.approvalState)))
-                          .arg(wrapValue(toDisplayString(plan.pattern)))
-                          .arg(plan.plannedPowerWatts, 0, 'f', 0);
-    }
+    fillImagingGallery(&patient, m_currentImageSeries);
+    populateImageSeriesEditor(findSelectedImageSeries());
 
-    m_reportPreview->setHtml(reportHtml);
+    fillTreatmentTable(m_currentTreatmentSessions);
+    populateTreatmentSessionEditor(findSelectedTreatmentSession());
+
+    fillReportList(m_currentTreatmentReports);
+    populateTreatmentReportEditor(findSelectedTreatmentReport());
+
     refreshPatientActionState();
+    refreshDataActionState();
 }
 
 void DataManagementPage::filterPatients(const QString& keyword)
@@ -439,6 +722,91 @@ void DataManagementPage::onDeleteButtonClicked()
     }
 
     archiveCurrentPatient();
+}
+
+void DataManagementPage::onAddImageSeriesClicked()
+{
+    m_selectedImageSeriesId.clear();
+    populateImageSeriesEditor(nullptr);
+    refreshDataActionState();
+}
+
+void DataManagementPage::onSaveImageSeriesClicked()
+{
+    saveCurrentImageSeries();
+}
+
+void DataManagementPage::onDeleteImageSeriesClicked()
+{
+    deleteCurrentImageSeries();
+}
+
+void DataManagementPage::onAddTreatmentSessionClicked()
+{
+    m_selectedTreatmentSessionId.clear();
+    populateTreatmentSessionEditor(nullptr);
+    refreshDataActionState();
+}
+
+void DataManagementPage::onSaveTreatmentSessionClicked()
+{
+    saveCurrentTreatmentSession();
+}
+
+void DataManagementPage::onDeleteTreatmentSessionClicked()
+{
+    deleteCurrentTreatmentSession();
+}
+
+void DataManagementPage::onTreatmentSelectionChanged()
+{
+    if (m_treatmentTable == nullptr || m_treatmentTable->currentRow() < 0) {
+        setSelectedTreatmentSession(QString());
+        return;
+    }
+
+    QTableWidgetItem* idItem = m_treatmentTable->item(m_treatmentTable->currentRow(), 0);
+    setSelectedTreatmentSession(idItem == nullptr ? QString() : idItem->data(Qt::UserRole).toString());
+}
+
+void DataManagementPage::onAddTreatmentReportClicked()
+{
+    m_selectedTreatmentReportId.clear();
+    populateTreatmentReportEditor(nullptr);
+    refreshDataActionState();
+}
+
+void DataManagementPage::onSaveTreatmentReportClicked()
+{
+    saveCurrentTreatmentReport();
+}
+
+void DataManagementPage::onDeleteTreatmentReportClicked()
+{
+    deleteCurrentTreatmentReport();
+}
+
+void DataManagementPage::onReportSelectionChanged()
+{
+    setSelectedTreatmentReport(
+        m_reportListWidget != nullptr && m_reportListWidget->currentItem() != nullptr
+            ? m_reportListWidget->currentItem()->data(Qt::UserRole).toString()
+            : QString());
+}
+
+void DataManagementPage::syncReportPreview()
+{
+    if (m_reportPreview == nullptr) {
+        return;
+    }
+
+    const QString contentText = m_reportContentEdit != nullptr ? m_reportContentEdit->toPlainText().trimmed() : QString();
+    if (contentText.isEmpty()) {
+        clearReportPreview(QStringLiteral("当前报告尚未填写内容。"));
+        return;
+    }
+
+    m_reportPreview->setHtml(m_reportContentEdit->toHtml());
 }
 
 void DataManagementPage::populatePatientList(const QString& keyword)
@@ -546,16 +914,105 @@ void DataManagementPage::setPatientPanelMode(PatientPanelMode mode)
 
     refreshPatientActionState();
 }
+
 void DataManagementPage::refreshPatientActionState()
 {
     const bool hasPatient = m_context != nullptr && m_context->hasSelectedPatient();
-    const bool writable = m_clinicalDataRepository != nullptr && m_clinicalDataRepository->supportsWriteOperations();
+    const bool writable = hasWritableRepository();
     const bool creating = m_panelMode == PatientPanelMode::Create;
 
     m_addPatientButton->setEnabled(writable && m_panelMode == PatientPanelMode::View);
     m_batchImportButton->setEnabled(writable && m_panelMode == PatientPanelMode::View);
     m_editButton->setEnabled(writable && (creating || hasPatient));
     m_deleteButton->setEnabled(writable && (creating || hasPatient));
+}
+
+void DataManagementPage::refreshDataActionState()
+{
+    const bool hasPatient = m_context != nullptr && m_context->hasSelectedPatient();
+    const bool writable = hasWritableRepository();
+
+    const QList<QWidget*> imageEditors {
+        m_imageSeriesTypeEdit,
+        m_imageSeriesStoragePathEdit,
+        m_imageSeriesDateEdit,
+        m_imageSeriesNotesEdit
+    };
+    for (QWidget* widget : imageEditors) {
+        if (widget != nullptr) {
+            widget->setEnabled(writable && hasPatient);
+        }
+    }
+
+    const QList<QWidget*> treatmentEditors {
+        m_treatmentPlanIdEdit,
+        m_treatmentLesionTypeEdit,
+        m_treatmentDateEdit,
+        m_treatmentStatusEdit,
+        m_treatmentEnergySpin,
+        m_treatmentDurationSpin,
+        m_treatmentDoseSpin,
+        m_treatmentPathSummaryEdit
+    };
+    for (QWidget* widget : treatmentEditors) {
+        if (widget != nullptr) {
+            widget->setEnabled(writable && hasPatient);
+        }
+    }
+
+    const QList<QWidget*> reportEditors {
+        m_reportSessionCombo,
+        m_reportTitleEdit,
+        m_reportGeneratedAtEdit,
+        m_reportNotesEdit,
+        m_reportContentEdit
+    };
+    for (QWidget* widget : reportEditors) {
+        if (widget != nullptr) {
+            widget->setEnabled(writable && hasPatient);
+        }
+    }
+
+    if (m_imagingScrollArea != nullptr) {
+        m_imagingScrollArea->setEnabled(hasPatient);
+    }
+    if (m_treatmentTable != nullptr) {
+        m_treatmentTable->setEnabled(hasPatient);
+    }
+    if (m_reportListWidget != nullptr) {
+        m_reportListWidget->setEnabled(hasPatient);
+    }
+
+    if (m_addImageSeriesButton != nullptr) {
+        m_addImageSeriesButton->setEnabled(writable && hasPatient);
+    }
+    if (m_saveImageSeriesButton != nullptr) {
+        m_saveImageSeriesButton->setEnabled(writable && hasPatient);
+    }
+    if (m_deleteImageSeriesButton != nullptr) {
+        m_deleteImageSeriesButton->setEnabled(writable && hasPatient && !m_selectedImageSeriesId.isEmpty());
+    }
+
+    if (m_addTreatmentButton != nullptr) {
+        m_addTreatmentButton->setEnabled(writable && hasPatient);
+    }
+    if (m_saveTreatmentButton != nullptr) {
+        m_saveTreatmentButton->setEnabled(writable && hasPatient);
+    }
+    if (m_deleteTreatmentButton != nullptr) {
+        m_deleteTreatmentButton->setEnabled(writable && hasPatient && !m_selectedTreatmentSessionId.isEmpty());
+    }
+
+    const bool canSaveReport = writable && hasPatient && m_reportSessionCombo != nullptr && m_reportSessionCombo->count() > 0;
+    if (m_addReportButton != nullptr) {
+        m_addReportButton->setEnabled(writable && hasPatient);
+    }
+    if (m_saveReportButton != nullptr) {
+        m_saveReportButton->setEnabled(canSaveReport);
+    }
+    if (m_deleteReportButton != nullptr) {
+        m_deleteReportButton->setEnabled(writable && hasPatient && !m_selectedTreatmentReportId.isEmpty());
+    }
 }
 
 void DataManagementPage::enterCreateMode()
@@ -777,6 +1234,7 @@ QVector<QString> DataManagementPage::splitCsvLine(const QString& line) const
     columns.push_back(current.trimmed());
     return columns;
 }
+
 bool DataManagementPage::parseImportedPatientRow(
     const QVector<QString>& columns,
     const QHash<QString, int>& headerIndexMap,
@@ -865,7 +1323,7 @@ void DataManagementPage::fillImagingGallery(const PatientRecord* patient, const 
     }
 
     if (imageSeries.isEmpty()) {
-        auto* emptyLabel = new QLabel(QStringLiteral("当前患者暂无影像检查记录。"));
+        auto* emptyLabel = new QLabel(QStringLiteral("当前患者暂无影像检查记录，可在下方表单新增。"));
         emptyLabel->setObjectName(QStringLiteral("imagingEmptyStateLabel"));
         gridLayout->addWidget(emptyLabel, 0, 0, 1, 4, Qt::AlignCenter);
         return;
@@ -883,96 +1341,512 @@ void DataManagementPage::fillImagingGallery(const PatientRecord* patient, const 
     }
 }
 
-QWidget* DataManagementPage::createImagingThumbnailCard(const ImageSeriesRecord& imageSeries, int index) const
+QWidget* DataManagementPage::createImagingThumbnailCard(const ImageSeriesRecord& imageSeries, int index)
 {
-    auto* card = new QFrame();
-    card->setObjectName(QStringLiteral("imagingThumbnailCard"));
-    card->setFixedWidth(176);
-
-    auto* layout = new QVBoxLayout(card);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(8);
-
-    auto* previewLabel = new QLabel();
-    previewLabel->setObjectName(QStringLiteral("imagingThumbnailPreview"));
-    previewLabel->setFixedSize(160, 96);
-    previewLabel->setAlignment(Qt::AlignCenter);
-
-    QString previewPath;
-    const QFileInfo storageInfo(imageSeries.storagePath);
-    if (storageInfo.exists()) {
-        if (storageInfo.isFile()) {
-            previewPath = storageInfo.absoluteFilePath();
-        } else if (storageInfo.isDir()) {
-            QDirIterator iterator(
-                storageInfo.absoluteFilePath(),
-                {QStringLiteral("*.png"),
-                 QStringLiteral("*.jpg"),
-                 QStringLiteral("*.jpeg"),
-                 QStringLiteral("*.bmp")},
-                QDir::Files,
-                QDirIterator::Subdirectories);
-            if (iterator.hasNext()) {
-                previewPath = iterator.next();
-            }
-        }
-    }
-
-    QPixmap preview;
-    if (!previewPath.isEmpty()) {
-        QPixmap loaded(previewPath);
-        if (!loaded.isNull()) {
-            preview = loaded.scaled(previewLabel->size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-        }
-    }
-
-    if (preview.isNull()) {
-        preview = QPixmap(previewLabel->size());
-        preview.fill(QColor(QStringLiteral("#f7f7f5")));
-        QPainter painter(&preview);
-        painter.setRenderHint(QPainter::Antialiasing, true);
-        painter.setPen(QPen(QColor(QStringLiteral("#ccd2d9")), 1));
-        painter.drawRect(preview.rect().adjusted(0, 0, -1, -1));
-        painter.drawLine(0, 0, preview.width() - 1, preview.height() - 1);
-        painter.drawLine(preview.width() - 1, 0, 0, preview.height() - 1);
-    }
-
-    previewLabel->setPixmap(preview);
-    previewLabel->setScaledContents(true);
-
-    auto* captionLabel = new QLabel(
-        QStringLiteral("%1  %2")
+    auto* button = new QToolButton();
+    button->setObjectName(QStringLiteral("imagingThumbnailButton"));
+    button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    button->setCheckable(true);
+    button->setChecked(imageSeries.id == m_selectedImageSeriesId);
+    button->setIcon(QIcon(loadPreviewPixmap(imageSeries.storagePath, QSize(160, 96))));
+    button->setIconSize(QSize(160, 96));
+    button->setFixedWidth(176);
+    button->setText(
+        QStringLiteral("%1\n%2")
             .arg(imageSeries.type)
             .arg(imageSeries.acquisitionDate.toString(QStringLiteral("yyyy-MM-dd"))));
-    captionLabel->setObjectName(QStringLiteral("imagingThumbnailCaption"));
-    captionLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-
-    card->setToolTip(
+    button->setToolTip(
         QStringLiteral("影像ID：%1\n类型：%2\n采集日期：%3\n存储路径：%4\n序号：%5")
             .arg(imageSeries.id)
             .arg(imageSeries.type)
             .arg(imageSeries.acquisitionDate.toString(QStringLiteral("yyyy-MM-dd")))
             .arg(imageSeries.storagePath)
             .arg(index + 1));
+    connect(button, &QToolButton::clicked, this, [this, imageSeriesId = imageSeries.id]() {
+        setSelectedImageSeries(imageSeriesId);
+    });
+    return button;
+}
 
-    layout->addWidget(previewLabel);
-    layout->addWidget(captionLabel);
-    return card;
+void DataManagementPage::populateImageSeriesEditor(const ImageSeriesRecord* imageSeries)
+{
+    if (imageSeries == nullptr) {
+        m_imageSeriesIdValue->clear();
+        m_imageSeriesTypeEdit->clear();
+        m_imageSeriesStoragePathEdit->clear();
+        m_imageSeriesDateEdit->setDate(QDate::currentDate());
+        m_imageSeriesNotesEdit->clear();
+        refreshImagePreview(QString());
+        m_imageSeriesPreviewLabel->setToolTip(
+            m_context != nullptr && m_context->hasSelectedPatient()
+                ? QStringLiteral("请从上方缩略图选择影像，或新增一条影像记录。")
+                : QStringLiteral("当前未选择患者。"));
+        return;
+    }
+
+    m_imageSeriesIdValue->setText(imageSeries->id);
+    m_imageSeriesTypeEdit->setText(imageSeries->type);
+    m_imageSeriesStoragePathEdit->setText(imageSeries->storagePath);
+    m_imageSeriesDateEdit->setDate(imageSeries->acquisitionDate.isValid() ? imageSeries->acquisitionDate : QDate::currentDate());
+    m_imageSeriesNotesEdit->setPlainText(imageSeries->notes);
+    refreshImagePreview(imageSeries->storagePath);
+}
+
+const ImageSeriesRecord* DataManagementPage::findSelectedImageSeries() const
+{
+    const auto it = std::find_if(m_currentImageSeries.cbegin(), m_currentImageSeries.cend(), [this](const ImageSeriesRecord& imageSeries) {
+        return imageSeries.id == m_selectedImageSeriesId;
+    });
+    return it == m_currentImageSeries.cend() ? nullptr : &(*it);
+}
+
+void DataManagementPage::setSelectedImageSeries(const QString& imageSeriesId)
+{
+    m_selectedImageSeriesId = imageSeriesId;
+    fillImagingGallery(m_context != nullptr && m_context->hasSelectedPatient() ? &m_context->selectedPatient() : nullptr, m_currentImageSeries);
+    populateImageSeriesEditor(findSelectedImageSeries());
+    refreshDataActionState();
+}
+
+bool DataManagementPage::saveCurrentImageSeries()
+{
+    if (m_context == nullptr || !m_context->hasSelectedPatient()) {
+        return false;
+    }
+
+    ImageSeriesRecord imageSeries = findSelectedImageSeries() != nullptr ? *findSelectedImageSeries() : ImageSeriesRecord {};
+    const bool creating = imageSeries.id.trimmed().isEmpty();
+    imageSeries.patientId = m_context->selectedPatient().id;
+    imageSeries.type = m_imageSeriesTypeEdit->text().trimmed();
+    imageSeries.storagePath = m_imageSeriesStoragePathEdit->text().trimmed();
+    imageSeries.acquisitionDate = m_imageSeriesDateEdit->date();
+    imageSeries.notes = m_imageSeriesNotesEdit->toPlainText().trimmed();
+
+    if (!m_clinicalDataService.saveImageSeries(&imageSeries)) {
+        QMessageBox::warning(this, QStringLiteral("保存影像失败"), m_clinicalDataService.lastError());
+        return false;
+    }
+
+    if (m_auditService != nullptr) {
+        m_auditService->appendEntry(
+            QStringLiteral("system"),
+            QStringLiteral("image_series"),
+            QStringLiteral("%1影像记录：%2").arg(creating ? QStringLiteral("创建") : QStringLiteral("更新"), imageSeries.id));
+    }
+
+    m_selectedImageSeriesId = imageSeries.id;
+    refreshFromContext();
+    return true;
+}
+
+bool DataManagementPage::deleteCurrentImageSeries()
+{
+    if (m_selectedImageSeriesId.isEmpty()) {
+        return false;
+    }
+
+    const QMessageBox::StandardButton choice = QMessageBox::question(
+        this,
+        QStringLiteral("确认删除"),
+        QStringLiteral("确认删除当前影像记录 %1 吗？").arg(m_selectedImageSeriesId),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (choice != QMessageBox::Yes) {
+        return false;
+    }
+
+    if (!m_clinicalDataService.deleteImageSeries(m_selectedImageSeriesId)) {
+        QMessageBox::warning(this, QStringLiteral("删除影像失败"), m_clinicalDataService.lastError());
+        return false;
+    }
+
+    if (m_auditService != nullptr) {
+        m_auditService->appendEntry(
+            QStringLiteral("system"),
+            QStringLiteral("image_series"),
+            QStringLiteral("删除影像记录：%1").arg(m_selectedImageSeriesId));
+    }
+
+    m_selectedImageSeriesId.clear();
+    refreshFromContext();
+    return true;
 }
 
 void DataManagementPage::fillTreatmentTable(const QVector<TreatmentSessionRecord>& treatmentSessions)
 {
+    const QSignalBlocker blocker(m_treatmentTable);
     m_treatmentTable->clearContents();
     m_treatmentTable->setRowCount(treatmentSessions.size());
+
+    int selectedRow = -1;
     for (int row = 0; row < treatmentSessions.size(); ++row) {
         const TreatmentSessionRecord& session = treatmentSessions[row];
-        m_treatmentTable->setItem(row, 0, new QTableWidgetItem(session.id));
+
+        auto* idItem = new QTableWidgetItem(session.id);
+        idItem->setData(Qt::UserRole, session.id);
+        m_treatmentTable->setItem(row, 0, idItem);
         m_treatmentTable->setItem(row, 1, new QTableWidgetItem(session.planId));
         m_treatmentTable->setItem(row, 2, new QTableWidgetItem(session.lesionType));
-        m_treatmentTable->setItem(row, 3, new QTableWidgetItem(QString::number(session.totalEnergyJ, 'f', 0)));
-        m_treatmentTable->setItem(row, 4, new QTableWidgetItem(QString::number(session.totalDurationSeconds, 'f', 1)));
-        m_treatmentTable->setItem(row, 5, new QTableWidgetItem(session.status));
+        m_treatmentTable->setItem(row, 3, new QTableWidgetItem(session.treatmentDate.toString(QStringLiteral("yyyy-MM-dd hh:mm"))));
+        m_treatmentTable->setItem(row, 4, new QTableWidgetItem(QString::number(session.totalEnergyJ, 'f', 0)));
+        m_treatmentTable->setItem(row, 5, new QTableWidgetItem(QString::number(session.totalDurationSeconds, 'f', 1)));
+        m_treatmentTable->setItem(row, 6, new QTableWidgetItem(session.status));
+
+        if (session.id == m_selectedTreatmentSessionId) {
+            selectedRow = row;
+        }
     }
+
+    if (selectedRow >= 0) {
+        m_treatmentTable->selectRow(selectedRow);
+    } else {
+        m_treatmentTable->clearSelection();
+    }
+}
+
+void DataManagementPage::populateTreatmentSessionEditor(const TreatmentSessionRecord* treatmentSession)
+{
+    if (treatmentSession == nullptr) {
+        QString defaultPlanId;
+        if (m_context != nullptr
+            && m_context->hasSelectedPatient()
+            && m_context->hasActivePlan()
+            && m_context->activePlan().patientId == m_context->selectedPatient().id) {
+            defaultPlanId = m_context->activePlan().id;
+        }
+
+        m_treatmentIdValue->clear();
+        m_treatmentPlanIdEdit->setText(defaultPlanId);
+        m_treatmentLesionTypeEdit->clear();
+        m_treatmentDateEdit->setDateTime(QDateTime::currentDateTime());
+        m_treatmentStatusEdit->clear();
+        m_treatmentEnergySpin->setValue(0.0);
+        m_treatmentDurationSpin->setValue(0.0);
+        m_treatmentDoseSpin->setValue(0.0);
+        m_treatmentPathSummaryEdit->clear();
+        return;
+    }
+
+    m_treatmentIdValue->setText(treatmentSession->id);
+    m_treatmentPlanIdEdit->setText(treatmentSession->planId);
+    m_treatmentLesionTypeEdit->setText(treatmentSession->lesionType);
+    m_treatmentDateEdit->setDateTime(treatmentSession->treatmentDate.isValid() ? treatmentSession->treatmentDate : QDateTime::currentDateTime());
+    m_treatmentStatusEdit->setText(treatmentSession->status);
+    m_treatmentEnergySpin->setValue(treatmentSession->totalEnergyJ);
+    m_treatmentDurationSpin->setValue(treatmentSession->totalDurationSeconds);
+    m_treatmentDoseSpin->setValue(treatmentSession->dose);
+    m_treatmentPathSummaryEdit->setPlainText(treatmentSession->pathSummary);
+}
+
+const TreatmentSessionRecord* DataManagementPage::findSelectedTreatmentSession() const
+{
+    const auto it = std::find_if(
+        m_currentTreatmentSessions.cbegin(),
+        m_currentTreatmentSessions.cend(),
+        [this](const TreatmentSessionRecord& session) { return session.id == m_selectedTreatmentSessionId; });
+    return it == m_currentTreatmentSessions.cend() ? nullptr : &(*it);
+}
+
+void DataManagementPage::setSelectedTreatmentSession(const QString& treatmentSessionId)
+{
+    m_selectedTreatmentSessionId = treatmentSessionId;
+    fillTreatmentTable(m_currentTreatmentSessions);
+    populateTreatmentSessionEditor(findSelectedTreatmentSession());
+
+    if (m_selectedTreatmentReportId.isEmpty()) {
+        refreshReportSessionOptions(m_selectedTreatmentSessionId);
+    }
+    refreshDataActionState();
+}
+
+bool DataManagementPage::saveCurrentTreatmentSession()
+{
+    if (m_context == nullptr || !m_context->hasSelectedPatient()) {
+        return false;
+    }
+
+    TreatmentSessionRecord treatmentSession =
+        findSelectedTreatmentSession() != nullptr ? *findSelectedTreatmentSession() : TreatmentSessionRecord {};
+    const bool creating = treatmentSession.id.trimmed().isEmpty();
+    treatmentSession.patientId = m_context->selectedPatient().id;
+    treatmentSession.planId = m_treatmentPlanIdEdit->text().trimmed();
+    treatmentSession.lesionType = m_treatmentLesionTypeEdit->text().trimmed();
+    treatmentSession.treatmentDate = m_treatmentDateEdit->dateTime();
+    treatmentSession.startedAt = treatmentSession.treatmentDate;
+    treatmentSession.totalEnergyJ = m_treatmentEnergySpin->value();
+    treatmentSession.totalDurationSeconds = m_treatmentDurationSpin->value();
+    treatmentSession.endedAt = treatmentSession.totalDurationSeconds > 0.0
+        ? treatmentSession.startedAt.addSecs(static_cast<int>(treatmentSession.totalDurationSeconds))
+        : QDateTime {};
+    treatmentSession.dose = m_treatmentDoseSpin->value();
+    treatmentSession.status = m_treatmentStatusEdit->text().trimmed();
+    treatmentSession.pathSummary = m_treatmentPathSummaryEdit->toPlainText().trimmed();
+
+    if (!m_clinicalDataService.saveTreatmentSession(&treatmentSession)) {
+        QMessageBox::warning(this, QStringLiteral("保存治疗失败"), m_clinicalDataService.lastError());
+        return false;
+    }
+
+    if (m_auditService != nullptr) {
+        m_auditService->appendEntry(
+            QStringLiteral("system"),
+            QStringLiteral("treatment_session"),
+            QStringLiteral("%1治疗记录：%2").arg(creating ? QStringLiteral("创建") : QStringLiteral("更新"), treatmentSession.id));
+    }
+
+    m_selectedTreatmentSessionId = treatmentSession.id;
+    refreshFromContext();
+    return true;
+}
+
+bool DataManagementPage::deleteCurrentTreatmentSession()
+{
+    if (m_selectedTreatmentSessionId.isEmpty()) {
+        return false;
+    }
+
+    const QMessageBox::StandardButton choice = QMessageBox::question(
+        this,
+        QStringLiteral("确认删除"),
+        QStringLiteral("确认删除当前治疗记录 %1 及其关联报告吗？").arg(m_selectedTreatmentSessionId),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (choice != QMessageBox::Yes) {
+        return false;
+    }
+
+    if (!m_clinicalDataService.deleteTreatmentSession(m_selectedTreatmentSessionId)) {
+        QMessageBox::warning(this, QStringLiteral("删除治疗失败"), m_clinicalDataService.lastError());
+        return false;
+    }
+
+    if (m_auditService != nullptr) {
+        m_auditService->appendEntry(
+            QStringLiteral("system"),
+            QStringLiteral("treatment_session"),
+            QStringLiteral("删除治疗记录：%1").arg(m_selectedTreatmentSessionId));
+    }
+
+    m_selectedTreatmentSessionId.clear();
+    m_selectedTreatmentReportId.clear();
+    refreshFromContext();
+    return true;
+}
+
+void DataManagementPage::fillReportList(const QVector<TreatmentReportRecord>& treatmentReports)
+{
+    const QSignalBlocker blocker(m_reportListWidget);
+    m_reportListWidget->clear();
+
+    int selectedRow = -1;
+    for (int index = 0; index < treatmentReports.size(); ++index) {
+        const TreatmentReportRecord& report = treatmentReports[index];
+        auto* item = new QListWidgetItem(reportListText(report), m_reportListWidget);
+        item->setData(Qt::UserRole, report.id);
+        if (report.id == m_selectedTreatmentReportId) {
+            selectedRow = index;
+        }
+    }
+
+    if (selectedRow >= 0) {
+        m_reportListWidget->setCurrentRow(selectedRow);
+    } else {
+        m_reportListWidget->clearSelection();
+    }
+}
+
+void DataManagementPage::populateTreatmentReportEditor(const TreatmentReportRecord* treatmentReport)
+{
+    if (treatmentReport == nullptr) {
+        m_reportIdValue->clear();
+        m_reportTitleEdit->clear();
+        m_reportGeneratedAtEdit->setDateTime(QDateTime::currentDateTime());
+        m_reportNotesEdit->clear();
+        refreshReportSessionOptions(m_selectedTreatmentSessionId);
+        m_reportContentEdit->clear();
+        clearReportPreview(
+            m_context != nullptr && m_context->hasSelectedPatient()
+                ? QStringLiteral("请选择左侧报告，或新增一份治疗报告。")
+                : QStringLiteral("当前未选择患者。"));
+        return;
+    }
+
+    m_reportIdValue->setText(treatmentReport->id);
+    refreshReportSessionOptions(treatmentReport->treatmentSessionId);
+    m_reportTitleEdit->setText(treatmentReport->title);
+    m_reportGeneratedAtEdit->setDateTime(
+        treatmentReport->generatedAt.isValid() ? treatmentReport->generatedAt : QDateTime::currentDateTime());
+    m_reportNotesEdit->setPlainText(treatmentReport->notes);
+    m_reportContentEdit->setHtml(treatmentReport->contentHtml);
+    syncReportPreview();
+}
+
+const TreatmentReportRecord* DataManagementPage::findSelectedTreatmentReport() const
+{
+    const auto it = std::find_if(
+        m_currentTreatmentReports.cbegin(),
+        m_currentTreatmentReports.cend(),
+        [this](const TreatmentReportRecord& report) { return report.id == m_selectedTreatmentReportId; });
+    return it == m_currentTreatmentReports.cend() ? nullptr : &(*it);
+}
+
+void DataManagementPage::setSelectedTreatmentReport(const QString& treatmentReportId)
+{
+    m_selectedTreatmentReportId = treatmentReportId;
+    fillReportList(m_currentTreatmentReports);
+    populateTreatmentReportEditor(findSelectedTreatmentReport());
+    refreshDataActionState();
+}
+
+void DataManagementPage::refreshReportSessionOptions(const QString& preferredTreatmentSessionId)
+{
+    QString targetSessionId = preferredTreatmentSessionId;
+    if (targetSessionId.isEmpty() && m_reportSessionCombo != nullptr) {
+        targetSessionId = m_reportSessionCombo->currentData().toString();
+    }
+    if (targetSessionId.isEmpty()) {
+        targetSessionId = m_selectedTreatmentSessionId;
+    }
+
+    const QSignalBlocker blocker(m_reportSessionCombo);
+    m_reportSessionCombo->clear();
+
+    for (const TreatmentSessionRecord& treatmentSession : m_currentTreatmentSessions) {
+        const QString label = QStringLiteral("%1 | %2 | %3")
+                                  .arg(treatmentSession.id)
+                                  .arg(treatmentSession.planId)
+                                  .arg(treatmentSession.status);
+        m_reportSessionCombo->addItem(label, treatmentSession.id);
+    }
+
+    if (m_reportSessionCombo->count() == 0) {
+        return;
+    }
+
+    int targetIndex = m_reportSessionCombo->findData(targetSessionId);
+    if (targetIndex < 0) {
+        targetIndex = 0;
+    }
+    m_reportSessionCombo->setCurrentIndex(targetIndex);
+}
+
+bool DataManagementPage::saveCurrentTreatmentReport()
+{
+    if (m_context == nullptr || !m_context->hasSelectedPatient()) {
+        return false;
+    }
+
+    TreatmentReportRecord treatmentReport =
+        findSelectedTreatmentReport() != nullptr ? *findSelectedTreatmentReport() : TreatmentReportRecord {};
+    const bool creating = treatmentReport.id.trimmed().isEmpty();
+    treatmentReport.patientId = m_context->selectedPatient().id;
+    treatmentReport.treatmentSessionId = m_reportSessionCombo->currentData().toString();
+    treatmentReport.generatedAt = m_reportGeneratedAtEdit->dateTime();
+    treatmentReport.title = m_reportTitleEdit->text().trimmed();
+    treatmentReport.notes = m_reportNotesEdit->toPlainText().trimmed();
+    treatmentReport.contentHtml = m_reportContentEdit->toPlainText().trimmed().isEmpty() ? QString() : m_reportContentEdit->toHtml();
+
+    if (!m_clinicalDataService.saveTreatmentReport(&treatmentReport)) {
+        QMessageBox::warning(this, QStringLiteral("保存报告失败"), m_clinicalDataService.lastError());
+        return false;
+    }
+
+    if (m_auditService != nullptr) {
+        m_auditService->appendEntry(
+            QStringLiteral("system"),
+            QStringLiteral("treatment_report"),
+            QStringLiteral("%1治疗报告：%2").arg(creating ? QStringLiteral("创建") : QStringLiteral("更新"), treatmentReport.id));
+    }
+
+    m_selectedTreatmentReportId = treatmentReport.id;
+    refreshFromContext();
+    return true;
+}
+
+bool DataManagementPage::deleteCurrentTreatmentReport()
+{
+    if (m_selectedTreatmentReportId.isEmpty()) {
+        return false;
+    }
+
+    const QMessageBox::StandardButton choice = QMessageBox::question(
+        this,
+        QStringLiteral("确认删除"),
+        QStringLiteral("确认删除当前治疗报告 %1 吗？").arg(m_selectedTreatmentReportId),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (choice != QMessageBox::Yes) {
+        return false;
+    }
+
+    if (!m_clinicalDataService.deleteTreatmentReport(m_selectedTreatmentReportId)) {
+        QMessageBox::warning(this, QStringLiteral("删除报告失败"), m_clinicalDataService.lastError());
+        return false;
+    }
+
+    if (m_auditService != nullptr) {
+        m_auditService->appendEntry(
+            QStringLiteral("system"),
+            QStringLiteral("treatment_report"),
+            QStringLiteral("删除治疗报告：%1").arg(m_selectedTreatmentReportId));
+    }
+
+    m_selectedTreatmentReportId.clear();
+    refreshFromContext();
+    return true;
+}
+
+void DataManagementPage::refreshImagePreview(const QString& storagePath)
+{
+    if (m_imageSeriesPreviewLabel == nullptr) {
+        return;
+    }
+
+    m_imageSeriesPreviewLabel->setPixmap(loadPreviewPixmap(storagePath, m_imageSeriesPreviewLabel->size()));
+    m_imageSeriesPreviewLabel->setToolTip(storagePath.trimmed().isEmpty() ? QStringLiteral("暂无影像预览") : storagePath);
+}
+
+QPixmap DataManagementPage::loadPreviewPixmap(const QString& storagePath, const QSize& targetSize) const
+{
+    QPixmap preview;
+    const QString previewPath = previewPathForStorage(storagePath);
+    if (!previewPath.isEmpty()) {
+        QPixmap loaded(previewPath);
+        if (!loaded.isNull()) {
+            preview = loaded.scaled(targetSize, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+        }
+    }
+
+    if (!preview.isNull()) {
+        return preview;
+    }
+
+    preview = QPixmap(targetSize);
+    preview.fill(QColor(QStringLiteral("#f7f7f5")));
+    QPainter painter(&preview);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(QPen(QColor(QStringLiteral("#ccd2d9")), 1));
+    painter.drawRect(preview.rect().adjusted(0, 0, -1, -1));
+    painter.drawLine(0, 0, preview.width() - 1, preview.height() - 1);
+    painter.drawLine(preview.width() - 1, 0, 0, preview.height() - 1);
+    painter.setPen(QColor(QStringLiteral("#6d7f92")));
+    painter.drawText(preview.rect(), Qt::AlignCenter, QStringLiteral("暂无预览"));
+    return preview;
+}
+
+void DataManagementPage::clearReportPreview(const QString& message)
+{
+    if (m_reportPreview == nullptr) {
+        return;
+    }
+
+    m_reportPreview->setHtml(
+        QStringLiteral("<h2>治疗报告预览</h2><p>%1</p>").arg(wrapValue(message)));
+}
+
+bool DataManagementPage::hasWritableRepository() const
+{
+    return m_clinicalDataRepository != nullptr && m_clinicalDataRepository->supportsWriteOperations();
 }
 
 }  // namespace panthera::modules

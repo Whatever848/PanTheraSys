@@ -83,10 +83,15 @@ bool MySqlRepositoryFacade::initializeSchemaFromFile(const QString& schemaFilePa
         return false;
     }
 
-    const QString schemaText = QString::fromUtf8(schemaFile.readAll());
+    QString schemaText = QString::fromUtf8(schemaFile.readAll());
+    const QSqlDatabase database = QSqlDatabase::database(m_connectionName);
+    const QString activeSchema = database.databaseName().trimmed();
+    if (!activeSchema.isEmpty() && activeSchema != QStringLiteral("panthera_sys")) {
+        schemaText.replace(QStringLiteral("panthera_sys"), activeSchema);
+    }
+
     QStringList statements = schemaText.split(';', Qt::SkipEmptyParts);
 
-    QSqlDatabase database = QSqlDatabase::database(m_connectionName);
     QSqlQuery query(database);
     for (QString statement : statements) {
         statement = statement.trimmed();

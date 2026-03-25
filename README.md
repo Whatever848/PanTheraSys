@@ -7,6 +7,8 @@ PanTheraSys is a Qt 6.2.0 and C++ desktop prototype platform for a breast ultras
 - CMake-based `Qt Widgets` workspace aligned to `apps/console`, `src/core`, `src/adapters`, `src/modules`, `tests`, and `docs/qms`
 - Safety kernel with treatment interlock evaluation and operational state transitions
 - Device abstraction interfaces plus a simulation device facade for monitor and treatment workflow demos
+- Data-management CRUD coverage for patient, imaging, treatment session, and treatment report records
+- Real MySQL-backed integration test target for patient / imaging / treatment / report persistence
 - Four primary UI workspaces:
   - `设备监控`
   - `治疗方案`
@@ -37,6 +39,21 @@ cmake --build build\msvc2019 --config Debug
 ctest --test-dir build\msvc2019 --output-on-failure -C Debug
 ```
 
+## MySQL Integration Test Prerequisites
+
+- Install the Qt `QMYSQL` SQL driver for the same Qt 6.2.0 `msvc2019_64` runtime used by this project
+- Ensure `qsqlmysql.dll` or `qsqlmysqld.dll` exists under `Qt\6.2.0\msvc2019_64\plugins\sqldrivers`
+- Ensure the matching MySQL client DLL is available on `PATH`
+- Optional environment overrides for the integration test target:
+  - `PANTHERA_MYSQL_HOST`
+  - `PANTHERA_MYSQL_PORT`
+  - `PANTHERA_MYSQL_USERNAME`
+  - `PANTHERA_MYSQL_PASSWORD`
+  - `PANTHERA_MYSQL_SCHEMA`
+  - `PANTHERA_MYSQL_TEST_SCHEMA`
+
+If the `QMYSQL` driver is unavailable at runtime, `panthera_mysql_clinical_data_integration_tests` skips with an explicit message instead of failing the full test run.
+
 ## Repository Conventions
 
 - `main` is protected and release-oriented
@@ -63,6 +80,6 @@ ctest --test-dir build\msvc2019 --output-on-failure -C Debug
 - `D:\PanTheraSys` was initially empty and not under Git
 - Visual Studio developer environment was not pre-activated in the shell
 - GitHub CLI was not installed
-- Local MySQL 5.7 runtime was not present
+- Qt `QMYSQL` driver plugin was not present in the local Qt 6.2.0 runtime
 
 The bootstrap scripts and docs account for these gaps, but external installation and GitHub remote creation still need to be completed on a provisioned workstation.
