@@ -53,6 +53,7 @@ QVector<PatientRecord> SeedClinicalDataRepository::listPatients() const
         }
         patients.push_back(bundle.patient);
     }
+    setLastError(QString());
     return patients;
 }
 
@@ -121,8 +122,10 @@ QVector<ImageSeriesRecord> SeedClinicalDataRepository::listImageSeriesForPatient
 {
     const SeedPatientBundle* bundle = findBundleByPatientId(patientId);
     if (bundle == nullptr || bundle->patient.deletedAt.isValid()) {
+        setLastError(QString());
         return {};
     }
+    setLastError(QString());
     return bundle->imageSeries;
 }
 
@@ -212,8 +215,10 @@ QVector<TreatmentSessionRecord> SeedClinicalDataRepository::listTreatmentSession
 {
     const SeedPatientBundle* bundle = findBundleByPatientId(patientId);
     if (bundle == nullptr || bundle->patient.deletedAt.isValid()) {
+        setLastError(QString());
         return {};
     }
+    setLastError(QString());
     return bundle->treatmentSessions;
 }
 
@@ -314,8 +319,10 @@ QVector<TreatmentReportRecord> SeedClinicalDataRepository::listTreatmentReportsF
 {
     const SeedPatientBundle* bundle = findBundleByPatientId(patientId);
     if (bundle == nullptr || bundle->patient.deletedAt.isValid()) {
+        setLastError(QString());
         return {};
     }
+    setLastError(QString());
     return bundle->treatmentReports;
 }
 

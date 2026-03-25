@@ -17,9 +17,16 @@ public:
     QString lastError() const;
 
     QVector<PatientRecord> listPatients() const;
+    bool findPatientById(const QString& patientId, PatientRecord* patient) const;
+
     QVector<ImageSeriesRecord> listImageSeriesForPatient(const QString& patientId) const;
+    bool findImageSeriesById(const QString& imageSeriesId, ImageSeriesRecord* imageSeries) const;
+
     QVector<TreatmentSessionRecord> listTreatmentSessionsForPatient(const QString& patientId) const;
+    bool findTreatmentSessionById(const QString& treatmentSessionId, TreatmentSessionRecord* treatmentSession) const;
+
     QVector<TreatmentReportRecord> listTreatmentReportsForPatient(const QString& patientId) const;
+    bool findTreatmentReportById(const QString& treatmentReportId, TreatmentReportRecord* treatmentReport) const;
 
     bool savePatient(PatientRecord* patient);
     bool archivePatient(const QString& patientId);
@@ -37,12 +44,14 @@ public:
 
 private:
     QString makeId(const QString& prefix) const;
-    void setLastError(const QString& error);
-    bool ensureRepositoryAvailable();
-    bool ensureWritableRepository();
+    void setLastError(const QString& error) const;
+    bool ensureRepositoryAvailable() const;
+    bool ensureWritableRepository() const;
+    bool ensurePatientExists(const QString& patientId, PatientRecord* patient = nullptr) const;
+    bool ensureTreatmentSessionExists(const QString& treatmentSessionId, TreatmentSessionRecord* treatmentSession = nullptr) const;
 
     IClinicalDataRepository* m_repository {nullptr};
-    QString m_lastError;
+    mutable QString m_lastError;
 };
 
 }  // namespace panthera::core

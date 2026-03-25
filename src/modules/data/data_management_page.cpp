@@ -353,12 +353,9 @@ void DataManagementPage::refreshFromContext()
         break;
     }
 
-    const QVector<ImageSeriesRecord> imageSeries =
-        m_clinicalDataRepository == nullptr ? QVector<ImageSeriesRecord> {} : m_clinicalDataRepository->listImageSeriesForPatient(patient.id);
-    const QVector<TreatmentSessionRecord> treatmentSessions =
-        m_clinicalDataRepository == nullptr ? QVector<TreatmentSessionRecord> {} : m_clinicalDataRepository->listTreatmentSessionsForPatient(patient.id);
-    const QVector<TreatmentReportRecord> reports =
-        m_clinicalDataRepository == nullptr ? QVector<TreatmentReportRecord> {} : m_clinicalDataRepository->listTreatmentReportsForPatient(patient.id);
+    const QVector<ImageSeriesRecord> imageSeries = m_clinicalDataService.listImageSeriesForPatient(patient.id);
+    const QVector<TreatmentSessionRecord> treatmentSessions = m_clinicalDataService.listTreatmentSessionsForPatient(patient.id);
+    const QVector<TreatmentReportRecord> reports = m_clinicalDataService.listTreatmentReportsForPatient(patient.id);
 
     fillImagingGallery(&patient, imageSeries);
     fillTreatmentTable(treatmentSessions);
@@ -447,11 +444,11 @@ void DataManagementPage::onDeleteButtonClicked()
 void DataManagementPage::populatePatientList(const QString& keyword)
 {
     m_patientList->clear();
-    if (m_clinicalDataRepository == nullptr) {
+    if (m_clinicalDataService.repository() == nullptr) {
         return;
     }
 
-    const QVector<PatientRecord> patients = m_clinicalDataRepository->listPatients();
+    const QVector<PatientRecord> patients = m_clinicalDataService.listPatients();
     for (const PatientRecord& patient : patients) {
         if (!matchesPatientKeyword(patient, keyword)) {
             continue;
@@ -490,12 +487,12 @@ void DataManagementPage::selectPatientById(const QString& patientId)
         return;
     }
 
-    if (m_clinicalDataRepository == nullptr) {
+    if (m_clinicalDataService.repository() == nullptr) {
         return;
     }
 
     PatientRecord patient;
-    if (!m_clinicalDataRepository->findPatientById(patientId, &patient)) {
+    if (!m_clinicalDataService.findPatientById(patientId, &patient)) {
         return;
     }
 

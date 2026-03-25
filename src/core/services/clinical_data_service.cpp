@@ -4,6 +4,15 @@
 
 namespace panthera::core {
 
+namespace {
+
+bool isNotFoundError(const QString& error)
+{
+    return error.contains(QStringLiteral("not found"), Qt::CaseInsensitive);
+}
+
+}  // namespace
+
 ClinicalDataService::ClinicalDataService(IClinicalDataRepository* repository)
     : m_repository(repository)
 {
@@ -27,22 +36,122 @@ QString ClinicalDataService::lastError() const
 
 QVector<PatientRecord> ClinicalDataService::listPatients() const
 {
-    return m_repository == nullptr ? QVector<PatientRecord> {} : m_repository->listPatients();
+    if (!ensureRepositoryAvailable()) {
+        return {};
+    }
+
+    const QVector<PatientRecord> patients = m_repository->listPatients();
+    setLastError(patients.isEmpty() ? m_repository->lastError() : QString());
+    return patients;
+}
+
+bool ClinicalDataService::findPatientById(const QString& patientId, PatientRecord* patient) const
+{
+    if (!ensureRepositoryAvailable()) {
+        return false;
+    }
+    if (patientId.trimmed().isEmpty()) {
+        setLastError(QStringLiteral("Patient id is required."));
+        return false;
+    }
+    if (!m_repository->findPatientById(patientId, patient)) {
+        setLastError(m_repository->lastError());
+        return false;
+    }
+
+    setLastError(QString());
+    return true;
 }
 
 QVector<ImageSeriesRecord> ClinicalDataService::listImageSeriesForPatient(const QString& patientId) const
 {
-    return m_repository == nullptr ? QVector<ImageSeriesRecord> {} : m_repository->listImageSeriesForPatient(patientId);
+    if (!ensureRepositoryAvailable()) {
+        return {};
+    }
+
+    const QVector<ImageSeriesRecord> imageSeries = m_repository->listImageSeriesForPatient(patientId);
+    setLastError(imageSeries.isEmpty() ? m_repository->lastError() : QString());
+    return imageSeries;
+}
+
+bool ClinicalDataService::findImageSeriesById(const QString& imageSeriesId, ImageSeriesRecord* imageSeries) const
+{
+    if (!ensureRepositoryAvailable()) {
+        return false;
+    }
+    if (imageSeriesId.trimmed().isEmpty()) {
+        setLastError(QStringLiteral("Image series id is required."));
+        return false;
+    }
+    if (!m_repository->findImageSeriesById(imageSeriesId, imageSeries)) {
+        setLastError(m_repository->lastError());
+        return false;
+    }
+
+    setLastError(QString());
+    return true;
 }
 
 QVector<TreatmentSessionRecord> ClinicalDataService::listTreatmentSessionsForPatient(const QString& patientId) const
 {
-    return m_repository == nullptr ? QVector<TreatmentSessionRecord> {} : m_repository->listTreatmentSessionsForPatient(patientId);
+    if (!ensureRepositoryAvailable()) {
+        return {};
+    }
+
+    const QVector<TreatmentSessionRecord> treatmentSessions = m_repository->listTreatmentSessionsForPatient(patientId);
+    setLastError(treatmentSessions.isEmpty() ? m_repository->lastError() : QString());
+    return treatmentSessions;
+}
+
+bool ClinicalDataService::findTreatmentSessionById(
+    const QString& treatmentSessionId,
+    TreatmentSessionRecord* treatmentSession) const
+{
+    if (!ensureRepositoryAvailable()) {
+        return false;
+    }
+    if (treatmentSessionId.trimmed().isEmpty()) {
+        setLastError(QStringLiteral("Treatment session id is required."));
+        return false;
+    }
+    if (!m_repository->findTreatmentSessionById(treatmentSessionId, treatmentSession)) {
+        setLastError(m_repository->lastError());
+        return false;
+    }
+
+    setLastError(QString());
+    return true;
 }
 
 QVector<TreatmentReportRecord> ClinicalDataService::listTreatmentReportsForPatient(const QString& patientId) const
 {
-    return m_repository == nullptr ? QVector<TreatmentReportRecord> {} : m_repository->listTreatmentReportsForPatient(patientId);
+    if (!ensureRepositoryAvailable()) {
+        return {};
+    }
+
+    const QVector<TreatmentReportRecord> treatmentReports = m_repository->listTreatmentReportsForPatient(patientId);
+    setLastError(treatmentReports.isEmpty() ? m_repository->lastError() : QString());
+    return treatmentReports;
+}
+
+bool ClinicalDataService::findTreatmentReportById(
+    const QString& treatmentReportId,
+    TreatmentReportRecord* treatmentReport) const
+{
+    if (!ensureRepositoryAvailable()) {
+        return false;
+    }
+    if (treatmentReportId.trimmed().isEmpty()) {
+        setLastError(QStringLiteral("Treatment report id is required."));
+        return false;
+    }
+    if (!m_repository->findTreatmentReportById(treatmentReportId, treatmentReport)) {
+        setLastError(m_repository->lastError());
+        return false;
+    }
+
+    setLastError(QString());
+    return true;
 }
 
 bool ClinicalDataService::savePatient(PatientRecord* patient)
@@ -78,6 +187,11 @@ bool ClinicalDataService::savePatient(PatientRecord* patient)
 
     PatientRecord existing;
     const bool exists = m_repository->findPatientById(patient->id, &existing);
+    if (!exists && !isNotFoundError(m_repository->lastError())) {
+        setLastError(m_repository->lastError());
+        return false;
+    }
+
     if (exists) {
         if (!m_repository->updatePatient(*patient)) {
             setLastError(m_repository->lastError());
@@ -134,6 +248,10 @@ bool ClinicalDataService::saveImageSeries(ImageSeriesRecord* imageSeries)
         setLastError(QStringLiteral("Image series storage path is required."));
         return false;
     }
+    PatientRecord patient;
+    if (!ensurePatientExists(imageSeries->patientId, &patient)) {
+        return false;
+    }
 
     if (imageSeries->id.trimmed().isEmpty()) {
         imageSeries->id = makeId(QStringLiteral("IMG"));
@@ -147,6 +265,11 @@ bool ClinicalDataService::saveImageSeries(ImageSeriesRecord* imageSeries)
 
     ImageSeriesRecord existing;
     const bool exists = m_repository->findImageSeriesById(imageSeries->id, &existing);
+    if (!exists && !isNotFoundError(m_repository->lastError())) {
+        setLastError(m_repository->lastError());
+        return false;
+    }
+
     if (exists) {
         if (!m_repository->updateImageSeries(*imageSeries)) {
             setLastError(m_repository->lastError());
@@ -203,6 +326,26 @@ bool ClinicalDataService::saveTreatmentSession(TreatmentSessionRecord* treatment
         setLastError(QStringLiteral("Treatment session lesion type is required."));
         return false;
     }
+    if (treatmentSession->pathSummary.trimmed().isEmpty()) {
+        setLastError(QStringLiteral("Treatment session path summary is required."));
+        return false;
+    }
+    if (treatmentSession->totalEnergyJ < 0.0) {
+        setLastError(QStringLiteral("Treatment session total energy cannot be negative."));
+        return false;
+    }
+    if (treatmentSession->totalDurationSeconds < 0.0) {
+        setLastError(QStringLiteral("Treatment session total duration cannot be negative."));
+        return false;
+    }
+    if (treatmentSession->dose < 0.0) {
+        setLastError(QStringLiteral("Treatment session dose cannot be negative."));
+        return false;
+    }
+    PatientRecord patient;
+    if (!ensurePatientExists(treatmentSession->patientId, &patient)) {
+        return false;
+    }
 
     const QDateTime now = QDateTime::currentDateTime();
     if (treatmentSession->id.trimmed().isEmpty()) {
@@ -213,6 +356,12 @@ bool ClinicalDataService::saveTreatmentSession(TreatmentSessionRecord* treatment
     }
     if (!treatmentSession->startedAt.isValid()) {
         treatmentSession->startedAt = treatmentSession->treatmentDate;
+    }
+    if (treatmentSession->totalDurationSeconds <= 0.0
+        && treatmentSession->startedAt.isValid()
+        && treatmentSession->endedAt.isValid()
+        && treatmentSession->endedAt >= treatmentSession->startedAt) {
+        treatmentSession->totalDurationSeconds = treatmentSession->startedAt.secsTo(treatmentSession->endedAt);
     }
     if (!treatmentSession->endedAt.isValid() && treatmentSession->totalDurationSeconds > 0.0) {
         treatmentSession->endedAt = treatmentSession->startedAt.addSecs(static_cast<int>(treatmentSession->totalDurationSeconds));
@@ -226,6 +375,11 @@ bool ClinicalDataService::saveTreatmentSession(TreatmentSessionRecord* treatment
 
     TreatmentSessionRecord existing;
     const bool exists = m_repository->findTreatmentSessionById(treatmentSession->id, &existing);
+    if (!exists && !isNotFoundError(m_repository->lastError())) {
+        setLastError(m_repository->lastError());
+        return false;
+    }
+
     if (exists) {
         if (!m_repository->updateTreatmentSession(*treatmentSession)) {
             setLastError(m_repository->lastError());
@@ -282,6 +436,18 @@ bool ClinicalDataService::saveTreatmentReport(TreatmentReportRecord* treatmentRe
         setLastError(QStringLiteral("Treatment report content is required."));
         return false;
     }
+    PatientRecord patient;
+    if (!ensurePatientExists(treatmentReport->patientId, &patient)) {
+        return false;
+    }
+    TreatmentSessionRecord treatmentSession;
+    if (!ensureTreatmentSessionExists(treatmentReport->treatmentSessionId, &treatmentSession)) {
+        return false;
+    }
+    if (treatmentSession.patientId != treatmentReport->patientId) {
+        setLastError(QStringLiteral("Treatment report patient id does not match the referenced session."));
+        return false;
+    }
 
     if (treatmentReport->id.trimmed().isEmpty()) {
         treatmentReport->id = makeId(QStringLiteral("REP"));
@@ -295,6 +461,11 @@ bool ClinicalDataService::saveTreatmentReport(TreatmentReportRecord* treatmentRe
 
     TreatmentReportRecord existing;
     const bool exists = m_repository->findTreatmentReportById(treatmentReport->id, &existing);
+    if (!exists && !isNotFoundError(m_repository->lastError())) {
+        setLastError(m_repository->lastError());
+        return false;
+    }
+
     if (exists) {
         if (!m_repository->updateTreatmentReport(*treatmentReport)) {
             setLastError(m_repository->lastError());
@@ -344,6 +515,10 @@ bool ClinicalDataService::bootstrapFrom(const IClinicalDataRepository& sourceRep
     for (PatientRecord patient : sourcePatients) {
         PatientRecord existingPatient;
         if (!m_repository->findPatientById(patient.id, &existingPatient)) {
+            if (!isNotFoundError(m_repository->lastError())) {
+                setLastError(m_repository->lastError());
+                return false;
+            }
             if (!m_repository->createPatient(patient)) {
                 setLastError(m_repository->lastError());
                 return false;
@@ -354,6 +529,10 @@ bool ClinicalDataService::bootstrapFrom(const IClinicalDataRepository& sourceRep
         for (ImageSeriesRecord image : imageSeries) {
             ImageSeriesRecord existingImage;
             if (!m_repository->findImageSeriesById(image.id, &existingImage)) {
+                if (!isNotFoundError(m_repository->lastError())) {
+                    setLastError(m_repository->lastError());
+                    return false;
+                }
                 if (!m_repository->createImageSeries(image)) {
                     setLastError(m_repository->lastError());
                     return false;
@@ -365,6 +544,10 @@ bool ClinicalDataService::bootstrapFrom(const IClinicalDataRepository& sourceRep
         for (TreatmentSessionRecord session : sessions) {
             TreatmentSessionRecord existingSession;
             if (!m_repository->findTreatmentSessionById(session.id, &existingSession)) {
+                if (!isNotFoundError(m_repository->lastError())) {
+                    setLastError(m_repository->lastError());
+                    return false;
+                }
                 if (!m_repository->createTreatmentSession(session)) {
                     setLastError(m_repository->lastError());
                     return false;
@@ -376,6 +559,10 @@ bool ClinicalDataService::bootstrapFrom(const IClinicalDataRepository& sourceRep
         for (TreatmentReportRecord report : reports) {
             TreatmentReportRecord existingReport;
             if (!m_repository->findTreatmentReportById(report.id, &existingReport)) {
+                if (!isNotFoundError(m_repository->lastError())) {
+                    setLastError(m_repository->lastError());
+                    return false;
+                }
                 if (!m_repository->createTreatmentReport(report)) {
                     setLastError(m_repository->lastError());
                     return false;
@@ -393,12 +580,12 @@ QString ClinicalDataService::makeId(const QString& prefix) const
     return QStringLiteral("%1-%2").arg(prefix, QUuid::createUuid().toString(QUuid::WithoutBraces));
 }
 
-void ClinicalDataService::setLastError(const QString& error)
+void ClinicalDataService::setLastError(const QString& error) const
 {
     m_lastError = error;
 }
 
-bool ClinicalDataService::ensureRepositoryAvailable()
+bool ClinicalDataService::ensureRepositoryAvailable() const
 {
     if (m_repository != nullptr) {
         return true;
@@ -408,7 +595,7 @@ bool ClinicalDataService::ensureRepositoryAvailable()
     return false;
 }
 
-bool ClinicalDataService::ensureWritableRepository()
+bool ClinicalDataService::ensureWritableRepository() const
 {
     if (!ensureRepositoryAvailable()) {
         return false;
@@ -419,6 +606,32 @@ bool ClinicalDataService::ensureWritableRepository()
 
     setLastError(QStringLiteral("Clinical data repository is read-only."));
     return false;
+}
+
+bool ClinicalDataService::ensurePatientExists(const QString& patientId, PatientRecord* patient) const
+{
+    if (!findPatientById(patientId, patient)) {
+        if (isNotFoundError(lastError())) {
+            setLastError(QStringLiteral("Patient not found: %1").arg(patientId));
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool ClinicalDataService::ensureTreatmentSessionExists(
+    const QString& treatmentSessionId,
+    TreatmentSessionRecord* treatmentSession) const
+{
+    if (!findTreatmentSessionById(treatmentSessionId, treatmentSession)) {
+        if (isNotFoundError(lastError())) {
+            setLastError(QStringLiteral("Treatment session not found: %1").arg(treatmentSessionId));
+        }
+        return false;
+    }
+
+    return true;
 }
 
 }  // namespace panthera::core
