@@ -448,6 +448,12 @@ QFrame#planningPreviewFrame {
     border-radius: 14px;
 }
 
+QFrame#planningComparePane {
+    background-color: #0d1524;
+    border: 1px solid #213450;
+    border-radius: 12px;
+}
+
 QFrame#planningModeCard {
     background-color: #14233a;
     border: 1px solid #2c3e59;
@@ -466,6 +472,44 @@ QLabel#planningHeaderIcon {
     color: #f4fbff;
     font-size: 16pt;
     font-weight: 700;
+    background: transparent;
+}
+
+QLabel#planningPaneHeaderLabel {
+    color: #8fc8ff;
+    font-size: 10pt;
+    font-weight: 700;
+    background: transparent;
+    padding-left: 4px;
+}
+
+QFrame#planningAssessmentMetricsCard {
+    background-color: #17243a;
+    border: 1px solid #29415f;
+    border-radius: 10px;
+}
+
+QLabel#planningAssessmentMetricLabel {
+    color: #9eb3c8;
+    font-size: 9.5pt;
+    background: transparent;
+}
+
+QLabel#planningAssessmentMetricValueLabel,
+QLabel#planningAssessmentMetricAccentLabel {
+    color: #f2f7ff;
+    font-size: 10pt;
+    font-weight: 700;
+    background: transparent;
+}
+
+QLabel#planningAssessmentMetricAccentLabel {
+    color: #52e3a6;
+}
+
+QLabel#planningSliceInfoLabel {
+    color: #d6e4f5;
+    font-size: 9.5pt;
     background: transparent;
 }
 
@@ -592,6 +636,29 @@ QSlider#planningPowerSlider::handle:horizontal {
     background-color: #e8eef7;
     border: 1px solid #d1dae7;
     border-radius: 9px;
+}
+
+QSlider#planningSliceSlider::groove:horizontal {
+    height: 6px;
+    background-color: #1b304b;
+    border-radius: 3px;
+}
+
+QSlider#planningSliceSlider::sub-page:horizontal {
+    background-color: #2a79d7;
+    border-radius: 3px;
+}
+
+QSlider#planningSliceSlider::handle:horizontal {
+    width: 16px;
+    margin: -5px 0;
+    background-color: #edf5ff;
+    border: 1px solid #c9d7e9;
+    border-radius: 8px;
+}
+
+QSlider#planningSliceSlider:disabled::groove:horizontal {
+    background-color: #142338;
 }
 
 QCheckBox#planningToggleCheck {
@@ -727,7 +794,7 @@ QToolButton#planningAnnotationColorButton[swatchColor="orange"] {
 
 QLabel#planningPreviewOverlayLabel {
     color: rgba(244, 248, 255, 0.88);
-    font-size: 36pt;
+    font-size: 16pt;
     font-weight: 700;
     background: transparent;
 }

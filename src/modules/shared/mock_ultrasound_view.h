@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <QColor>
+#include <QPixmap>
 #include <QVector>
 #include <QWidget>
 
@@ -23,6 +24,9 @@ public:
     void clearPlan();
     void setCompletedPointCount(int completedPointCount);
     void setCaption(const QString& caption);
+    void setBackgroundImage(const QPixmap& image);
+    void clearBackgroundImage();
+    void setSliceContext(int sliceIndex, int totalSliceCount);
     void setAnnotationEnabled(bool enabled);
     void setCurrentAnnotationColor(const QColor& color);
     void setAnnotationStrokes(const QVector<AnnotationStroke>& strokes);
@@ -47,11 +51,15 @@ private:
     QPointF normalizePoint(const QPointF& widgetPoint) const;
     QPointF denormalizePoint(const QPointF& normalizedPoint) const;
     bool isDrawablePoint(const QPointF& widgetPoint) const;
+    qreal sliceRatio() const;
 
     panthera::core::TherapyPlan m_plan;
     bool m_hasPlan {false};
     int m_completedPointCount {0};
     QString m_caption;
+    QPixmap m_backgroundImage;
+    int m_sliceIndex {0};
+    int m_totalSliceCount {0};
     bool m_annotationEnabled {false};
     bool m_isDrawing {false};
     QColor m_currentAnnotationColor {QColor(201, 71, 51)};

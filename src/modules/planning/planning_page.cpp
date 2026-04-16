@@ -1,19 +1,27 @@
 #include "modules/planning/planning_page.h"
 
 #include <algorithm>
+#include <cmath>
 
+#include <QButtonGroup>
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
-#include <QButtonGroup>
+#include <QDir>
+#include <QDirIterator>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QImageReader>
 #include <QLineEdit>
 #include <QListWidgetItem>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QTime>
+#include <QTimer>
 #include <QVector3D>
 #include <QVBoxLayout>
 
@@ -22,6 +30,8 @@ namespace panthera::modules {
 using namespace panthera::core;
 
 namespace {
+
+constexpr int kPathStateKeyRole = Qt::UserRole + 1;
 
 PatientRecord buildFallbackPatient()
 {
@@ -107,6 +117,100 @@ QVector3D parseCoordinateText(const QString& text)
     return QVector3D(parts.at(0).trimmed().toDouble(), parts.at(1).trimmed().toDouble(), parts.at(2).trimmed().toDouble());
 }
 
+QString previewPathForStorage(const QString& storagePath)
+{
+    if (storagePath.trimmed().isEmpty()) {
+        return {};
+    }
+
+    const QFileInfo storageInfo(storagePath);
+    if (!storageInfo.exists()) {
+        return {};
+    }
+    if (storageInfo.isFile()) {
+        return storageInfo.absoluteFilePath();
+    }
+    if (!storageInfo.isDir()) {
+        return {};
+    }
+
+    QDirIterator iterator(
+        storageInfo.absoluteFilePath(),
+        {QStringLiteral("*.png"),
+         QStringLiteral("*.jpg"),
+         QStringLiteral("*.jpeg"),
+         QStringLiteral("*.bmp")},
+        QDir::Files,
+        QDirIterator::Subdirectories);
+    return iterator.hasNext() ? iterator.next() : QString();
+}
+
+QPixmap loadHistoryPixmap(const QString& storagePath)
+{
+    const QString previewPath = previewPathForStorage(storagePath);
+    if (previewPath.isEmpty()) {
+        return {};
+    }
+
+    QImageReader reader(previewPath);
+    reader.setAutoTransform(true);
+    return QPixmap::fromImage(reader.read());
+}
+
+QVector<QPointF> logicalAnnotationPoints(const QVector<AnnotationStroke>& annotations)
+{
+    QVector<QPointF> logicalPoints;
+    for (const AnnotationStroke& stroke : annotations) {
+        for (const QPointF& normalizedPoint : stroke.normalizedPoints) {
+            logicalPoints.push_back(QPointF((normalizedPoint.x() * 60.0) - 30.0, (normalizedPoint.y() * 60.0) - 30.0));
+        }
+    }
+    return logicalPoints;
+}
+
+QRectF annotationBounds(const QVector<AnnotationStroke>& annotations)
+{
+    const QVector<QPointF> logicalPoints = logicalAnnotationPoints(annotations);
+    if (logicalPoints.isEmpty()) {
+        return {};
+    }
+
+    qreal minX = logicalPoints.first().x();
+    qreal maxX = logicalPoints.first().x();
+    qreal minY = logicalPoints.first().y();
+    qreal maxY = logicalPoints.first().y();
+    for (const QPointF& point : logicalPoints) {
+        minX = std::min(minX, point.x());
+        maxX = std::max(maxX, point.x());
+        minY = std::min(minY, point.y());
+        maxY = std::max(maxY, point.y());
+    }
+    return QRectF(QPointF(minX, minY), QPointF(maxX, maxY)).normalized();
+}
+
+double estimateAnnotatedAreaMm2(const QVector<AnnotationStroke>& annotations)
+{
+    const QRectF bounds = annotationBounds(annotations);
+    if (!bounds.isValid() || bounds.width() <= 0.0 || bounds.height() <= 0.0) {
+        return 0.0;
+    }
+
+    return bounds.width() * bounds.height() * 0.72;
+}
+
+QString patternSummaryText(TreatmentPattern pattern)
+{
+    switch (pattern) {
+    case TreatmentPattern::Line:
+        return QStringLiteral("\u7ebf\u6cbb\u7597");
+    case TreatmentPattern::Segmented:
+        return QStringLiteral("\u5206\u6bb5\u6267\u884c");
+    case TreatmentPattern::Point:
+    default:
+        return QStringLiteral("\u70b9\u6cbb\u7597");
+    }
+}
+
 }  // namespace
 
 PlanningPage::PlanningPage(
@@ -114,6 +218,7 @@ PlanningPage::PlanningPage(
     SafetyKernel* safetyKernel,
     AuditService* auditService,
     IClinicalDataRepository* clinicalDataRepository,
+    adapters::SimulationDeviceFacade* simulationDevice,
     QWidget* parent)
     : QWidget(parent)
     , m_context(context)
@@ -121,6 +226,7 @@ PlanningPage::PlanningPage(
     , m_auditService(auditService)
     , m_clinicalDataRepository(clinicalDataRepository)
     , m_clinicalDataService(clinicalDataRepository)
+    , m_simulationDevice(simulationDevice)
 {
     auto* rootLayout = new QHBoxLayout(this);
     rootLayout->setContentsMargins(12, 12, 12, 12);
@@ -256,24 +362,66 @@ PlanningPage::PlanningPage(
     previewFrame->setMinimumSize(720, 500);
     auto* previewFrameLayout = new QVBoxLayout(previewFrame);
     previewFrameLayout->setContentsMargins(4, 4, 4, 4);
-    previewFrameLayout->setSpacing(0);
+    previewFrameLayout->setSpacing(4);
 
-    auto* previewHeader = new QHBoxLayout();
-    previewHeader->setContentsMargins(0, 0, 0, 0);
-    previewHeader->setSpacing(0);
-    previewHeader->addStretch();
-    m_annotationButton = new QToolButton();
-    m_annotationButton->setObjectName(QStringLiteral("planningIconButton"));
-    m_annotationButton->setText(QStringLiteral("\u270e"));
-    m_annotationButton->setCheckable(true);
-    previewHeader->addWidget(m_annotationButton, 0, Qt::AlignTop | Qt::AlignRight);
-    previewFrameLayout->addLayout(previewHeader);
+    auto* compareLayout = new QHBoxLayout();
+    compareLayout->setContentsMargins(0, 0, 0, 0);
+    compareLayout->setSpacing(4);
+
+    auto* historyPane = new QFrame();
+    historyPane->setObjectName(QStringLiteral("planningComparePane"));
+    auto* historyLayout = new QVBoxLayout(historyPane);
+    historyLayout->setContentsMargins(4, 4, 4, 4);
+    historyLayout->setSpacing(4);
+
+    auto* historyTitle = new QLabel(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+    historyTitle->setObjectName(QStringLiteral("planningPaneHeaderLabel"));
+    historyLayout->addWidget(historyTitle);
+
+    auto* historyStack = new QGridLayout();
+    historyStack->setContentsMargins(0, 0, 0, 0);
+    historyStack->setSpacing(0);
+    m_historyPreview = new MockUltrasoundView();
+    m_historyPreview->setObjectName(QStringLiteral("planningPreviewWidget"));
+    m_historyPreview->setMinimumSize(0, 0);
+    m_historyPreview->setCaption(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+    m_historyPreview->setAnnotationEnabled(false);
+
+    m_historyPreviewOverlayLabel = new QLabel(QStringLiteral("\u5de6\u5c4f\u663e\u793a\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+    m_historyPreviewOverlayLabel->setObjectName(QStringLiteral("planningPreviewOverlayLabel"));
+    m_historyPreviewOverlayLabel->setAlignment(Qt::AlignCenter);
+    m_historyPreviewOverlayLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+
+    historyStack->addWidget(m_historyPreview, 0, 0);
+    historyStack->addWidget(m_historyPreviewOverlayLabel, 0, 0);
+    historyLayout->addLayout(historyStack, 1);
+
+    m_historySliceSummaryLabel = new QLabel(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf\uff1a\u6682\u65e0\u6570\u636e"));
+    m_historySliceSummaryLabel->setObjectName(QStringLiteral("planningSliceInfoLabel"));
+    m_historySliceSummaryLabel->setWordWrap(true);
+    m_historySliceSlider = new QSlider(Qt::Horizontal);
+    m_historySliceSlider->setObjectName(QStringLiteral("planningSliceSlider"));
+    m_historySliceSlider->setRange(0, 0);
+    m_historySliceSlider->setEnabled(false);
+    historyLayout->addWidget(m_historySliceSummaryLabel);
+    historyLayout->addWidget(m_historySliceSlider);
+
+    auto* currentPane = new QFrame();
+    currentPane->setObjectName(QStringLiteral("planningComparePane"));
+    auto* currentLayout = new QVBoxLayout(currentPane);
+    currentLayout->setContentsMargins(4, 4, 4, 4);
+    currentLayout->setSpacing(4);
+
+    auto* currentTitle = new QLabel(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u5f71\u50cf"));
+    currentTitle->setObjectName(QStringLiteral("planningPaneHeaderLabel"));
+    currentLayout->addWidget(currentTitle);
 
     auto* previewStack = new QGridLayout();
-    previewStack->setContentsMargins(8, 8, 8, 8);
+    previewStack->setContentsMargins(0, 0, 0, 0);
     previewStack->setSpacing(0);
     m_preview = new MockUltrasoundView();
     m_preview->setObjectName(QStringLiteral("planningPreviewWidget"));
+    m_preview->setMinimumSize(0, 0);
     m_preview->setCaption(QStringLiteral(""));
 
     m_previewOverlayLabel = new QLabel(QStringLiteral("\u56fe\u50cf\u663e\u793a\u533a\u57df"));
@@ -346,7 +494,35 @@ PlanningPage::PlanningPage(
     previewStack->addWidget(m_preview, 0, 0);
     previewStack->addWidget(m_previewOverlayLabel, 0, 0);
     previewStack->addWidget(m_annotationPanel, 0, 0, Qt::AlignTop | Qt::AlignRight);
-    previewFrameLayout->addLayout(previewStack, 1);
+    currentLayout->addLayout(previewStack, 1);
+
+    m_currentSliceSummaryLabel = new QLabel(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\uff1a\u7b49\u5f85\u91c7\u96c6\u6216\u9884\u89c8\u65b9\u6848"));
+    m_currentSliceSummaryLabel->setObjectName(QStringLiteral("planningSliceInfoLabel"));
+    m_currentSliceSummaryLabel->setWordWrap(true);
+    m_currentSliceSlider = new QSlider(Qt::Horizontal);
+    m_currentSliceSlider->setObjectName(QStringLiteral("planningSliceSlider"));
+    m_currentSliceSlider->setRange(0, 0);
+    m_currentSliceSlider->setEnabled(false);
+    currentLayout->addWidget(m_currentSliceSummaryLabel);
+    currentLayout->addWidget(m_currentSliceSlider);
+
+    compareLayout->addWidget(historyPane, 1);
+    compareLayout->addWidget(currentPane, 1);
+    auto* compareContent = new QWidget();
+    compareContent->setLayout(compareLayout);
+
+    auto* compareStack = new QGridLayout();
+    compareStack->setContentsMargins(0, 0, 0, 0);
+    compareStack->setSpacing(0);
+
+    m_annotationButton = new QToolButton();
+    m_annotationButton->setObjectName(QStringLiteral("planningIconButton"));
+    m_annotationButton->setText(QStringLiteral("\u270e"));
+    m_annotationButton->setCheckable(true);
+
+    compareStack->addWidget(compareContent, 0, 0);
+    compareStack->addWidget(m_annotationButton, 0, 0, Qt::AlignTop | Qt::AlignRight);
+    previewFrameLayout->addLayout(compareStack, 1);
     centerColumn->addWidget(previewFrame, 1);
 
     auto* bottomRow = new QHBoxLayout();
@@ -354,7 +530,7 @@ PlanningPage::PlanningPage(
 
     auto* chartCard = new QFrame();
     chartCard->setObjectName(QStringLiteral("planningBottomCard"));
-    chartCard->setMinimumWidth(520);
+    chartCard->setMinimumWidth(320);
     chartCard->setMinimumHeight(210);
     auto* chartLayout = new QVBoxLayout(chartCard);
     chartLayout->setContentsMargins(18, 12, 18, 12);
@@ -363,23 +539,29 @@ PlanningPage::PlanningPage(
     auto* chartHeader = new QHBoxLayout();
     auto* chartTitle = new QLabel(QStringLiteral("\u80fd\u91cf\u8f93\u51fa\u66f2\u7ebf (J)"));
     chartTitle->setObjectName(QStringLiteral("planningBottomTitle"));
-    m_chartSummaryLabel = new QLabel(QStringLiteral("\u5e73\u5747\u529f\u7387: 400W"));
+    m_chartSummaryLabel = new QLabel(QStringLiteral("\u5b9e\u65f6\u529f\u7387: --"));
     m_chartSummaryLabel->setObjectName(QStringLiteral("planningChartSummaryLabel"));
     chartHeader->addWidget(chartTitle);
     chartHeader->addStretch();
     chartHeader->addWidget(m_chartSummaryLabel);
 
-    auto* chartCanvas = new QFrame();
-    chartCanvas->setObjectName(QStringLiteral("planningChartCanvas"));
-    chartCanvas->setMinimumHeight(150);
+    m_energyOutputChart = new EnergyOutputChartWidget();
 
     chartLayout->addLayout(chartHeader);
-    chartLayout->addWidget(chartCanvas, 1);
-    bottomRow->addWidget(chartCard, 2);
+    chartLayout->addWidget(m_energyOutputChart, 1);
+    bottomRow->addWidget(chartCard, 1);
+
+    auto* statusCard = new QFrame();
+    statusCard->setObjectName(QStringLiteral("planningBottomCard"));
+    statusCard->setMinimumWidth(260);
+    statusCard->setMinimumHeight(210);
+    auto* statusLayout = new QVBoxLayout(statusCard);
+    statusLayout->setContentsMargins(0, 0, 0, 0);
+    statusLayout->setSpacing(0);
 
     auto* imageOpsCard = new QFrame();
     imageOpsCard->setObjectName(QStringLiteral("planningBottomCard"));
-    imageOpsCard->setMinimumWidth(260);
+    imageOpsCard->setMinimumWidth(320);
     imageOpsCard->setMinimumHeight(210);
     auto* imageOpsLayout = new QVBoxLayout(imageOpsCard);
     imageOpsLayout->setContentsMargins(18, 12, 18, 12);
@@ -398,8 +580,10 @@ PlanningPage::PlanningPage(
     imageOpsButtons->setSpacing(12);
     m_storeImageButton = new QPushButton(QStringLiteral("\u672c\u5730\u5b58\u50a8"));
     m_storeImageButton->setObjectName(QStringLiteral("planningActionButton"));
+    m_storeImageButton->setToolTip(QStringLiteral("\u5c06\u5f53\u524d\u8def\u5f84\u4e0a\u7684\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\u5bfc\u51fa\u5230\u672c\u5730 PNG \u6587\u4ef6"));
     m_loadImageButton = new QPushButton(QStringLiteral("\u8bfb\u53d6\u56fe\u50cf"));
     m_loadImageButton->setObjectName(QStringLiteral("planningActionButton"));
+    m_loadImageButton->setToolTip(QStringLiteral("\u4ece\u672c\u5730\u591a\u9009\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf\uff0c\u5e76\u5728\u5de6\u5c4f\u5bf9\u6bd4\u663e\u793a"));
     imageOpsButtons->addWidget(m_storeImageButton);
     imageOpsButtons->addWidget(m_loadImageButton);
 
@@ -407,6 +591,7 @@ PlanningPage::PlanningPage(
     imageOpsLayout->addStretch();
     imageOpsLayout->addLayout(imageOpsButtons);
     bottomRow->addWidget(imageOpsCard, 1);
+    bottomRow->addWidget(statusCard, 1);
 
     centerColumn->addLayout(bottomRow, 0);
     rootLayout->addLayout(centerColumn, 55);
@@ -545,14 +730,57 @@ PlanningPage::PlanningPage(
     auto* assessmentTitle = new QLabel(QStringLiteral("\u65b9\u6848\u8bc4\u4f30"));
     assessmentTitle->setObjectName(QStringLiteral("planningSectionLabel"));
 
+    auto* assessmentMetricsCard = new QFrame();
+    assessmentMetricsCard->setObjectName(QStringLiteral("planningAssessmentMetricsCard"));
+    auto* assessmentMetricsLayout = new QVBoxLayout(assessmentMetricsCard);
+    assessmentMetricsLayout->setContentsMargins(10, 10, 10, 10);
+    assessmentMetricsLayout->setSpacing(8);
+
+    auto* plannedVolumeRow = new QHBoxLayout();
+    auto* plannedVolumeLabel = new QLabel(QStringLiteral("\u9884\u5b9a\u4f53\u79ef"));
+    plannedVolumeLabel->setObjectName(QStringLiteral("planningAssessmentMetricLabel"));
+    m_estimatedVolumeValueLabel = new QLabel(QStringLiteral("0.00 cm\u00b3"));
+    m_estimatedVolumeValueLabel->setObjectName(QStringLiteral("planningAssessmentMetricValueLabel"));
+    plannedVolumeRow->addWidget(plannedVolumeLabel);
+    plannedVolumeRow->addStretch();
+    plannedVolumeRow->addWidget(m_estimatedVolumeValueLabel);
+
+    auto* ablatedVolumeRow = new QHBoxLayout();
+    auto* ablatedVolumeLabel = new QLabel(QStringLiteral("\u5df2\u6cbb\u7597\u4f53\u79ef"));
+    ablatedVolumeLabel->setObjectName(QStringLiteral("planningAssessmentMetricLabel"));
+    m_ablatedVolumeValueLabel = new QLabel(QStringLiteral("0.00 cm\u00b3"));
+    m_ablatedVolumeValueLabel->setObjectName(QStringLiteral("planningAssessmentMetricAccentLabel"));
+    ablatedVolumeRow->addWidget(ablatedVolumeLabel);
+    ablatedVolumeRow->addStretch();
+    ablatedVolumeRow->addWidget(m_ablatedVolumeValueLabel);
+
+    auto* coverageRatioRow = new QHBoxLayout();
+    auto* coverageRatioLabel = new QLabel(QStringLiteral("\u6cbb\u7597\u8fdb\u5ea6"));
+    coverageRatioLabel->setObjectName(QStringLiteral("planningAssessmentMetricLabel"));
+    m_coverageRatioValueLabel = new QLabel(QStringLiteral("0%"));
+    m_coverageRatioValueLabel->setObjectName(QStringLiteral("planningAssessmentMetricValueLabel"));
+    coverageRatioRow->addWidget(coverageRatioLabel);
+    coverageRatioRow->addStretch();
+    coverageRatioRow->addWidget(m_coverageRatioValueLabel);
+
+    m_coverageProgressBar = new QProgressBar();
+    m_coverageProgressBar->setRange(0, 100);
+    m_coverageProgressBar->setValue(0);
+    m_coverageProgressBar->setTextVisible(false);
+
     m_assessmentPreview = new QPlainTextEdit();
     m_assessmentPreview->setObjectName(QStringLiteral("planningSummaryEdit"));
     m_assessmentPreview->setReadOnly(true);
-    m_assessmentPreview->setMinimumHeight(110);
-    m_assessmentPreview->setMaximumHeight(140);
+    m_assessmentPreview->setMinimumHeight(0);
+    m_assessmentPreview->setMaximumHeight(QWIDGETSIZE_MAX);
 
+    assessmentMetricsLayout->addLayout(plannedVolumeRow);
+    assessmentMetricsLayout->addLayout(ablatedVolumeRow);
+    assessmentMetricsLayout->addLayout(coverageRatioRow);
+    assessmentMetricsLayout->addWidget(m_coverageProgressBar);
     assessmentLayout->addWidget(assessmentTitle);
-    assessmentLayout->addWidget(m_assessmentPreview);
+    assessmentLayout->addWidget(assessmentMetricsCard);
+    statusLayout->addWidget(m_assessmentPreview, 1);
 
     auto* planCard = new QFrame();
     planCard->setObjectName(QStringLiteral("planningModeCard"));
@@ -576,6 +804,7 @@ PlanningPage::PlanningPage(
     m_addPlanButton = new QPushButton(QStringLiteral("+ \u6dfb\u52a0"));
     m_addPlanButton->setObjectName(QStringLiteral("planningActionButton"));
     m_addPlanButton->setMinimumHeight(34);
+    m_addPlanButton->setToolTip(QStringLiteral("\u5c06\u5f53\u524d\u8def\u5f84\u4e0a\u5df2\u7f16\u8f91\u7684\u6240\u6709\u5207\u7247\u4fdd\u5b58\u4e3a\u4e00\u4e2a\u6cbb\u7597\u65b9\u6848"));
     m_deletePlanButton = new QPushButton(QStringLiteral("\u00d7 \u5220\u9664"));
     m_deletePlanButton->setObjectName(QStringLiteral("planningGhostButton"));
     m_deletePlanButton->setMinimumHeight(34);
@@ -619,25 +848,53 @@ PlanningPage::PlanningPage(
     connect(m_addPathButton, &QPushButton::clicked, this, &PlanningPage::addPathItem);
     connect(m_removePathButton, &QPushButton::clicked, this, &PlanningPage::removeCurrentPathItem);
     connect(m_acquireImageButton, &QPushButton::clicked, this, &PlanningPage::simulateImageAcquisition);
+    connect(m_pathList, &QListWidget::currentRowChanged, this, &PlanningPage::onPathSelectionChanged);
     connect(m_generate3dButton, &QPushButton::clicked, this, &PlanningPage::generateThreeDimensionalImage);
     connect(m_storeImageButton, &QPushButton::clicked, this, &PlanningPage::storeCapturedImages);
     connect(m_loadImageButton, &QPushButton::clicked, this, &PlanningPage::loadStoredImages);
+    connect(m_historySliceSlider, &QSlider::valueChanged, this, [this](int value) {
+        loadHistoricalSlice(value, true);
+    });
+    connect(m_currentSliceSlider, &QSlider::valueChanged, this, [this](int value) {
+        if (m_modelList != nullptr && value < m_modelList->count() && m_modelList->currentRow() != value) {
+            m_modelList->setCurrentRow(value);
+            return;
+        }
+        loadStagedSlice(value);
+    });
     connect(m_annotationButton, &QToolButton::clicked, this, &PlanningPage::toggleAnnotationPanel);
     connect(m_annotationCollapseButton, &QToolButton::clicked, this, &PlanningPage::toggleAnnotationPanel);
     connect(m_modelList, &QListWidget::currentRowChanged, this, &PlanningPage::onStagedSliceSelectionChanged);
     connect(m_preview, &MockUltrasoundView::annotationStrokesChanged, this, &PlanningPage::onPreviewAnnotationsChanged);
-    connect(m_generateTargetsButton, &QPushButton::clicked, this, &PlanningPage::generateDraftPlan);
-    connect(m_generateAssessmentButton, &QPushButton::clicked, this, &PlanningPage::generateDraftPlan);
+    connect(m_generateTargetsButton, &QPushButton::clicked, this, &PlanningPage::generateTargetsForCurrentSlice);
+    connect(m_generateAssessmentButton, &QPushButton::clicked, this, &PlanningPage::generateAssessmentForCurrentPlan);
     connect(m_previewPlanButton, &QPushButton::clicked, this, &PlanningPage::previewCurrentPlan);
     connect(m_addPlanButton, &QPushButton::clicked, this, &PlanningPage::saveCurrentPlan);
     connect(m_deletePlanButton, &QPushButton::clicked, this, &PlanningPage::deleteCurrentPlan);
     connect(m_editPlanButton, &QToolButton::clicked, this, &PlanningPage::editCurrentPlan);
-    connect(m_context, &ApplicationContext::selectedPatientChanged, this, &PlanningPage::updateContextSummary);
+    connect(m_respiratoryTrackingCheck, &QCheckBox::toggled, this, &PlanningPage::onRespiratoryTrackingToggled);
+    connect(m_context, &ApplicationContext::selectedPatientChanged, this, [this](const PatientRecord&) {
+        if (m_deferStartupContextSummary) {
+            if (m_context->hasSelectedPatient()) {
+                syncPatientSelector(m_context->selectedPatient().id);
+            }
+            return;
+        }
+        updateContextSummary();
+    });
     connect(m_context, &ApplicationContext::activePlanChanged, this, [this](const TherapyPlan& plan) {
+        if (m_deferStartupContextSummary) {
+            return;
+        }
         applyPlanToUi(plan);
         updateContextSummary();
     });
-    connect(m_context, &ApplicationContext::activePlanCleared, this, &PlanningPage::updateContextSummary);
+    connect(m_context, &ApplicationContext::activePlanCleared, this, [this]() {
+        if (m_deferStartupContextSummary) {
+            return;
+        }
+        updateContextSummary();
+    });
 
     const auto refreshMetrics = [this]() {
         refreshDerivedMetrics();
@@ -675,10 +932,21 @@ PlanningPage::PlanningPage(
     connect(m_annotationUndoButton, &QToolButton::clicked, m_preview, &MockUltrasoundView::undoLastAnnotation);
     connect(m_annotationClearButton, &QToolButton::clicked, m_preview, &MockUltrasoundView::clearAnnotations);
 
+    if (m_simulationDevice != nullptr) {
+        m_latestDeviceSnapshot = m_simulationDevice->latestSnapshot();
+        m_hasDeviceSnapshot = true;
+        connect(m_simulationDevice, &adapters::SimulationDeviceFacade::snapshotUpdated, this, &PlanningPage::onDeviceSnapshotUpdated);
+    }
+
     populatePatientSelector();
     refreshImagingPaths(QString());
     refreshDerivedMetrics();
-    updateContextSummary();
+    clearStartupDisplay();
+    m_activePathStateKey = pathStateKeyForRow(m_pathList != nullptr ? m_pathList->currentRow() : -1);
+    m_initializingUi = false;
+    QTimer::singleShot(0, this, [this]() {
+        m_deferStartupContextSummary = false;
+    });
 }
 
 void PlanningPage::loadDemoPatient()
@@ -704,17 +972,18 @@ void PlanningPage::loadDemoPatient()
 
 void PlanningPage::generateDraftPlan()
 {
+    activatePlanningWorkspace();
     if (!m_context->hasSelectedPatient()) {
         loadDemoPatient();
     }
 
-    TherapyPlan draftPlan = buildPlanFromUi(ApprovalState::Draft);
+    storeCurrentSliceControls();
+    TherapyPlan draftPlan = hasGeneratedSliceTargets() ? buildPlanFromSlices(ApprovalState::Draft) : buildPlanFromUi(ApprovalState::Draft);
     m_context->setActivePlan(draftPlan);
     if (m_safetyKernel != nullptr) {
         m_safetyKernel->setPlanApprovalState(draftPlan.approvalState);
     }
-    m_preview->setPlan(draftPlan);
-    m_preview->setCompletedPointCount(0);
+    refreshCurrentSliceVisualization();
     updateAssessmentText(&draftPlan);
     updatePlanPreviewText(&draftPlan);
     m_previewOverlayLabel->setVisible(false);
@@ -724,13 +993,230 @@ void PlanningPage::generateDraftPlan()
     }
 }
 
+void PlanningPage::generateTargetsForCurrentSlice()
+{
+    activatePlanningWorkspace();
+    if (!m_context->hasSelectedPatient()) {
+        loadDemoPatient();
+    }
+
+    persistCurrentSliceAnnotations();
+    storeCurrentSliceControls();
+
+    if (m_currentStagedSliceIndex < 0 || m_currentStagedSliceIndex >= m_stagedSlices.size()) {
+        updateAcquisitionSummary(
+            QStringLiteral("\u751f\u6210\u9776\u70b9"),
+            {
+                QStringLiteral("\u5f53\u524d\u8fd8\u6ca1\u6709\u53ef\u7f16\u8f91\u7684\u91c7\u96c6\u5207\u7247\u3002"),
+                QStringLiteral("\u8bf7\u5148\u5bf9\u67d0\u4e00\u6761\u8def\u5f84\u6267\u884c\u56fe\u50cf\u91c7\u96c6\u3002")
+            });
+        return;
+    }
+
+    StagedSliceState& slice = m_stagedSlices[m_currentStagedSliceIndex];
+    if (slice.annotations.isEmpty()) {
+        updateAcquisitionSummary(
+            QStringLiteral("\u751f\u6210\u9776\u70b9"),
+            {
+                QStringLiteral("\u5207\u7247\uff1a%1").arg(slice.label),
+                QStringLiteral("\u8bf7\u5148\u4f7f\u7528\u753b\u7b14\u5728\u53f3\u4fa7\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\u4e0a\u5708\u753b\u8096\u7624\u533a\u57df\u3002")
+            });
+        return;
+    }
+
+    const QRectF bounds = annotationBounds(slice.annotations);
+    if (!bounds.isValid() || bounds.width() <= 0.0 || bounds.height() <= 0.0) {
+        updateAcquisitionSummary(
+            QStringLiteral("\u751f\u6210\u9776\u70b9"),
+            {
+                QStringLiteral("\u5207\u7247\uff1a%1").arg(slice.label),
+                QStringLiteral("\u672a\u80fd\u4ece\u753b\u7b14\u8f68\u8ff9\u91cc\u8ba1\u7b97\u51fa\u6709\u6548\u7684\u8096\u7624\u533a\u57df\u3002")
+            });
+        return;
+    }
+
+    slice.targets.clear();
+    slice.pattern = m_lineTreatmentRadio->isChecked() ? TreatmentPattern::Line : TreatmentPattern::Point;
+    slice.spacingMm = m_spacingSpin->value();
+    slice.dwellSeconds = m_dwellSpin->value();
+    slice.powerWatts = m_powerSlider->value();
+    slice.respiratoryTrackingEnabled = m_respiratoryTrackingCheck->isChecked();
+    slice.deliveryMode = m_segmentedTreatmentRadio->isChecked() ? QStringLiteral("\u5206\u6bb5\u6267\u884c") : QStringLiteral("\u76f4\u63a5\u6cbb\u7597");
+
+    int pointIndex = 0;
+    const double spacing = std::max(0.5, slice.spacingMm);
+    if (slice.pattern == TreatmentPattern::Line) {
+        const int rowCount = std::max(1, static_cast<int>(std::round(bounds.height() / spacing)));
+        for (int row = 0; row < rowCount; ++row) {
+            const qreal y = bounds.top() + ((rowCount == 1) ? bounds.height() / 2.0 : (row * bounds.height() / std::max(1, rowCount - 1)));
+            QVector<TherapyPoint> rowTargets;
+            const int columnCount = std::max(2, static_cast<int>(std::round(bounds.width() / std::max(0.8, spacing * 0.8))) + 1);
+            for (int column = 0; column < columnCount; ++column) {
+                const qreal x = bounds.left() + (column * bounds.width() / std::max(1, columnCount - 1));
+                TherapyPoint point;
+                point.index = pointIndex++;
+                point.positionMm = QPointF(x, y);
+                point.dwellSeconds = slice.dwellSeconds;
+                point.powerWatts = slice.powerWatts;
+                rowTargets.push_back(point);
+            }
+
+            if (row % 2 == 1) {
+                std::reverse(rowTargets.begin(), rowTargets.end());
+            }
+            slice.targets += rowTargets;
+        }
+    } else {
+        const int rowCount = std::max(1, static_cast<int>(std::round(bounds.height() / spacing)));
+        const int columnCount = std::max(1, static_cast<int>(std::round(bounds.width() / spacing)));
+        for (int row = 0; row < rowCount; ++row) {
+            const qreal y = bounds.top() + ((rowCount == 1) ? bounds.height() / 2.0 : (row * bounds.height() / std::max(1, rowCount - 1)));
+            for (int column = 0; column < columnCount; ++column) {
+                const qreal x = bounds.left() + ((columnCount == 1) ? bounds.width() / 2.0 : (column * bounds.width() / std::max(1, columnCount - 1)));
+                TherapyPoint point;
+                point.index = pointIndex++;
+                point.positionMm = QPointF(x, y);
+                point.dwellSeconds = slice.dwellSeconds;
+                point.powerWatts = slice.powerWatts;
+                slice.targets.push_back(point);
+            }
+        }
+    }
+
+    if (slice.targets.isEmpty()) {
+        TherapyPoint centerPoint;
+        centerPoint.index = 0;
+        centerPoint.positionMm = bounds.center();
+        centerPoint.dwellSeconds = slice.dwellSeconds;
+        centerPoint.powerWatts = slice.powerWatts;
+        slice.targets.push_back(centerPoint);
+    }
+
+    slice.annotatedAreaMm2 = estimateAnnotatedAreaMm2(slice.annotations);
+    slice.estimatedVolumeCm3 = (slice.annotatedAreaMm2 * std::max(1, m_stepSpin->value())) / 1000.0;
+    const double ablationFactor = slice.pattern == TreatmentPattern::Line ? 0.82 : 0.62;
+    slice.ablatedVolumeCm3 = std::min(
+        slice.estimatedVolumeCm3,
+        (slice.targets.size() * slice.spacingMm * std::max(1, m_stepSpin->value()) * slice.spacingMm * ablationFactor) / 1000.0);
+    slice.edited = true;
+    slice.targetsGenerated = true;
+    recalculateRespiratoryTrackingForSlice(m_currentStagedSliceIndex);
+
+    refreshCurrentSliceVisualization();
+    updateSliceAssessmentMetrics();
+
+    TherapyPlan draftPlan = buildPlanFromSlices(ApprovalState::Draft);
+    m_context->setActivePlan(draftPlan);
+    if (m_safetyKernel != nullptr) {
+        m_safetyKernel->setPlanApprovalState(draftPlan.approvalState);
+    }
+    updatePlanPreviewText(&draftPlan);
+
+    updateAcquisitionSummary(
+        QStringLiteral("\u9776\u70b9\u751f\u6210\u5b8c\u6210"),
+        {
+            QStringLiteral("\u5207\u7247\uff1a%1").arg(slice.label),
+            QStringLiteral("\u6cbb\u7597\u65b9\u5f0f\uff1a%1 | %2").arg(slice.deliveryMode, patternSummaryText(slice.pattern)),
+            QStringLiteral("\u5df2\u751f\u6210\u9776\u70b9\uff1a%1 \u4e2a").arg(slice.targets.size()),
+            QStringLiteral("\u5f53\u524d\u529f\u7387\uff1a%1 W").arg(slice.powerWatts, 0, 'f', 0),
+            QStringLiteral("\u547c\u5438\u8ddf\u968f\uff1a%1").arg(slice.respiratoryTrackingEnabled ? QStringLiteral("\u5f00\u542f") : QStringLiteral("\u5173\u95ed")),
+            slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated
+                ? QStringLiteral("\u547c\u5438\u8865\u507f\uff1adX %1 mm | dY %2 mm | \u5b9e\u65f6\u9776\u70b9 %3 \u4e2a")
+                      .arg(slice.respiratoryOffsetMm.x(), 0, 'f', 2)
+                      .arg(slice.respiratoryOffsetMm.y(), 0, 'f', 2)
+                      .arg(slice.respiratoryAdjustedTargets.size())
+                : QStringLiteral("\u547c\u5438\u8865\u507f\uff1a%1").arg(
+                    slice.respiratoryTrackingEnabled
+                        ? QStringLiteral("\u7b49\u5f85\u547c\u5438\u6807\u5b9a")
+                        : QStringLiteral("\u672a\u5f00\u542f")),
+            QStringLiteral("\u9884\u4f30\u4f53\u79ef\uff1a%1 cm\u00b3 | \u5df2\u6cbb\u7597\u4f53\u79ef\uff1a%2 cm\u00b3")
+                .arg(slice.estimatedVolumeCm3, 0, 'f', 2)
+                .arg(slice.ablatedVolumeCm3, 0, 'f', 2)
+        });
+}
+
+void PlanningPage::generateAssessmentForCurrentPlan()
+{
+    activatePlanningWorkspace();
+    persistCurrentSliceAnnotations();
+    storeCurrentSliceControls();
+
+    if (!hasGeneratedSliceTargets()) {
+        updateAssessmentMetricsPanel(0.0, 0.0);
+        updateAcquisitionSummary(
+            QStringLiteral("\u65b9\u6848\u8bc4\u4f30"),
+            {
+                QStringLiteral("\u8bf7\u5148\u5bf9\u6bcf\u5f20\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\u5708\u753b\u8096\u7624\u533a\u57df\uff0c\u5e76\u70b9\u51fb\u201c\u751f\u6210\u9776\u70b9\u201d\u3002")
+            });
+        return;
+    }
+
+    double estimatedVolumeCm3 = 0.0;
+    double ablatedVolumeCm3 = 0.0;
+    int generatedSliceCount = 0;
+    int totalTargetCount = 0;
+    int respiratoryTrackedSliceCount = 0;
+    double maxRespiratoryCompensationMm = 0.0;
+    QStringList sliceLines;
+    for (const StagedSliceState& slice : m_stagedSlices) {
+        if (!slice.targetsGenerated || slice.targets.isEmpty()) {
+            continue;
+        }
+
+        ++generatedSliceCount;
+        totalTargetCount += slice.targets.size();
+        estimatedVolumeCm3 += slice.estimatedVolumeCm3;
+        ablatedVolumeCm3 += slice.ablatedVolumeCm3;
+        if (slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated) {
+            ++respiratoryTrackedSliceCount;
+            maxRespiratoryCompensationMm = std::max(
+                maxRespiratoryCompensationMm,
+                std::hypot(slice.respiratoryOffsetMm.x(), slice.respiratoryOffsetMm.y()));
+        }
+        sliceLines.push_back(
+            QStringLiteral("%1 | %2 | \u9776\u70b9 %3 | \u9884\u5b9a %4 cm\u00b3 | \u5df2\u6cbb\u7597 %5 cm\u00b3 | \u547c\u5438 %6")
+                .arg(slice.label)
+                .arg(patternSummaryText(slice.pattern))
+                .arg(slice.targets.size())
+                .arg(slice.estimatedVolumeCm3, 0, 'f', 2)
+                .arg(slice.ablatedVolumeCm3, 0, 'f', 2)
+                .arg(slice.respiratoryTrackingEnabled
+                    ? (slice.respiratoryTrackingCalibrated
+                        ? QStringLiteral("dX %1 / dY %2")
+                              .arg(slice.respiratoryOffsetMm.x(), 0, 'f', 2)
+                              .arg(slice.respiratoryOffsetMm.y(), 0, 'f', 2)
+                        : QStringLiteral("\u5f00\u542f\u5f85\u6807\u5b9a"))
+                    : QStringLiteral("\u5173")));
+    }
+
+    updateAssessmentMetricsPanel(estimatedVolumeCm3, ablatedVolumeCm3);
+
+    QStringList lines {
+        QStringLiteral("\u5f53\u524d\u901a\u9053\uff1a%1").arg(currentChannelLabel()),
+        QStringLiteral("\u5df2\u8bc4\u4f30\u5207\u7247\uff1a%1 / %2").arg(generatedSliceCount).arg(m_stagedSlices.size()),
+        QStringLiteral("\u603b\u9776\u70b9\u6570\uff1a%1").arg(totalTargetCount),
+        QStringLiteral("\u547c\u5438\u8ddf\u968f\u5207\u7247\uff1a%1 | \u6700\u5927\u8865\u507f\uff1a%2 mm")
+            .arg(respiratoryTrackedSliceCount)
+            .arg(maxRespiratoryCompensationMm, 0, 'f', 2),
+        QStringLiteral("\u9884\u5b9a\u4f53\u79ef\uff1a%1 cm\u00b3").arg(estimatedVolumeCm3, 0, 'f', 2),
+        QStringLiteral("\u5df2\u6cbb\u7597\u4f53\u79ef\uff1a%1 cm\u00b3").arg(ablatedVolumeCm3, 0, 'f', 2),
+        QStringLiteral("\u8986\u76d6\u7387\uff1a%1%").arg(estimatedVolumeCm3 <= 0.0 ? 0 : static_cast<int>(std::round((ablatedVolumeCm3 / estimatedVolumeCm3) * 100.0)))
+    };
+    if (!sliceLines.isEmpty()) {
+        lines << QString() << QStringLiteral("\u5207\u7247\u660e\u7ec6\uff1a") << sliceLines;
+    }
+    updateAcquisitionSummary(QStringLiteral("\u65b9\u6848\u8bc4\u4f30"), lines);
+}
+
 void PlanningPage::approveCurrentPlan()
 {
+    activatePlanningWorkspace();
     if (!m_context->hasActivePlan()) {
         generateDraftPlan();
     }
 
-    TherapyPlan approvedPlan = buildPlanFromUi(ApprovalState::Locked);
+    storeCurrentSliceControls();
+    TherapyPlan approvedPlan = hasGeneratedSliceTargets() ? buildPlanFromSlices(ApprovalState::Locked) : buildPlanFromUi(ApprovalState::Locked);
     approvedPlan.id = m_context->activePlan().id;
     approvedPlan.approvedAt = QDateTime::currentDateTime();
 
@@ -748,6 +1234,7 @@ void PlanningPage::approveCurrentPlan()
 
 void PlanningPage::revertPlanToDraft()
 {
+    activatePlanningWorkspace();
     if (!m_context->hasActivePlan()) {
         return;
     }
@@ -759,7 +1246,11 @@ void PlanningPage::revertPlanToDraft()
     if (m_safetyKernel != nullptr) {
         m_safetyKernel->setPlanApprovalState(plan.approvalState);
     }
-    m_preview->setPlan(plan);
+    if (m_stagedSlices.isEmpty()) {
+        m_preview->setPlan(plan);
+    } else {
+        refreshCurrentSliceVisualization();
+    }
     updatePlanPreviewText(&plan);
 }
 
@@ -769,6 +1260,7 @@ void PlanningPage::updateContextSummary()
         const PatientRecord& patient = m_context->selectedPatient();
         syncPatientSelector(patient.id);
         refreshImagingPaths(patient.id);
+        loadHistoricalImages(false);
         m_patientSummaryLabel->setText(
             QStringLiteral("\u5f53\u524d\u60a3\u8005\n\u59d3\u540d\uff1a%1\n\u7f16\u53f7\uff1a%2\n\u5e74\u9f84\uff1a%3\n\u8bca\u65ad\uff1a%4")
                 .arg(patient.name)
@@ -777,6 +1269,9 @@ void PlanningPage::updateContextSummary()
                 .arg(patient.diagnosis));
     } else {
         refreshImagingPaths(QString());
+        m_loadedHistoryPatientId.clear();
+        clearHistoricalComparison(QStringLiteral("\u5de6\u5c4f\u663e\u793a\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+        updateAssessmentMetricsPanel(0.0, 0.0);
         m_patientSummaryLabel->setText(QStringLiteral("\u5f53\u524d\u60a3\u8005\n\u672a\u9009\u62e9\u60a3\u8005"));
     }
 
@@ -789,15 +1284,30 @@ void PlanningPage::updateContextSummary()
                 .arg(plan.respiratoryTrackingEnabled ? QStringLiteral("\u5f00\u542f") : QStringLiteral("\u5173\u95ed")));
         updateAssessmentText(&plan);
         updatePlanPreviewText(&plan);
-        m_previewOverlayLabel->setVisible(false);
+        if (m_stagedSlices.isEmpty()) {
+            if (m_preview != nullptr) {
+                m_preview->clearBackgroundImage();
+                m_preview->setPlan(plan);
+                m_preview->setSliceContext(0, 0);
+                m_preview->setCaption(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u65b9\u6848\u9884\u89c8"));
+            }
+            m_previewOverlayLabel->setVisible(false);
+        } else {
+            loadStagedSlice(m_currentStagedSliceIndex >= 0 ? m_currentStagedSliceIndex : 0);
+        }
     } else {
         m_planSummaryLabel->setText(QStringLiteral("\u6d3b\u52a8\u65b9\u6848\n\u5c1a\u672a\u751f\u6210"));
         updateAssessmentText(nullptr);
         updatePlanPreviewText(nullptr);
         m_preview->clearPlan();
         if (m_stagedImageSeries.isEmpty()) {
-            m_previewOverlayLabel->setText(QStringLiteral("\u56fe\u50cf\u663e\u793a\u533a\u57df"));
+            m_preview->setSliceContext(0, 0);
+            m_preview->setCaption(QStringLiteral(""));
+            m_previewOverlayLabel->setText(QStringLiteral("\u53f3\u5c4f\u663e\u793a\u5f53\u524d\u6cbb\u7597\u5f71\u50cf"));
             m_previewOverlayLabel->setVisible(true);
+        } else {
+            loadStagedSlice(m_currentStagedSliceIndex >= 0 ? m_currentStagedSliceIndex : 0);
+            m_previewOverlayLabel->setVisible(false);
         }
     }
 }
@@ -869,8 +1379,62 @@ TherapyPlan PlanningPage::buildPlanFromUi(ApprovalState approvalState) const
     return plan;
 }
 
+TherapyPlan PlanningPage::buildPlanFromSlices(ApprovalState approvalState) const
+{
+    TherapyPlan plan = buildPlanFromUi(approvalState);
+    plan.segments.clear();
+    plan.pattern = m_lineTreatmentRadio->isChecked() ? TreatmentPattern::Line : TreatmentPattern::Point;
+
+    int segmentIndex = 0;
+    int totalTargetCount = 0;
+    double totalDurationSeconds = 0.0;
+    bool containsLineSlice = false;
+    bool containsRespiratoryTracking = false;
+    for (const StagedSliceState& slice : m_stagedSlices) {
+        if (!slice.targetsGenerated || slice.targets.isEmpty()) {
+            continue;
+        }
+
+        TherapySegment segment;
+        segment.id = QStringLiteral("%1-S%2").arg(plan.id).arg(segmentIndex + 1);
+        segment.orderIndex = segmentIndex;
+        segment.label = QStringLiteral("%1 | %2").arg(slice.label, patternSummaryText(slice.pattern));
+        segment.points = slice.targets;
+        segment.plannedDurationSeconds = 0.0;
+        for (const TherapyPoint& point : segment.points) {
+            segment.plannedDurationSeconds += point.dwellSeconds;
+        }
+
+        totalTargetCount += segment.points.size();
+        totalDurationSeconds += segment.plannedDurationSeconds;
+        containsLineSlice = containsLineSlice || slice.pattern == TreatmentPattern::Line;
+        containsRespiratoryTracking = containsRespiratoryTracking || slice.respiratoryTrackingEnabled;
+        plan.segments.push_back(segment);
+        ++segmentIndex;
+    }
+
+    if (containsLineSlice) {
+        plan.pattern = TreatmentPattern::Line;
+    }
+    if (m_segmentedTreatmentRadio->isChecked()) {
+        plan.pattern = TreatmentPattern::Segmented;
+    }
+    if (!plan.segments.isEmpty()) {
+        plan.name = m_context->hasActivePlan() && !m_context->activePlan().name.trimmed().isEmpty()
+            ? m_context->activePlan().name
+            : QStringLiteral("%1-\u6cbb\u7597\u65b9\u6848").arg(currentChannelLabel());
+        plan.depthMm = static_cast<double>(m_stagedSlices.size() * m_stepSpin->value());
+        plan.respiratoryTrackingEnabled = containsRespiratoryTracking;
+    }
+
+    Q_UNUSED(totalTargetCount)
+    Q_UNUSED(totalDurationSeconds)
+    return plan;
+}
+
 void PlanningPage::editCurrentPlan()
 {
+    activatePlanningWorkspace();
     if (!m_context->hasSelectedPatient()) {
         loadDemoPatient();
     }
@@ -948,16 +1512,32 @@ void PlanningPage::editCurrentPlan()
 
 void PlanningPage::saveCurrentPlan()
 {
+    activatePlanningWorkspace();
     if (!m_context->hasSelectedPatient()) {
         loadDemoPatient();
     }
 
-    TherapyPlan planToSave = m_context->hasActivePlan()
-        ? buildPlanFromUi(m_context->activePlan().approvalState)
-        : buildPlanFromUi(ApprovalState::Draft);
+    persistCurrentSliceAnnotations();
+    storeCurrentSliceControls();
+
+    if (!hasGeneratedSliceTargets()) {
+        updateAcquisitionSummary(
+            QStringLiteral("\u65b9\u6848\u4fdd\u5b58"),
+            {
+                QStringLiteral("\u8bf7\u5148\u9488\u5bf9\u8be5\u8def\u5f84\u4e0a\u7684\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\u9010\u5f20\u5708\u753b\u8096\u7624\u533a\u57df\uff0c\u5e76\u751f\u6210\u9776\u70b9\u3002")
+            });
+        return;
+    }
+
+    const ApprovalState saveState = (!m_context->hasActivePlan() || m_context->activePlan().approvalState == ApprovalState::Draft)
+        ? ApprovalState::Locked
+        : m_context->activePlan().approvalState;
+    TherapyPlan planToSave = buildPlanFromSlices(saveState);
     if (m_context->hasActivePlan()) {
         planToSave.id = m_context->activePlan().id;
-        planToSave.name = m_context->activePlan().name;
+        if (!m_context->activePlan().name.trimmed().isEmpty()) {
+            planToSave.name = m_context->activePlan().name;
+        }
         planToSave.coordinateX = m_context->activePlan().coordinateX;
         planToSave.coordinateY = m_context->activePlan().coordinateY;
         planToSave.coordinateZ = m_context->activePlan().coordinateZ;
@@ -983,6 +1563,22 @@ void PlanningPage::saveCurrentPlan()
     }
     updateAssessmentText(&planToSave);
     updatePlanPreviewText(&planToSave);
+    updateSliceAssessmentMetrics();
+    int sliceCount = 0;
+    int targetCount = 0;
+    for (const TherapySegment& segment : planToSave.segments) {
+        ++sliceCount;
+        targetCount += segment.points.size();
+    }
+    updateAcquisitionSummary(
+        QStringLiteral("\u65b9\u6848\u4fdd\u5b58\u5b8c\u6210"),
+        {
+            QStringLiteral("\u65b9\u6848\uff1a%1").arg(planToSave.name),
+            QStringLiteral("\u72b6\u6001\uff1a%1").arg(toDisplayString(planToSave.approvalState)),
+            QStringLiteral("\u5207\u7247\u6570\uff1a%1").arg(sliceCount),
+            QStringLiteral("\u603b\u9776\u70b9\u6570\uff1a%1").arg(targetCount),
+            QStringLiteral("\u8be5\u65b9\u6848\u5df2\u53ef\u5728\u6cbb\u7597\u9636\u6bb5\u4e2d\u88ab\u9009\u7528\u3002")
+        });
     if (m_auditService != nullptr) {
         m_auditService->appendEntry(QStringLiteral("physician"), QStringLiteral("planning"), QStringLiteral("\u4fdd\u5b58\u6cbb\u7597\u65b9\u6848\uff1a%1").arg(planToSave.id));
     }
@@ -990,7 +1586,17 @@ void PlanningPage::saveCurrentPlan()
 
 void PlanningPage::deleteCurrentPlan()
 {
+    activatePlanningWorkspace();
     if (!m_context->hasActivePlan()) {
+        if (hasGeneratedSliceTargets()) {
+            clearSliceTargets(true);
+            updateAcquisitionSummary(
+                QStringLiteral("\u5220\u9664\u65b9\u6848"),
+                {
+                    QStringLiteral("\u5f53\u524d\u672a\u4fdd\u5b58\u7684\u5207\u7247\u7f16\u8f91\u5df2\u6e05\u7a7a\uff0c\u8bf7\u91cd\u65b0\u5bf9\u6bcf\u5f20\u5f71\u50cf\u8fdb\u884c\u5708\u753b\u548c\u751f\u6210\u9776\u70b9\u3002")
+                });
+            return;
+        }
         updateAcquisitionSummary(
             QStringLiteral("\u5220\u9664\u65b9\u6848"),
             {QStringLiteral("\u5f53\u524d\u6ca1\u6709\u53ef\u5220\u9664\u7684\u6d3b\u52a8\u65b9\u6848\u3002")});
@@ -1009,9 +1615,16 @@ void PlanningPage::deleteCurrentPlan()
     }
 
     m_context->clearActivePlan();
+    clearSliceTargets(true);
     if (m_safetyKernel != nullptr) {
         m_safetyKernel->setPlanApprovalState(ApprovalState::Draft);
     }
+    updateAcquisitionSummary(
+        QStringLiteral("\u5220\u9664\u65b9\u6848"),
+        {
+            QStringLiteral("\u65b9\u6848\u7f16\u53f7\uff1a%1").arg(planId),
+            QStringLiteral("\u5f53\u524d\u8def\u5f84\u4e0a\u7684\u5207\u7247\u7f16\u8f91\u548c\u9776\u70b9\u5df2\u88ab\u6e05\u7a7a\uff0c\u8bf7\u91cd\u65b0\u7f16\u8f91\u3002")
+        });
     if (m_auditService != nullptr) {
         m_auditService->appendEntry(QStringLiteral("physician"), QStringLiteral("planning"), QStringLiteral("\u5220\u9664\u6cbb\u7597\u65b9\u6848\uff1a%1").arg(planId));
     }
@@ -1019,6 +1632,9 @@ void PlanningPage::deleteCurrentPlan()
 
 void PlanningPage::toggleAnnotationPanel()
 {
+    if (!m_initializingUi) {
+        activatePlanningWorkspace();
+    }
     if (m_annotationPanel == nullptr) {
         return;
     }
@@ -1033,15 +1649,131 @@ void PlanningPage::toggleAnnotationPanel()
     }
 }
 
+void PlanningPage::onPathSelectionChanged(int row)
+{
+    if (row < 0) {
+        updatePathActionState();
+        return;
+    }
+    if (!m_initializingUi) {
+        activatePlanningWorkspace();
+    }
+
+    const QString newPathStateKey = pathStateKeyForRow(row);
+    if (newPathStateKey.isEmpty()) {
+        return;
+    }
+    if (!m_activePathStateKey.isEmpty() && m_activePathStateKey == newPathStateKey) {
+        return;
+    }
+
+    saveCurrentPathState();
+    loadPathState(row);
+    updatePathActionState();
+}
+
 void PlanningPage::onStagedSliceSelectionChanged(int row)
 {
+    if (!m_initializingUi) {
+        activatePlanningWorkspace();
+    }
     persistCurrentSliceAnnotations();
+    storeCurrentSliceControls();
     loadStagedSlice(row);
 }
 
 void PlanningPage::onPreviewAnnotationsChanged()
 {
     persistCurrentSliceAnnotations();
+    if (m_currentStagedSliceIndex < 0 || m_currentStagedSliceIndex >= m_stagedSlices.size()) {
+        return;
+    }
+
+    StagedSliceState& slice = m_stagedSlices[m_currentStagedSliceIndex];
+    if (slice.targetsGenerated) {
+        slice.targets.clear();
+        slice.targetsGenerated = false;
+        slice.annotatedAreaMm2 = 0.0;
+        slice.estimatedVolumeCm3 = 0.0;
+        slice.ablatedVolumeCm3 = 0.0;
+        clearRespiratoryTrackingState(slice);
+        refreshCurrentSliceVisualization();
+        updateSliceAssessmentMetrics();
+        refreshDerivedMetrics();
+        if (hasGeneratedSliceTargets()) {
+            const ApprovalState previewState = m_context->hasActivePlan() ? m_context->activePlan().approvalState : ApprovalState::Draft;
+            const TherapyPlan refreshedPlan = buildPlanFromSlices(previewState);
+            updatePlanPreviewText(&refreshedPlan);
+        } else {
+            updatePlanPreviewText(nullptr);
+        }
+    }
+}
+
+void PlanningPage::onRespiratoryTrackingToggled(bool enabled)
+{
+    if (!m_initializingUi) {
+        activatePlanningWorkspace();
+    }
+
+    if (m_currentStagedSliceIndex < 0 || m_currentStagedSliceIndex >= m_stagedSlices.size()) {
+        refreshDerivedMetrics();
+        return;
+    }
+
+    storeCurrentSliceControls();
+    StagedSliceState& slice = m_stagedSlices[m_currentStagedSliceIndex];
+    if (!enabled) {
+        clearRespiratoryTrackingState(slice);
+        refreshCurrentSliceVisualization();
+        updateAcquisitionSummary(
+            QStringLiteral("\u547c\u5438\u8ddf\u968f"),
+            {
+                QStringLiteral("\u5207\u7247\uff1a%1").arg(slice.label),
+                QStringLiteral("\u5df2\u5173\u95ed\u547c\u5438\u8ddf\u968f\u8865\u507f\u3002")
+            });
+        return;
+    }
+
+    if (!slice.targetsGenerated || slice.annotations.isEmpty()) {
+        updateAcquisitionSummary(
+            QStringLiteral("\u547c\u5438\u8ddf\u968f"),
+            {
+                QStringLiteral("\u5207\u7247\uff1a%1").arg(slice.label),
+                QStringLiteral("\u8bf7\u5148\u5708\u753b\u80bf\u7624\u533a\u57df\u5e76\u751f\u6210\u9776\u70b9\uff0c\u7cfb\u7edf\u624d\u80fd\u5b8c\u6210\u547c\u5438\u6807\u5b9a\u3002")
+            });
+        return;
+    }
+
+    recalculateRespiratoryTrackingForSlice(m_currentStagedSliceIndex);
+    refreshCurrentSliceVisualization();
+    updateAcquisitionSummary(
+        QStringLiteral("\u547c\u5438\u8ddf\u968f"),
+        {
+            QStringLiteral("\u5207\u7247\uff1a%1").arg(slice.label),
+            slice.respiratorySummary.isEmpty()
+                ? QStringLiteral("\u5f53\u524d\u56fe\u50cf\u8fd8\u65e0\u6cd5\u5b8c\u6210\u547c\u5438\u6807\u5b9a\u3002")
+                : slice.respiratorySummary
+        });
+}
+
+void PlanningPage::onDeviceSnapshotUpdated(const DeviceSnapshot& snapshot)
+{
+    m_latestDeviceSnapshot = snapshot;
+    m_hasDeviceSnapshot = true;
+    refreshPowerCurve();
+
+    if (m_currentStagedSliceIndex < 0 || m_currentStagedSliceIndex >= m_stagedSlices.size()) {
+        return;
+    }
+
+    const StagedSliceState& slice = m_stagedSlices.at(m_currentStagedSliceIndex);
+    if (!slice.respiratoryTrackingEnabled || !slice.targetsGenerated) {
+        return;
+    }
+
+    recalculateRespiratoryTrackingForSlice(m_currentStagedSliceIndex);
+    refreshCurrentSliceVisualization();
 }
 
 void PlanningPage::persistCurrentSliceAnnotations()
@@ -1057,28 +1789,333 @@ void PlanningPage::persistCurrentSliceAnnotations()
 
 void PlanningPage::loadStagedSlice(int row)
 {
-    m_currentStagedSliceIndex = row;
-    if (row < 0 || row >= m_stagedSlices.size()) {
+    const int sliceCount = m_stagedSlices.size();
+    if (m_currentSliceSlider != nullptr) {
+        const QSignalBlocker blocker(m_currentSliceSlider);
+        m_currentSliceSlider->setRange(0, std::max(0, sliceCount - 1));
+        m_currentSliceSlider->setEnabled(sliceCount > 1);
+        if (sliceCount == 0) {
+            m_currentSliceSlider->setValue(0);
+        }
+    }
+
+    if (sliceCount == 0) {
+        m_currentStagedSliceIndex = -1;
         if (m_preview != nullptr) {
             m_preview->setAnnotationStrokes({});
-            m_preview->setCaption(QStringLiteral(""));
+            m_preview->setSliceContext(0, 0);
+            if (!m_context->hasActivePlan()) {
+                m_preview->setCaption(QStringLiteral(""));
+            }
+        }
+        if (m_currentSliceSummaryLabel != nullptr) {
+            const QString summaryText = m_context->hasActivePlan()
+                ? QStringLiteral("\u5f53\u524d\u6cbb\u7597\u9884\u89c8 | \u5c1a\u672a\u91c7\u96c6\u5207\u7247")
+                : QStringLiteral("\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\uff1a\u7b49\u5f85\u91c7\u96c6\u6216\u9884\u89c8\u65b9\u6848");
+            m_currentSliceSummaryLabel->setText(summaryText);
+            m_currentSliceSummaryLabel->setToolTip(QString());
         }
         return;
     }
 
-    const StagedSliceState& slice = m_stagedSlices.at(row);
-    if (m_preview != nullptr) {
-        m_preview->setAnnotationStrokes(slice.annotations);
-        m_preview->setCaption(QStringLiteral("\u6682\u5b58\u5207\u7247 %1/%2").arg(row + 1).arg(m_stagedSlices.size()));
+    const int safeRow = qBound(0, row, sliceCount - 1);
+    m_currentStagedSliceIndex = safeRow;
+
+    if (m_currentSliceSlider != nullptr && m_currentSliceSlider->value() != safeRow) {
+        const QSignalBlocker blocker(m_currentSliceSlider);
+        m_currentSliceSlider->setValue(safeRow);
     }
 
+    restoreSliceControls(safeRow);
+    recalculateRespiratoryTrackingForSlice(safeRow);
+    refreshCurrentSliceVisualization();
+
+    const StagedSliceState& slice = m_stagedSlices.at(safeRow);
     const QStringList lines {
         QStringLiteral("\u5f53\u524d\u5207\u7247\uff1a%1").arg(slice.label),
         QStringLiteral("\u6682\u5b58\u8def\u5f84\uff1a%1").arg(slice.image.storagePath),
         QStringLiteral("\u7f16\u8f91\u72b6\u6001\uff1a%1").arg(slice.edited ? QStringLiteral("\u5df2\u5708\u753b") : QStringLiteral("\u672a\u5708\u753b")),
-        QStringLiteral("\u5f53\u524d\u7b14\u8ff9\u6570\uff1a%1").arg(slice.annotations.size())
+        QStringLiteral("\u5f53\u524d\u7b14\u8ff9\u6570\uff1a%1").arg(slice.annotations.size()),
+        QStringLiteral("\u5f53\u524d\u9776\u70b9\u6570\uff1a%1").arg(slice.targets.size()),
+        QStringLiteral("\u547c\u5438\u8ddf\u968f\uff1a%1").arg(
+            slice.respiratoryTrackingEnabled
+                ? (slice.respiratoryTrackingCalibrated
+                    ? QStringLiteral("\u5df2\u6807\u5b9a | dX %1 mm / dY %2 mm")
+                          .arg(slice.respiratoryOffsetMm.x(), 0, 'f', 2)
+                          .arg(slice.respiratoryOffsetMm.y(), 0, 'f', 2)
+                    : QStringLiteral("\u5df2\u5f00\u542f\uff0c\u5f85\u6807\u5b9a"))
+                : QStringLiteral("\u672a\u5f00\u542f"))
     };
     updateAcquisitionSummary(QStringLiteral("\u5207\u7247\u7f16\u8f91"), lines);
+}
+
+QPixmap PlanningPage::renderCurrentSlicePixmap(int row, const QSize& size) const
+{
+    if (row < 0 || row >= m_stagedSlices.size() || !size.isValid()) {
+        return {};
+    }
+
+    const StagedSliceState& slice = m_stagedSlices.at(row);
+    MockUltrasoundView renderView;
+    renderView.resize(size);
+    renderView.setCaption(QStringLiteral("%1 | %2").arg(slice.label, patternSummaryText(slice.pattern)));
+    renderView.setSliceContext(row, m_stagedSlices.size());
+    renderView.setAnnotationStrokes(slice.annotations);
+    if (slice.targetsGenerated && !slice.targets.isEmpty()) {
+        TherapyPlan previewPlan;
+        previewPlan.pattern = slice.pattern;
+        TherapySegment segment;
+        segment.id = QStringLiteral("PREVIEW-%1").arg(row + 1);
+        segment.orderIndex = 0;
+        segment.label = slice.label;
+        segment.points = slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated && !slice.respiratoryAdjustedTargets.isEmpty()
+            ? slice.respiratoryAdjustedTargets
+            : slice.targets;
+        for (const TherapyPoint& point : segment.points) {
+            segment.plannedDurationSeconds += point.dwellSeconds;
+        }
+        previewPlan.segments.push_back(segment);
+        renderView.setPlan(previewPlan);
+        renderView.setCompletedPointCount(0);
+    } else {
+        renderView.clearPlan();
+    }
+
+    QPixmap pixmap(size);
+    pixmap.fill(Qt::transparent);
+    renderView.render(&pixmap);
+    return pixmap;
+}
+
+void PlanningPage::refreshCurrentSliceVisualization()
+{
+    if (m_preview == nullptr) {
+        return;
+    }
+
+    if (m_currentStagedSliceIndex < 0 || m_currentStagedSliceIndex >= m_stagedSlices.size()) {
+        m_preview->clearBackgroundImage();
+        if (!m_context->hasActivePlan()) {
+            m_preview->clearPlan();
+        }
+        return;
+    }
+
+    const StagedSliceState& slice = m_stagedSlices.at(m_currentStagedSliceIndex);
+    m_preview->clearBackgroundImage();
+    m_preview->setAnnotationStrokes(slice.annotations);
+    m_preview->setSliceContext(m_currentStagedSliceIndex, m_stagedSlices.size());
+    const QString respiratoryCaption = slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated
+        ? QStringLiteral(" | \u547c\u5438\u8865\u507f dX %1 dY %2")
+              .arg(slice.respiratoryOffsetMm.x(), 0, 'f', 1)
+              .arg(slice.respiratoryOffsetMm.y(), 0, 'f', 1)
+        : QString();
+    m_preview->setCaption(
+        QStringLiteral("\u5f53\u524d\u6cbb\u7597 %1/%2%3")
+            .arg(m_currentStagedSliceIndex + 1)
+            .arg(m_stagedSlices.size())
+            .arg(respiratoryCaption));
+    m_preview->setCompletedPointCount(0);
+    if (slice.targetsGenerated && !slice.targets.isEmpty()) {
+        TherapyPlan previewPlan;
+        previewPlan.pattern = slice.pattern;
+        TherapySegment segment;
+        segment.id = QStringLiteral("SLICE-%1").arg(m_currentStagedSliceIndex + 1);
+        segment.orderIndex = 0;
+        segment.label = slice.label;
+        segment.points = slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated && !slice.respiratoryAdjustedTargets.isEmpty()
+            ? slice.respiratoryAdjustedTargets
+            : slice.targets;
+        for (const TherapyPoint& point : segment.points) {
+            segment.plannedDurationSeconds += point.dwellSeconds;
+        }
+        previewPlan.segments.push_back(segment);
+        m_preview->setPlan(previewPlan);
+    } else {
+        m_preview->clearPlan();
+    }
+
+    if (m_previewOverlayLabel != nullptr) {
+        m_previewOverlayLabel->setVisible(false);
+    }
+    if (m_currentSliceSummaryLabel != nullptr) {
+        m_currentSliceSummaryLabel->setText(
+            QStringLiteral("\u7b2c %1/%2 \u5f20 | %3 | \u7b14\u8ff9 %4 | \u9776\u70b9 %5%6")
+                .arg(m_currentStagedSliceIndex + 1)
+                .arg(m_stagedSlices.size())
+                .arg(slice.image.storagePath)
+                .arg(slice.annotations.size())
+                .arg(slice.targets.size())
+                .arg(slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated
+                    ? QStringLiteral(" | \u547c\u5438\u8865\u507f dX %1 / dY %2")
+                          .arg(slice.respiratoryOffsetMm.x(), 0, 'f', 2)
+                          .arg(slice.respiratoryOffsetMm.y(), 0, 'f', 2)
+                    : QString()));
+        m_currentSliceSummaryLabel->setToolTip(slice.image.storagePath);
+    }
+}
+
+void PlanningPage::restoreSliceControls(int row)
+{
+    if (row < 0 || row >= m_stagedSlices.size()) {
+        return;
+    }
+
+    const StagedSliceState& slice = m_stagedSlices.at(row);
+    const QSignalBlocker spacingBlocker(m_spacingSpin);
+    const QSignalBlocker dwellBlocker(m_dwellSpin);
+    const QSignalBlocker powerSliderBlocker(m_powerSlider);
+    const QSignalBlocker powerSpinBlocker(m_powerSpin);
+    const QSignalBlocker respiratoryBlocker(m_respiratoryTrackingCheck);
+    const QSignalBlocker directBlocker(m_directTreatmentRadio);
+    const QSignalBlocker segmentedBlocker(m_segmentedTreatmentRadio);
+    const QSignalBlocker pointBlocker(m_pointTreatmentRadio);
+    const QSignalBlocker lineBlocker(m_lineTreatmentRadio);
+
+    if (slice.spacingMm > 0.0) {
+        m_spacingSpin->setValue(slice.spacingMm);
+    }
+    if (slice.dwellSeconds > 0.0) {
+        m_dwellSpin->setValue(slice.dwellSeconds);
+    }
+    if (slice.powerWatts > 0.0) {
+        m_powerSlider->setValue(static_cast<int>(slice.powerWatts));
+        m_powerSpin->setValue(slice.powerWatts);
+    }
+    m_respiratoryTrackingCheck->setChecked(slice.respiratoryTrackingEnabled);
+    m_segmentedTreatmentRadio->setChecked(slice.deliveryMode == QStringLiteral("\u5206\u6bb5\u6267\u884c"));
+    m_directTreatmentRadio->setChecked(slice.deliveryMode != QStringLiteral("\u5206\u6bb5\u6267\u884c"));
+    m_lineTreatmentRadio->setChecked(slice.pattern == TreatmentPattern::Line);
+    m_pointTreatmentRadio->setChecked(slice.pattern != TreatmentPattern::Line);
+    refreshDerivedMetrics();
+}
+
+void PlanningPage::storeCurrentSliceControls()
+{
+    if (m_currentStagedSliceIndex < 0 || m_currentStagedSliceIndex >= m_stagedSlices.size()) {
+        return;
+    }
+
+    StagedSliceState& slice = m_stagedSlices[m_currentStagedSliceIndex];
+    slice.pattern = m_lineTreatmentRadio->isChecked() ? TreatmentPattern::Line : TreatmentPattern::Point;
+    slice.spacingMm = m_spacingSpin->value();
+    slice.dwellSeconds = m_dwellSpin->value();
+    slice.powerWatts = m_powerSlider->value();
+    slice.respiratoryTrackingEnabled = m_respiratoryTrackingCheck->isChecked();
+    slice.deliveryMode = m_segmentedTreatmentRadio->isChecked() ? QStringLiteral("\u5206\u6bb5\u6267\u884c") : QStringLiteral("\u76f4\u63a5\u6cbb\u7597");
+}
+
+void PlanningPage::clearRespiratoryTrackingState(StagedSliceState& slice)
+{
+    slice.respiratoryAdjustedTargets.clear();
+    slice.respiratoryCalibrationBoxMm = QRectF {};
+    slice.respiratoryBaselineCentroidMm = QPointF {};
+    slice.respiratoryLiveCentroidMm = QPointF {};
+    slice.respiratoryOffsetMm = QPointF {};
+    slice.respiratorySummary.clear();
+    slice.respiratoryTrackingCalibrated = false;
+}
+
+void PlanningPage::recalculateRespiratoryTrackingForSlice(int row)
+{
+    if (row < 0 || row >= m_stagedSlices.size()) {
+        return;
+    }
+
+    StagedSliceState& slice = m_stagedSlices[row];
+    if (!slice.respiratoryTrackingEnabled || !slice.targetsGenerated || slice.targets.isEmpty() || slice.annotations.isEmpty()) {
+        clearRespiratoryTrackingState(slice);
+        return;
+    }
+
+    const DeviceSnapshot* snapshot = m_hasDeviceSnapshot ? &m_latestDeviceSnapshot : nullptr;
+    const RespiratoryFollowResult result = computeRespiratoryFollowResult(
+        slice.annotations,
+        slice.targets,
+        row,
+        m_stagedSlices.size(),
+        snapshot);
+    if (!result.valid) {
+        clearRespiratoryTrackingState(slice);
+        return;
+    }
+
+    slice.respiratoryAdjustedTargets = result.correctedTargets;
+    slice.respiratoryCalibrationBoxMm = result.calibrationBoxMm;
+    slice.respiratoryBaselineCentroidMm = result.baselineCentroidMm;
+    slice.respiratoryLiveCentroidMm = result.liveCentroidMm;
+    slice.respiratoryOffsetMm = result.deltaMm;
+    slice.respiratorySummary = result.summary;
+    slice.respiratoryTrackingCalibrated = true;
+}
+
+void PlanningPage::clearSliceTargets(bool clearAnnotations)
+{
+    for (StagedSliceState& slice : m_stagedSlices) {
+        slice.targets.clear();
+        slice.targetsGenerated = false;
+        slice.annotatedAreaMm2 = 0.0;
+        slice.estimatedVolumeCm3 = 0.0;
+        slice.ablatedVolumeCm3 = 0.0;
+        clearRespiratoryTrackingState(slice);
+        if (clearAnnotations) {
+            slice.annotations.clear();
+            slice.edited = false;
+        }
+    }
+
+    if (clearAnnotations && m_preview != nullptr) {
+        m_preview->setAnnotationStrokes({});
+    }
+    updateSliceAssessmentMetrics();
+    refreshCurrentSliceVisualization();
+    refreshDerivedMetrics();
+    if (!m_context->hasActivePlan()) {
+        updatePlanPreviewText(nullptr);
+    }
+}
+
+void PlanningPage::updateSliceAssessmentMetrics()
+{
+    double estimatedVolumeCm3 = 0.0;
+    double ablatedVolumeCm3 = 0.0;
+    for (const StagedSliceState& slice : m_stagedSlices) {
+        if (!slice.targetsGenerated || slice.targets.isEmpty()) {
+            continue;
+        }
+        estimatedVolumeCm3 += slice.estimatedVolumeCm3;
+        ablatedVolumeCm3 += slice.ablatedVolumeCm3;
+    }
+    updateAssessmentMetricsPanel(estimatedVolumeCm3, ablatedVolumeCm3);
+}
+
+void PlanningPage::updateAssessmentMetricsPanel(double estimatedVolumeCm3, double ablatedVolumeCm3)
+{
+    const double clampedEstimated = std::max(0.0, estimatedVolumeCm3);
+    const double clampedAblated = std::max(0.0, ablatedVolumeCm3);
+    const int coverageRatio = clampedEstimated <= 0.0
+        ? 0
+        : static_cast<int>(std::round(std::min(1.0, clampedAblated / clampedEstimated) * 100.0));
+
+    if (m_estimatedVolumeValueLabel != nullptr) {
+        m_estimatedVolumeValueLabel->setText(QStringLiteral("%1 cm\u00b3").arg(clampedEstimated, 0, 'f', 2));
+    }
+    if (m_ablatedVolumeValueLabel != nullptr) {
+        m_ablatedVolumeValueLabel->setText(QStringLiteral("%1 cm\u00b3").arg(clampedAblated, 0, 'f', 2));
+    }
+    if (m_coverageRatioValueLabel != nullptr) {
+        m_coverageRatioValueLabel->setText(QStringLiteral("%1%").arg(coverageRatio));
+    }
+    if (m_coverageProgressBar != nullptr) {
+        m_coverageProgressBar->setValue(coverageRatio);
+    }
+}
+
+bool PlanningPage::hasGeneratedSliceTargets() const
+{
+    return std::any_of(m_stagedSlices.cbegin(), m_stagedSlices.cend(), [](const StagedSliceState& slice) {
+        return slice.targetsGenerated && !slice.targets.isEmpty();
+    });
 }
 
 void PlanningPage::populatePatientSelector()
@@ -1105,6 +2142,7 @@ void PlanningPage::refreshImagingPaths(const QString& patientId)
 {
     Q_UNUSED(patientId);
     populateDefaultScanChannels();
+    updatePathActionState();
 }
 
 void PlanningPage::syncPatientSelector(const QString& patientId)
@@ -1211,17 +2249,75 @@ void PlanningPage::applyPlanToUi(const TherapyPlan& plan)
 
 void PlanningPage::populateDefaultScanChannels()
 {
-    if (m_pathList->count() > 0) {
-        if (m_pathList->currentRow() < 0) {
-            m_pathList->setCurrentRow(0);
-        }
+    if (m_pathList == nullptr) {
         return;
     }
 
-    for (int index = 0; index < 4; ++index) {
-        m_pathList->addItem(defaultChannelText(index));
+    if (m_pathList->count() > 0 && m_pathList->currentRow() < 0) {
+        const QSignalBlocker blocker(m_pathList);
+        m_pathList->setCurrentRow(0);
     }
-    m_pathList->setCurrentRow(0);
+}
+
+bool PlanningPage::hasActivePathSelection() const
+{
+    return m_pathList != nullptr && m_pathList->currentRow() >= 0 && m_pathList->currentRow() < m_pathList->count();
+}
+
+void PlanningPage::updatePathActionState()
+{
+    const bool hasPathSelection = hasActivePathSelection();
+    if (m_removePathButton != nullptr) {
+        m_removePathButton->setEnabled(hasPathSelection);
+    }
+    if (m_acquireImageButton != nullptr) {
+        m_acquireImageButton->setEnabled(hasPathSelection);
+    }
+    if (m_generate3dButton != nullptr) {
+        m_generate3dButton->setEnabled(hasPathSelection && !m_stagedSlices.isEmpty());
+    }
+    refreshPowerCurve();
+}
+
+void PlanningPage::refreshPowerCurve()
+{
+    if (m_chartSummaryLabel == nullptr || m_energyOutputChart == nullptr) {
+        return;
+    }
+
+    if (!hasActivePathSelection()) {
+        m_chartSummaryLabel->setText(QStringLiteral("\u5b9e\u65f6\u529f\u7387: --"));
+        m_energyOutputChart->clearPowerCurve(QStringLiteral("\u65b0\u589e\u8def\u5f84\u540e\u663e\u793a\u8d85\u58f0\u5934\u529f\u7387\u66f2\u7ebf"));
+        return;
+    }
+
+    const double realtimePowerWatts = currentRealtimeTransducerPowerWatts();
+    m_chartSummaryLabel->setText(QStringLiteral("\u5b9e\u65f6\u529f\u7387: %1W").arg(realtimePowerWatts, 0, 'f', 0));
+    m_energyOutputChart->setRealtimePowerWatts(realtimePowerWatts);
+}
+
+double PlanningPage::currentRealtimeTransducerPowerWatts() const
+{
+    const double setPowerWatts = m_powerSlider != nullptr ? static_cast<double>(m_powerSlider->value()) : 0.0;
+    if (setPowerWatts <= 0.0) {
+        return 0.0;
+    }
+
+    if (!m_hasDeviceSnapshot) {
+        return setPowerWatts;
+    }
+
+    if (m_latestDeviceSnapshot.outputPowerWatts > 1.0) {
+        return m_latestDeviceSnapshot.outputPowerWatts;
+    }
+
+    const double efficiency = std::clamp(m_latestDeviceSnapshot.conversionEfficiencyPercent / 100.0, 0.55, 0.98);
+    const double thermalPenalty = std::clamp(
+        1.0 - (std::max(0.0, m_latestDeviceSnapshot.transducerTemperatureCelsius - 28.0) / 40.0),
+        0.82,
+        1.0);
+    const double motionPenalty = std::clamp(1.0 - (m_latestDeviceSnapshot.motionAccuracyMm / 5.0), 0.70, 1.0);
+    return setPowerWatts * efficiency * thermalPenalty * motionPenalty;
 }
 
 QString PlanningPage::currentChannelLabel() const
@@ -1244,26 +2340,481 @@ void PlanningPage::updateAcquisitionSummary(const QString& title, const QStringL
     m_assessmentPreview->setPlainText(text);
 }
 
+QListWidgetItem* PlanningPage::createPathListItem(int index)
+{
+    auto* item = new QListWidgetItem(defaultChannelText(index));
+    item->setData(kPathStateKeyRole, QStringLiteral("planning-path-%1").arg(m_nextPathStateId++));
+    return item;
+}
+
+QString PlanningPage::pathStateKeyForRow(int row) const
+{
+    if (m_pathList == nullptr || row < 0 || row >= m_pathList->count()) {
+        return {};
+    }
+
+    const QListWidgetItem* item = m_pathList->item(row);
+    return item == nullptr ? QString() : item->data(kPathStateKeyRole).toString();
+}
+
+void PlanningPage::saveCurrentPathState()
+{
+    if (m_activePathStateKey.isEmpty()) {
+        return;
+    }
+
+    persistCurrentSliceAnnotations();
+    storeCurrentSliceControls();
+
+    PathEditingState state;
+    state.stagedImageSeries = m_stagedImageSeries;
+    state.stagedSlices = m_stagedSlices;
+    state.assessmentText = m_assessmentPreview != nullptr ? m_assessmentPreview->toPlainText() : QString();
+    state.planPreviewText = m_planPreview != nullptr ? m_planPreview->toPlainText() : QString();
+    state.lastAcquisitionAt = m_lastAcquisitionAt;
+    state.currentStagedSliceIndex = m_currentStagedSliceIndex;
+    state.annotationPanelExpanded = m_annotationPanel != nullptr && m_annotationPanel->isVisible();
+    state.hasActivePlan = m_context != nullptr && m_context->hasActivePlan();
+    if (state.hasActivePlan) {
+        state.activePlan = m_context->activePlan();
+    }
+
+    m_pathEditingStates.insert(m_activePathStateKey, state);
+}
+
+void PlanningPage::activatePlanningWorkspace()
+{
+    m_deferStartupContextSummary = false;
+}
+
+void PlanningPage::clearStartupDisplay()
+{
+    if (m_pathList != nullptr) {
+        const QSignalBlocker blocker(m_pathList);
+        m_pathList->clear();
+    }
+    m_pathEditingStates.clear();
+    m_activePathStateKey.clear();
+    m_loadedHistoryPatientId.clear();
+    clearHistoricalComparison(QStringLiteral("\u5de6\u5c4f\u663e\u793a\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+    resetActivePathWorkspace();
+    if (m_assessmentPreview != nullptr) {
+        m_assessmentPreview->clear();
+    }
+    if (m_planPreview != nullptr) {
+        m_planPreview->clear();
+    }
+    updatePathActionState();
+}
+
+void PlanningPage::rebuildModelList()
+{
+    if (m_modelList == nullptr) {
+        return;
+    }
+
+    const QSignalBlocker blocker(m_modelList);
+    m_modelList->clear();
+    for (const StagedSliceState& slice : std::as_const(m_stagedSlices)) {
+        m_modelList->addItem(slice.label);
+    }
+}
+
+void PlanningPage::resetActivePathWorkspace()
+{
+    m_stagedImageSeries.clear();
+    m_stagedSlices.clear();
+    m_currentStagedSliceIndex = -1;
+    m_lastAcquisitionAt = QDateTime {};
+
+    rebuildModelList();
+    if (m_currentSliceSlider != nullptr) {
+        const QSignalBlocker blocker(m_currentSliceSlider);
+        m_currentSliceSlider->setRange(0, 0);
+        m_currentSliceSlider->setValue(0);
+        m_currentSliceSlider->setEnabled(false);
+    }
+
+    if (m_preview != nullptr) {
+        m_preview->setAnnotationStrokes({});
+        m_preview->clearBackgroundImage();
+        m_preview->clearPlan();
+        m_preview->setCompletedPointCount(0);
+        m_preview->setSliceContext(0, 0);
+        m_preview->setCaption(QString());
+        m_preview->setAnnotationEnabled(false);
+    }
+
+    if (m_annotationPanel != nullptr) {
+        m_annotationPanel->setVisible(false);
+    }
+    if (m_annotationButton != nullptr) {
+        m_annotationButton->setChecked(false);
+    }
+
+    {
+        const QSignalBlocker spacingBlocker(m_spacingSpin);
+        const QSignalBlocker dwellBlocker(m_dwellSpin);
+        const QSignalBlocker powerSliderBlocker(m_powerSlider);
+        const QSignalBlocker powerSpinBlocker(m_powerSpin);
+        const QSignalBlocker respiratoryBlocker(m_respiratoryTrackingCheck);
+        const QSignalBlocker directBlocker(m_directTreatmentRadio);
+        const QSignalBlocker segmentedBlocker(m_segmentedTreatmentRadio);
+        const QSignalBlocker pointBlocker(m_pointTreatmentRadio);
+        const QSignalBlocker lineBlocker(m_lineTreatmentRadio);
+
+        m_spacingSpin->setValue(3.0);
+        m_dwellSpin->setValue(0.3);
+        m_powerSlider->setValue(400);
+        m_powerSpin->setValue(400.0);
+        m_respiratoryTrackingCheck->setChecked(false);
+        m_directTreatmentRadio->setChecked(true);
+        m_segmentedTreatmentRadio->setChecked(false);
+        m_pointTreatmentRadio->setChecked(true);
+        m_lineTreatmentRadio->setChecked(false);
+    }
+
+    if (m_currentSliceSummaryLabel != nullptr) {
+        m_currentSliceSummaryLabel->setText(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\uff1a\u7b49\u5f85\u91c7\u96c6\u6216\u9884\u89c8\u65b9\u6848"));
+        m_currentSliceSummaryLabel->setToolTip(QString());
+    }
+    if (m_previewOverlayLabel != nullptr) {
+        m_previewOverlayLabel->setText(QStringLiteral("\u53f3\u5c4f\u663e\u793a\u5f53\u524d\u6cbb\u7597\u5f71\u50cf"));
+        m_previewOverlayLabel->setVisible(true);
+    }
+
+    updateAssessmentMetricsPanel(0.0, 0.0);
+    updateAssessmentText(nullptr);
+    updatePlanPreviewText(nullptr);
+    refreshDerivedMetrics();
+    updatePathActionState();
+}
+
+void PlanningPage::loadPathState(int row)
+{
+    const QString pathKey = pathStateKeyForRow(row);
+    m_activePathStateKey = pathKey;
+    if (pathKey.isEmpty()) {
+        resetActivePathWorkspace();
+        updatePathActionState();
+        return;
+    }
+
+    const auto stateIt = m_pathEditingStates.constFind(pathKey);
+    if (stateIt == m_pathEditingStates.cend()) {
+        if (m_context != nullptr && m_context->hasActivePlan()) {
+            m_context->clearActivePlan();
+        }
+        if (m_safetyKernel != nullptr) {
+            m_safetyKernel->setPlanApprovalState(ApprovalState::Draft);
+        }
+        resetActivePathWorkspace();
+        updatePathActionState();
+        return;
+    }
+
+    const PathEditingState state = stateIt.value();
+    m_stagedImageSeries = state.stagedImageSeries;
+    m_stagedSlices = state.stagedSlices;
+    m_currentStagedSliceIndex = state.currentStagedSliceIndex;
+    m_lastAcquisitionAt = state.lastAcquisitionAt;
+    rebuildModelList();
+
+    if (state.hasActivePlan && m_context != nullptr) {
+        m_context->setActivePlan(state.activePlan);
+        if (m_safetyKernel != nullptr) {
+            m_safetyKernel->setPlanApprovalState(state.activePlan.approvalState);
+        }
+    } else {
+        if (m_context != nullptr && m_context->hasActivePlan()) {
+            m_context->clearActivePlan();
+        }
+        if (m_safetyKernel != nullptr) {
+            m_safetyKernel->setPlanApprovalState(ApprovalState::Draft);
+        }
+    }
+
+    updateSliceAssessmentMetrics();
+    if (m_stagedSlices.isEmpty()) {
+        resetActivePathWorkspace();
+    } else {
+        const int safeRow = qBound(0, state.currentStagedSliceIndex < 0 ? 0 : state.currentStagedSliceIndex, m_stagedSlices.size() - 1);
+        if (m_modelList != nullptr) {
+            const QSignalBlocker blocker(m_modelList);
+            m_modelList->setCurrentRow(safeRow);
+        }
+        loadStagedSlice(safeRow);
+    }
+
+    if (m_assessmentPreview != nullptr && !state.assessmentText.trimmed().isEmpty()) {
+        m_assessmentPreview->setPlainText(state.assessmentText);
+    }
+    if (m_planPreview != nullptr) {
+        if (!state.planPreviewText.trimmed().isEmpty()) {
+            m_planPreview->setPlainText(state.planPreviewText);
+        } else {
+            updatePlanPreviewText(state.hasActivePlan ? &state.activePlan : nullptr);
+        }
+    }
+    if (m_annotationPanel != nullptr) {
+        m_annotationPanel->setVisible(state.annotationPanelExpanded);
+    }
+    if (m_annotationButton != nullptr) {
+        m_annotationButton->setChecked(state.annotationPanelExpanded);
+    }
+    if (m_preview != nullptr) {
+        m_preview->setAnnotationEnabled(state.annotationPanelExpanded);
+    }
+    updatePathActionState();
+}
+
+void PlanningPage::loadHistoricalImages(bool announce, bool forceReload)
+{
+    if (!m_context->hasSelectedPatient()) {
+        clearHistoricalComparison(QStringLiteral("\u5de6\u5c4f\u663e\u793a\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+        return;
+    }
+
+    const PatientRecord& patient = m_context->selectedPatient();
+    if (!forceReload && patient.id == m_loadedHistoryPatientId) {
+        if (m_historyImageSeries.isEmpty()) {
+            clearHistoricalComparison(QStringLiteral("\u5de6\u5c4f\u663e\u793a\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+        } else {
+            loadHistoricalSlice(m_currentHistorySliceIndex >= 0 ? m_currentHistorySliceIndex : m_historyImageSeries.size() - 1, announce);
+        }
+        return;
+    }
+
+    m_historyLoadedFromLocalFiles = false;
+    m_loadedHistoryPatientId = patient.id;
+    m_historyImageSeries = m_clinicalDataService.listImageSeriesForPatient(patient.id);
+    m_historyPixmaps.clear();
+    std::sort(m_historyImageSeries.begin(), m_historyImageSeries.end(), [](const ImageSeriesRecord& left, const ImageSeriesRecord& right) {
+        const QDateTime leftTime = left.createdAt.isValid() ? left.createdAt : QDateTime(left.acquisitionDate, QTime(0, 0));
+        const QDateTime rightTime = right.createdAt.isValid() ? right.createdAt : QDateTime(right.acquisitionDate, QTime(0, 0));
+        if (leftTime == rightTime) {
+            return left.storagePath < right.storagePath;
+        }
+        return leftTime < rightTime;
+    });
+
+    if (m_historyImageSeries.isEmpty()) {
+        clearHistoricalComparison(QStringLiteral("\u5de6\u5c4f\u663e\u793a\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+        if (announce) {
+            updateAcquisitionSummary(
+                QStringLiteral("\u8bfb\u53d6\u56fe\u50cf"),
+                {
+                    QStringLiteral("\u60a3\u8005\uff1a%1").arg(patient.name),
+                    QStringLiteral("\u5f53\u524d\u8fd8\u6ca1\u6709\u5df2\u5b58\u50a8\u7684\u5f71\u50cf\u6570\u636e\u3002")
+                });
+        }
+        return;
+    }
+
+    m_historyPixmaps.reserve(m_historyImageSeries.size());
+    for (const ImageSeriesRecord& image : m_historyImageSeries) {
+        m_historyPixmaps.push_back(loadHistoryPixmap(image.storagePath));
+    }
+
+    if (m_historySliceSlider != nullptr) {
+        const QSignalBlocker blocker(m_historySliceSlider);
+        m_historySliceSlider->setRange(0, m_historyImageSeries.size() - 1);
+        m_historySliceSlider->setEnabled(m_historyImageSeries.size() > 1);
+        m_historySliceSlider->setValue(m_historyImageSeries.size() - 1);
+    }
+
+    loadHistoricalSlice(m_historyImageSeries.size() - 1, announce);
+}
+
+void PlanningPage::loadHistoricalFiles(const QStringList& filePaths)
+{
+    m_historyImageSeries.clear();
+    m_historyPixmaps.clear();
+    m_historyLoadedFromLocalFiles = true;
+    m_loadedHistoryPatientId = m_context->hasSelectedPatient() ? m_context->selectedPatient().id : QStringLiteral("LOCAL");
+
+    for (const QString& filePath : filePaths) {
+        const QFileInfo fileInfo(filePath);
+        if (!fileInfo.exists() || !fileInfo.isFile()) {
+            continue;
+        }
+
+        ImageSeriesRecord image;
+        image.id = fileInfo.completeBaseName();
+        image.patientId = m_context->hasSelectedPatient() ? m_context->selectedPatient().id : QString();
+        image.type = QStringLiteral("\u672c\u5730\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf");
+        image.storagePath = fileInfo.absoluteFilePath();
+        image.acquisitionDate = fileInfo.lastModified().date();
+        image.createdAt = fileInfo.lastModified();
+        m_historyImageSeries.push_back(image);
+        m_historyPixmaps.push_back(loadHistoryPixmap(fileInfo.absoluteFilePath()));
+    }
+
+    if (m_historyImageSeries.isEmpty()) {
+        clearHistoricalComparison(QStringLiteral("\u672a\u9009\u62e9\u53ef\u7528\u7684\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+        return;
+    }
+
+    if (m_historySliceSlider != nullptr) {
+        const QSignalBlocker blocker(m_historySliceSlider);
+        m_historySliceSlider->setRange(0, m_historyImageSeries.size() - 1);
+        m_historySliceSlider->setEnabled(m_historyImageSeries.size() > 1);
+        m_historySliceSlider->setValue(0);
+    }
+
+    loadHistoricalSlice(0, true);
+}
+
+void PlanningPage::loadHistoricalSlice(int row, bool announce)
+{
+    if (m_historyImageSeries.isEmpty()) {
+        clearHistoricalComparison(QStringLiteral("\u5de6\u5c4f\u663e\u793a\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+        return;
+    }
+
+    const int safeRow = qBound(0, row, m_historyImageSeries.size() - 1);
+    m_currentHistorySliceIndex = safeRow;
+
+    if (m_historySliceSlider != nullptr && m_historySliceSlider->value() != safeRow) {
+        const QSignalBlocker blocker(m_historySliceSlider);
+        m_historySliceSlider->setValue(safeRow);
+    }
+
+    const ImageSeriesRecord& image = m_historyImageSeries.at(safeRow);
+    const QString dateText = image.acquisitionDate.isValid()
+        ? image.acquisitionDate.toString(QStringLiteral("yyyy-MM-dd"))
+        : QStringLiteral("\u65e5\u671f\u672a\u8bb0\u5f55");
+    const QString pathText = image.storagePath.trimmed().isEmpty() ? QStringLiteral("\u672a\u914d\u7f6e\u8def\u5f84") : image.storagePath;
+    const QPixmap pixmap = safeRow < m_historyPixmaps.size() ? m_historyPixmaps.at(safeRow) : QPixmap {};
+
+    if (m_historyPreview != nullptr) {
+        m_historyPreview->clearPlan();
+        if (!pixmap.isNull()) {
+            m_historyPreview->setBackgroundImage(pixmap);
+        } else {
+            m_historyPreview->clearBackgroundImage();
+        }
+        m_historyPreview->setCompletedPointCount(0);
+        m_historyPreview->setSliceContext(safeRow, m_historyImageSeries.size());
+        m_historyPreview->setCaption(QStringLiteral("\u65e2\u5f80\u6cbb\u7597 %1/%2").arg(safeRow + 1).arg(m_historyImageSeries.size()));
+    }
+    if (m_historyPreviewOverlayLabel != nullptr) {
+        m_historyPreviewOverlayLabel->setText(pixmap.isNull() ? QStringLiteral("\u672a\u627e\u5230\u8fd9\u5f20\u5386\u53f2\u5f71\u50cf\u7684\u53ef\u9884\u89c8\u6587\u4ef6") : QStringLiteral("\u5de6\u5c4f\u663e\u793a\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+        m_historyPreviewOverlayLabel->setVisible(pixmap.isNull());
+    }
+    if (m_historySliceSummaryLabel != nullptr) {
+        m_historySliceSummaryLabel->setText(
+            QStringLiteral("\u7b2c %1/%2 \u5f20 | %3 | %4")
+                .arg(safeRow + 1)
+                .arg(m_historyImageSeries.size())
+                .arg(dateText)
+                .arg(pathText));
+        m_historySliceSummaryLabel->setToolTip(pathText);
+    }
+
+    if (announce) {
+        updateAcquisitionSummary(
+            QStringLiteral("\u5386\u53f2\u5f71\u50cf\u5bf9\u6bd4"),
+            {
+                QStringLiteral("\u60a3\u8005\uff1a%1").arg(m_context->hasSelectedPatient() ? m_context->selectedPatient().name : QStringLiteral("\u672a\u9009\u62e9")),
+                QStringLiteral("\u5df2\u52a0\u8f7d\u5386\u53f2\u5f71\u50cf\uff1a%1 \u5f20").arg(m_historyImageSeries.size()),
+                QStringLiteral("\u5f53\u524d\u67e5\u770b\uff1a%1 / %2").arg(safeRow + 1).arg(m_historyImageSeries.size()),
+                QStringLiteral("\u5f53\u524d\u8def\u5f84\uff1a%1").arg(pathText),
+                QStringLiteral("\u5de6\u5c4f\u53ef\u901a\u8fc7\u4e0b\u65b9\u6ed1\u52a8\u6761\u5207\u6362\u65e2\u5f80\u5f71\u50cf\u3002")
+            });
+    }
+}
+
+void PlanningPage::clearHistoricalComparison(const QString& overlayText)
+{
+    m_historyImageSeries.clear();
+    m_historyPixmaps.clear();
+    m_historyLoadedFromLocalFiles = false;
+    m_currentHistorySliceIndex = -1;
+
+    if (m_historyPreview != nullptr) {
+        m_historyPreview->clearPlan();
+        m_historyPreview->clearBackgroundImage();
+        m_historyPreview->setCompletedPointCount(0);
+        m_historyPreview->setSliceContext(0, 0);
+        m_historyPreview->setCaption(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+    }
+    if (m_historyPreviewOverlayLabel != nullptr) {
+        m_historyPreviewOverlayLabel->setText(overlayText);
+        m_historyPreviewOverlayLabel->setVisible(true);
+    }
+    if (m_historySliceSlider != nullptr) {
+        const QSignalBlocker blocker(m_historySliceSlider);
+        m_historySliceSlider->setRange(0, 0);
+        m_historySliceSlider->setValue(0);
+        m_historySliceSlider->setEnabled(false);
+    }
+    if (m_historySliceSummaryLabel != nullptr) {
+        m_historySliceSummaryLabel->setText(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf\uff1a\u6682\u65e0\u6570\u636e"));
+        m_historySliceSummaryLabel->setToolTip(QString());
+    }
+}
+
 void PlanningPage::addPathItem()
 {
+    activatePlanningWorkspace();
     const int nextIndex = m_pathList->count();
-    m_pathList->addItem(defaultChannelText(nextIndex));
+    m_pathList->addItem(createPathListItem(nextIndex));
     m_pathList->setCurrentRow(m_pathList->count() - 1);
+    updatePathActionState();
 }
 
 void PlanningPage::removeCurrentPathItem()
 {
-    delete m_pathList->takeItem(m_pathList->currentRow());
-    if (m_pathList->count() == 0) {
-        populateDefaultScanChannels();
-    } else if (m_pathList->currentRow() < 0) {
-        m_pathList->setCurrentRow(0);
+    activatePlanningWorkspace();
+    const int currentRow = m_pathList->currentRow();
+    if (currentRow < 0) {
+        return;
     }
+
+    const QString removedPathKey = pathStateKeyForRow(currentRow);
+    {
+        const QSignalBlocker blocker(m_pathList);
+        delete m_pathList->takeItem(currentRow);
+        m_pathEditingStates.remove(removedPathKey);
+        if (m_pathList->count() > 0) {
+            m_pathList->setCurrentRow(std::min(currentRow, m_pathList->count() - 1));
+        }
+    }
+
+    if (m_activePathStateKey == removedPathKey) {
+        m_activePathStateKey.clear();
+    }
+    if (m_pathList->count() == 0) {
+        if (m_context != nullptr && m_context->hasActivePlan()) {
+            m_context->clearActivePlan();
+        }
+        if (m_safetyKernel != nullptr) {
+            m_safetyKernel->setPlanApprovalState(ApprovalState::Draft);
+        }
+        resetActivePathWorkspace();
+        updatePathActionState();
+        return;
+    }
+    if (m_pathList->currentRow() >= 0) {
+        loadPathState(m_pathList->currentRow());
+    }
+    updatePathActionState();
 }
 
 void PlanningPage::simulateImageAcquisition()
 {
+    activatePlanningWorkspace();
     populateDefaultScanChannels();
+    if (!hasActivePathSelection()) {
+        updateAcquisitionSummary(
+            QStringLiteral("\u56fe\u50cf\u901a\u9053\u91c7\u96c6"),
+            {
+                QStringLiteral("\u7cfb\u7edf\u542f\u52a8\u540e\u8def\u5f84\u5217\u8868\u9ed8\u8ba4\u4e3a\u7a7a\u3002"),
+                QStringLiteral("\u8bf7\u5148\u70b9\u51fb\u201c\u65b0\u589e\u8def\u5f84\u201d\uff0c\u518d\u9488\u5bf9\u7b2c\u4e00\u6761\u91c7\u96c6\u8def\u5f84\u8fdb\u884c\u56fe\u50cf\u91c7\u96c6\u3002")
+            });
+        return;
+    }
 
     const int layerCount = m_layerCountSpin->value();
     const int step = m_stepSpin->value();
@@ -1300,6 +2851,12 @@ void PlanningPage::simulateImageAcquisition()
         stagedState.label = QStringLiteral("[S%1] \u6682\u5b58\u5207\u7247-%2")
             .arg(layerIndex + 1, 2, 10, QChar('0'))
             .arg(layerIndex + 1, 2, 10, QChar('0'));
+        stagedState.pattern = m_lineTreatmentRadio->isChecked() ? TreatmentPattern::Line : TreatmentPattern::Point;
+        stagedState.spacingMm = m_spacingSpin->value();
+        stagedState.dwellSeconds = m_dwellSpin->value();
+        stagedState.powerWatts = m_powerSlider->value();
+        stagedState.respiratoryTrackingEnabled = m_respiratoryTrackingCheck->isChecked();
+        stagedState.deliveryMode = m_segmentedTreatmentRadio->isChecked() ? QStringLiteral("\u5206\u6bb5\u6267\u884c") : QStringLiteral("\u76f4\u63a5\u6cbb\u7597");
         m_stagedSlices.push_back(stagedState);
     }
 
@@ -1315,12 +2872,16 @@ void PlanningPage::simulateImageAcquisition()
         loadStagedSlice(0);
     } else if (m_preview != nullptr) {
         m_preview->setAnnotationStrokes({});
+        m_preview->setSliceContext(0, 0);
         m_preview->setCaption(QStringLiteral(""));
     }
 
     m_lastAcquisitionAt = now;
-    m_previewOverlayLabel->setText(QStringLiteral("\u5df2\u6682\u5b58 %1 \u5f20\u91c7\u96c6\u56fe\u50cf").arg(layerCount));
-    m_previewOverlayLabel->setVisible(true);
+    updateAssessmentMetricsPanel(0.0, 0.0);
+    if (m_previewOverlayLabel != nullptr) {
+        m_previewOverlayLabel->setVisible(m_stagedSlices.isEmpty() && !m_context->hasActivePlan());
+    }
+    updatePathActionState();
 
     updateAcquisitionSummary(
         QStringLiteral("\u56fe\u50cf\u91c7\u96c6\u5df2\u5b8c\u6210"),
@@ -1344,56 +2905,212 @@ void PlanningPage::simulateImageAcquisition()
 
 void PlanningPage::generateThreeDimensionalImage()
 {
-    const int nextIndex = m_modelList->count() + 1;
-    m_modelList->addItem(QStringLiteral("[B%1] \u56fe\u50cf-%2").arg(nextIndex).arg(nextIndex, 2, 10, QChar('0')));
-    m_modelList->setCurrentRow(m_modelList->count() - 1);
+    activatePlanningWorkspace();
+    persistCurrentSliceAnnotations();
+    storeCurrentSliceControls();
+
+    if (!hasActivePathSelection()) {
+        updateAcquisitionSummary(
+            QStringLiteral("\u4e09\u7ef4\u56fe\u50cf\u751f\u6210"),
+            {
+                QStringLiteral("\u5f53\u524d\u8fd8\u6ca1\u6709\u53ef\u7528\u7684\u91c7\u96c6\u8def\u5f84\u3002"),
+                QStringLiteral("\u8bf7\u5148\u65b0\u589e\u8def\u5f84\uff0c\u518d\u6267\u884c\u56fe\u50cf\u91c7\u96c6\u3002")
+            });
+        return;
+    }
+    if (m_stagedSlices.isEmpty()) {
+        updateAcquisitionSummary(
+            QStringLiteral("\u4e09\u7ef4\u56fe\u50cf\u751f\u6210"),
+            {
+                QStringLiteral("\u5f53\u524d\u8def\u5f84\u4e0a\u8fd8\u6ca1\u6709\u4e8c\u7ef4\u5207\u7247\u6570\u636e\u3002"),
+                QStringLiteral("\u8bf7\u5148\u5b8c\u6210\u56fe\u50cf\u91c7\u96c6\uff0c\u518d\u70b9\u51fb\u201c\u4e09\u7ef4\u56fe\u50cf\u751f\u6210\u201d\u3002")
+            });
+        return;
+    }
+
+    QVector<VolumeContourSlice> contourSlices;
+    contourSlices.reserve(m_stagedSlices.size());
+    for (int index = 0; index < m_stagedSlices.size(); ++index) {
+        const StagedSliceState& slice = m_stagedSlices.at(index);
+        QVector<QPointF> contourMm = extractContourFromAnnotations(slice.annotations);
+        const bool usesAnnotation = contourMm.size() >= 3;
+        if (!usesAnnotation) {
+            contourMm = buildFallbackLesionContourMm(index, m_stagedSlices.size());
+        }
+
+        VolumeContourSlice contourSlice;
+        contourSlice.sliceIndex = index;
+        contourSlice.derivedFromAnnotation = usesAnnotation;
+        contourSlice.contourMm = contourMm;
+        contourSlices.push_back(contourSlice);
+    }
+
+    const VolumeReconstructionResult reconstruction = buildVolumeReconstructionResult(
+        contourSlices,
+        std::max(1, m_stepSpin->value()),
+        QSize(980, 620));
+    if (!reconstruction.valid) {
+        updateAcquisitionSummary(
+            QStringLiteral("\u4e09\u7ef4\u56fe\u50cf\u751f\u6210"),
+            {
+                QStringLiteral("\u5f53\u524d\u5207\u7247\u8fd8\u65e0\u6cd5\u751f\u6210\u6709\u6548\u7684\u4e09\u7ef4\u4f53\u6570\u636e\u3002"),
+                QStringLiteral("\u53ef\u5148\u5bf9\u5207\u7247\u8fdb\u884c\u80bf\u7624\u5708\u753b\uff0c\u6216\u91cd\u65b0\u6267\u884c\u56fe\u50cf\u91c7\u96c6\u3002")
+            });
+        return;
+    }
+
+    showThreeDimensionalPreviewDialog(reconstruction);
+
+    QStringList lines {
+        QStringLiteral("\u5f53\u524d\u901a\u9053\uff1a%1").arg(currentChannelLabel()),
+        QStringLiteral("\u8d77\u59cb\u5750\u6807\uff1a%1").arg(currentChannelCoordinate()),
+        QStringLiteral("\u91cd\u5efa\u5207\u7247\uff1a%1 \u5f20").arg(reconstruction.sliceCount),
+        QStringLiteral("\u4eba\u5de5\u6807\u6ce8\u5207\u7247\uff1a%1 \u5f20 | \u81ea\u52a8\u63a8\u65ad\u5207\u7247\uff1a%2 \u5f20")
+            .arg(reconstruction.annotatedSliceCount)
+            .arg(reconstruction.inferredSliceCount)
+    };
+    lines << reconstruction.summary.split(QLatin1Char('\n'));
+    updateAcquisitionSummary(QStringLiteral("\u4e09\u7ef4\u56fe\u50cf\u751f\u6210"), lines);
+
+    if (m_auditService != nullptr) {
+        m_auditService->appendEntry(
+            QStringLiteral("operator"),
+            QStringLiteral("planning"),
+            QStringLiteral("\u751f\u6210\u4e09\u7ef4\u56fe\u50cf\uff1a%1\uff0c\u5207\u7247 %2 \u5f20\uff0c\u4f53\u79ef %3 cm3")
+                .arg(currentChannelLabel())
+                .arg(reconstruction.sliceCount)
+                .arg(reconstruction.estimatedVolumeCm3, 0, 'f', 2));
+    }
+}
+
+void PlanningPage::showThreeDimensionalPreviewDialog(const VolumeReconstructionResult& result) const
+{
+    if (!result.valid) {
+        return;
+    }
+
+    QDialog dialog(const_cast<PlanningPage*>(this));
+    dialog.setWindowTitle(QStringLiteral("\u4e09\u7ef4\u91cd\u5efa\u9884\u89c8"));
+    dialog.resize(1080, 760);
+
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(14, 14, 14, 14);
+    layout->setSpacing(10);
+
+    auto* headerLabel = new QLabel(QStringLiteral("\u5df2\u57fa\u4e8e\u5f53\u524d\u8def\u5f84\u4e0b\u7684\u4e8c\u7ef4\u5207\u7247\u8f6e\u5ed3\u751f\u6210\u4e09\u7ef4\u4f53\u9884\u89c8\u3002"));
+    headerLabel->setWordWrap(true);
+
+    auto* previewLabel = new QLabel();
+    previewLabel->setAlignment(Qt::AlignCenter);
+    previewLabel->setPixmap(result.preview);
+
+    auto* previewScrollArea = new QScrollArea();
+    previewScrollArea->setWidgetResizable(true);
+    previewScrollArea->setWidget(previewLabel);
+
+    auto* summaryEdit = new QPlainTextEdit();
+    summaryEdit->setReadOnly(true);
+    summaryEdit->setMaximumHeight(130);
+    summaryEdit->setPlainText(result.summary);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    layout->addWidget(headerLabel);
+    layout->addWidget(previewScrollArea, 1);
+    layout->addWidget(summaryEdit);
+    layout->addWidget(buttons);
+
+    dialog.exec();
 }
 
 void PlanningPage::previewCurrentPlan()
 {
+    activatePlanningWorkspace();
     if (!m_context->hasSelectedPatient()) {
         loadDemoPatient();
     }
 
-    const ApprovalState approvalState = m_context->hasActivePlan() ? m_context->activePlan().approvalState : ApprovalState::Draft;
-    TherapyPlan previewPlan = buildPlanFromUi(approvalState);
-    if (m_context->hasActivePlan()) {
-        previewPlan.id = m_context->activePlan().id;
-        previewPlan.name = m_context->activePlan().name;
-        previewPlan.coordinateX = m_context->activePlan().coordinateX;
-        previewPlan.coordinateY = m_context->activePlan().coordinateY;
-        previewPlan.coordinateZ = m_context->activePlan().coordinateZ;
-        previewPlan.depthMm = m_context->activePlan().depthMm;
-        previewPlan.createdAt = m_context->activePlan().createdAt;
-        previewPlan.approvedAt = m_context->activePlan().approvedAt;
-        previewPlan.approvedBy = m_context->activePlan().approvedBy;
+    persistCurrentSliceAnnotations();
+    storeCurrentSliceControls();
+
+    TherapyPlan previewPlan;
+    if (hasGeneratedSliceTargets()) {
+        const ApprovalState approvalState = m_context->hasActivePlan() ? m_context->activePlan().approvalState : ApprovalState::Draft;
+        previewPlan = buildPlanFromSlices(approvalState);
+    } else if (m_context->hasActivePlan()) {
+        previewPlan = m_context->activePlan();
+    } else {
+        updateAcquisitionSummary(
+            QStringLiteral("\u65b9\u6848\u9884\u89c8"),
+            {
+                QStringLiteral("\u5f53\u524d\u8fd8\u6ca1\u6709\u53ef\u9884\u89c8\u7684\u65b9\u6848\u3002"),
+                QStringLiteral("\u8bf7\u5148\u5bf9\u91c7\u96c6\u5207\u7247\u751f\u6210\u9776\u70b9\uff0c\u6216\u9009\u62e9\u5df2\u5b58\u5728\u7684\u65b9\u6848\u3002")
+            });
+        return;
     }
 
-    m_context->setActivePlan(previewPlan);
-    if (m_safetyKernel != nullptr) {
-        m_safetyKernel->setPlanApprovalState(previewPlan.approvalState);
+    QStringList previewLines {
+        summarizePlan(previewPlan),
+        QString(),
+        QStringLiteral("\u5f53\u524d\u901a\u9053\uff1a%1").arg(currentChannelLabel()),
+        QStringLiteral("\u5750\u6807\uff1a%1").arg(currentChannelCoordinate())
+    };
+
+    if (!m_stagedSlices.isEmpty()) {
+        previewLines << QString() << QStringLiteral("\u5207\u7247\u603b\u89c8\uff1a");
+        for (const StagedSliceState& slice : m_stagedSlices) {
+            previewLines << QStringLiteral("%1 | %2 | \u7b14\u8ff9 %3 | \u9776\u70b9 %4 | \u529f\u7387 %5W | \u547c\u5438\u8ddf\u968f %6")
+                .arg(slice.label)
+                .arg(patternSummaryText(slice.pattern))
+                .arg(slice.annotations.size())
+                .arg(slice.targets.size())
+                .arg(slice.powerWatts, 0, 'f', 0)
+                .arg(slice.respiratoryTrackingEnabled ? QStringLiteral("\u5f00") : QStringLiteral("\u5173"));
+        }
     }
-    m_preview->setPlan(previewPlan);
-    m_preview->setCompletedPointCount(0);
-    updateAssessmentText(&previewPlan);
-    updatePlanPreviewText(&previewPlan);
-    m_previewOverlayLabel->setVisible(false);
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("\u6cbb\u7597\u65b9\u6848\u9884\u89c8"));
+    dialog.resize(760, 520);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* headerLabel = new QLabel(QStringLiteral("\u8be5\u5f39\u7a97\u6309\u8def\u5f84\u603b\u89c8\u6bcf\u5f20\u5f71\u50cf\u7684\u6cbb\u7597\u9009\u62e9\u4e0e\u9776\u70b9\u7ed3\u679c\u3002"));
+    headerLabel->setWordWrap(true);
+    auto* previewText = new QPlainTextEdit();
+    previewText->setReadOnly(true);
+    previewText->setPlainText(previewLines.join(QLatin1Char('\n')));
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    layout->addWidget(headerLabel);
+    layout->addWidget(previewText, 1);
+    layout->addWidget(buttons);
+    dialog.exec();
 }
 
 void PlanningPage::refreshDerivedMetrics()
 {
-    const int segmentCount = m_segmentedTreatmentRadio->isChecked() ? 2 : 1;
-    const int pointCount = m_layerCountSpin->value() * 4 * segmentCount;
+    int pointCount = 0;
+    if (hasGeneratedSliceTargets()) {
+        for (const StagedSliceState& slice : m_stagedSlices) {
+            pointCount += slice.targets.size();
+        }
+    } else {
+        const int segmentCount = m_segmentedTreatmentRadio->isChecked() ? 2 : 1;
+        pointCount = m_layerCountSpin->value() * 4 * segmentCount;
+    }
     const double totalMinutes = (pointCount * m_dwellSpin->value()) / 60.0;
 
     m_totalDurationValueLabel->setText(QStringLiteral("%1 min").arg(totalMinutes, 0, 'f', 2));
     m_powerValueLabel->setText(QStringLiteral("%1W").arg(m_powerSlider->value()));
-    m_chartSummaryLabel->setText(QStringLiteral("\u5e73\u5747\u529f\u7387: %1W").arg(m_powerSlider->value()));
+    refreshPowerCurve();
 }
 
 void PlanningPage::storeCapturedImages()
 {
+    activatePlanningWorkspace();
     persistCurrentSliceAnnotations();
+    storeCurrentSliceControls();
 
     if (m_stagedImageSeries.isEmpty()) {
         updateAcquisitionSummary(
@@ -1405,103 +3122,66 @@ void PlanningPage::storeCapturedImages()
         return;
     }
 
-    if (!m_context->hasSelectedPatient()) {
-        loadDemoPatient();
-    }
-
-    if (!m_context->hasSelectedPatient()) {
-        updateAcquisitionSummary(QStringLiteral("\u672c\u5730\u5b58\u50a8\u5931\u8d25"), {QStringLiteral("\u672a\u9009\u62e9\u60a3\u8005\uff0c\u65e0\u6cd5\u7ee7\u7eed\u3002")});
+    const QString outputDirectory = QFileDialog::getExistingDirectory(
+        this,
+        QStringLiteral("\u9009\u62e9\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\u7684\u672c\u5730\u5b58\u50a8\u76ee\u5f55"),
+        QDir::homePath());
+    if (outputDirectory.trimmed().isEmpty()) {
         return;
     }
 
-    const PatientRecord& patient = m_context->selectedPatient();
     const QString batchToken = m_lastAcquisitionAt.isValid()
         ? m_lastAcquisitionAt.toString(QStringLiteral("yyyyMMddhhmmss"))
         : QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMddhhmmss"));
-    const int channelIndex = std::max(0, m_pathList->currentRow());
-
     int savedCount = 0;
-    int editedCount = 0;
-    for (int index = 0; index < m_stagedImageSeries.size(); ++index) {
-        ImageSeriesRecord record = m_stagedImageSeries.at(index);
-        record.patientId = patient.id;
-        record.type = QStringLiteral("\u8d85\u58f0\u626b\u63cf\u56fe\u50cf");
-        record.storagePath = buildStoragePath(patient.id, batchToken, channelIndex, index);
-        const int strokeCount = index < m_stagedSlices.size() ? m_stagedSlices.at(index).annotations.size() : 0;
-        if (strokeCount > 0) {
-            ++editedCount;
-        }
-        record.notes = QStringLiteral("saved from planning page | channel: %1 | origin: %2 | slice: %3/%4 | step: %5")
-            .arg(currentChannelLabel())
-            .arg(currentChannelCoordinate())
-            .arg(index + 1)
-            .arg(m_stagedImageSeries.size())
-            .arg(m_stepSpin->value())
-            + QStringLiteral(" | staged_annotation_count: %1").arg(strokeCount);
-
-        if (!m_clinicalDataService.saveImageSeries(&record)) {
+    for (int index = 0; index < m_stagedSlices.size(); ++index) {
+        const QString filePath = QDir(outputDirectory).filePath(
+            QStringLiteral("%1_%2_slice_%3.png")
+                .arg(batchToken)
+                .arg(currentChannelLabel().remove(QLatin1Char(' ')))
+                .arg(index + 1, 3, 10, QChar('0')));
+        const QPixmap pixmap = renderCurrentSlicePixmap(index, QSize(960, 720));
+        if (pixmap.isNull() || !pixmap.save(filePath, "PNG")) {
             updateAcquisitionSummary(
                 QStringLiteral("\u672c\u5730\u5b58\u50a8\u5931\u8d25"),
                 {
-                    QStringLiteral("\u60a3\u8005\uff1a%1").arg(patient.name),
-                    QStringLiteral("\u5df2\u5199\u5165\uff1a%1 / %2").arg(savedCount).arg(m_stagedImageSeries.size()),
-                    QStringLiteral("\u9519\u8bef\uff1a%1").arg(m_clinicalDataService.lastError())
+                    QStringLiteral("\u5b58\u50a8\u76ee\u5f55\uff1a%1").arg(outputDirectory),
+                    QStringLiteral("\u5df2\u5bfc\u51fa\uff1a%1 / %2").arg(savedCount).arg(m_stagedSlices.size()),
+                    QStringLiteral("\u5931\u8d25\u6587\u4ef6\uff1a%1").arg(filePath)
                 });
             return;
+        }
+
+        if (index < m_stagedImageSeries.size()) {
+            m_stagedImageSeries[index].storagePath = filePath;
         }
         ++savedCount;
     }
 
-    m_previewOverlayLabel->setText(QStringLiteral("\u5df2\u5199\u5165 %1 \u5f20\u60a3\u8005\u5f71\u50cf").arg(savedCount));
-    m_previewOverlayLabel->setVisible(true);
-
     updateAcquisitionSummary(
         QStringLiteral("\u672c\u5730\u5b58\u50a8\u5b8c\u6210"),
         {
-            QStringLiteral("\u60a3\u8005\uff1a%1").arg(patient.name),
-            QStringLiteral("\u5199\u5165\u5f71\u50cf\u6570\u636e\uff1a%1 \u5f20").arg(savedCount),
-            QStringLiteral("\u5df2\u6682\u5b58\u5708\u753b\u5207\u7247\uff1a%1 \u5f20").arg(editedCount),
+            QStringLiteral("\u5b58\u50a8\u76ee\u5f55\uff1a%1").arg(outputDirectory),
+            QStringLiteral("\u5bfc\u51fa\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\uff1a%1 \u5f20").arg(savedCount),
             QStringLiteral("\u5f53\u524d\u901a\u9053\uff1a%1").arg(currentChannelLabel()),
             QStringLiteral("\u8d77\u59cb\u5750\u6807\uff1a%1").arg(currentChannelCoordinate()),
-            QStringLiteral("\u8fd9\u6279\u56fe\u50cf\u5df2\u7ecf\u4ece\u6682\u5b58\u533a\u5199\u5165\u8be5\u60a3\u8005\u7684\u5f71\u50cf\u6570\u636e\u3002")
+            QStringLiteral("\u53ef\u5c06\u8fd9\u4e9b PNG \u56fe\u50cf\u518d\u901a\u8fc7\u201c\u8bfb\u53d6\u56fe\u50cf\u201d\u5bfc\u5165\u5de6\u5c4f\u4f5c\u4e3a\u65e2\u5f80\u6cbb\u7597\u5bf9\u6bd4\u3002")
         });
 }
 
 void PlanningPage::loadStoredImages()
 {
-    if (!m_context->hasSelectedPatient()) {
-        loadDemoPatient();
-    }
-
-    if (!m_context->hasSelectedPatient()) {
-        updateAcquisitionSummary(QStringLiteral("\u8bfb\u53d6\u56fe\u50cf\u5931\u8d25"), {QStringLiteral("\u672a\u9009\u62e9\u60a3\u8005\uff0c\u65e0\u6cd5\u7ee7\u7eed\u3002")});
+    activatePlanningWorkspace();
+    const QStringList filePaths = QFileDialog::getOpenFileNames(
+        this,
+        QStringLiteral("\u9009\u62e9\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"),
+        QDir::homePath(),
+        QStringLiteral("Images (*.png *.jpg *.jpeg *.bmp)"));
+    if (filePaths.isEmpty()) {
         return;
     }
 
-    const PatientRecord& patient = m_context->selectedPatient();
-    const QVector<ImageSeriesRecord> imageSeries = m_clinicalDataService.listImageSeriesForPatient(patient.id);
-    if (imageSeries.isEmpty()) {
-        updateAcquisitionSummary(
-            QStringLiteral("\u8bfb\u53d6\u56fe\u50cf"),
-            {
-                QStringLiteral("\u60a3\u8005\uff1a%1").arg(patient.name),
-                QStringLiteral("\u5f53\u524d\u8fd8\u6ca1\u6709\u5df2\u5b58\u50a8\u7684\u5f71\u50cf\u6570\u636e\u3002")
-            });
-        return;
-    }
-
-    m_previewOverlayLabel->setText(QStringLiteral("\u5df2\u8bfb\u53d6 %1 \u5f20\u5df2\u5b58\u56fe\u50cf").arg(imageSeries.size()));
-    m_previewOverlayLabel->setVisible(true);
-
-    const ImageSeriesRecord& latest = imageSeries.constLast();
-    updateAcquisitionSummary(
-        QStringLiteral("\u8bfb\u53d6\u56fe\u50cf\u5b8c\u6210"),
-        {
-            QStringLiteral("\u60a3\u8005\uff1a%1").arg(patient.name),
-            QStringLiteral("\u5df2\u8bfb\u53d6\u5f71\u50cf\uff1a%1 \u5f20").arg(imageSeries.size()),
-            QStringLiteral("\u6700\u65b0\u4e00\u5f20\u8def\u5f84\uff1a%1").arg(latest.storagePath),
-            QStringLiteral("\u540e\u7eed\u4f1a\u628a\u8fd9\u4e9b\u5df2\u5b58\u50a8\u56fe\u50cf\u63a5\u5230\u4e09\u7ef4\u56fe\u50cf\u751f\u6210\u548c\u9884\u89c8\u94fe\u8def\u91cc\u3002")
-        });
+    loadHistoricalFiles(filePaths);
 }
 
 }  // namespace panthera::modules

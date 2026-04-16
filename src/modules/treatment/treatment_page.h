@@ -37,6 +37,7 @@ private slots:
     void stopTreatment();
     void advanceProgress();
     void onActivePlanChanged(const panthera::core::TherapyPlan& plan);
+    void onActivePlanCleared();
     void onPatientChanged(const panthera::core::PatientRecord& patient);
     void onSafetyChanged(const panthera::core::SafetySnapshot& snapshot);
     void onAbortRequested(const QString& reason);
@@ -44,10 +45,15 @@ private slots:
 
 private:
     void setButtonState(bool canStart, bool canPause, bool canResume, bool canStop);
+    bool isPlanTreatable(const panthera::core::TherapyPlan& plan) const;
     int totalPointCount() const;
+    QString planComboText(const panthera::core::TherapyPlan& plan) const;
+    bool hasSelectablePlans() const;
+    void syncPlanComboEntry(const panthera::core::TherapyPlan& plan);
+    void updatePlanSummary(const panthera::core::TherapyPlan* plan);
     void appendLog(const QString& line);
     void finalizeTreatment(const QString& status);
-    void refreshAvailablePlans();
+    void refreshAvailablePlans(bool keepSelectionBlank = false);
 
     panthera::core::ApplicationContext* m_context {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
@@ -58,7 +64,7 @@ private:
 
     MockUltrasoundView* m_preview {nullptr};
     QLabel* m_patientLabel {nullptr};
-    QLabel* m_planLabel {nullptr};
+    QLabel* m_planSummaryLabel {nullptr};
     QLabel* m_modeLabel {nullptr};
     QLabel* m_safetyLabel {nullptr};
     QLabel* m_progressLabel {nullptr};
@@ -72,6 +78,7 @@ private:
     QTimer m_progressTimer;
     int m_completedPointCount {0};
     double m_deliveredEnergyJ {0.0};
+    bool m_deferStartupPlanSelection {true};
 };
 
 }  // namespace panthera::modules

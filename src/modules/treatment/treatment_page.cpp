@@ -41,9 +41,12 @@ TreatmentPage::TreatmentPage(
     auto* controlCard = new QGroupBox(QStringLiteral("\u6cbb\u7597\u63a7\u5236"));
     auto* controlLayout = new QVBoxLayout(controlCard);
     m_patientLabel = new QLabel(QStringLiteral("\u60a3\u8005\uff1a\u672a\u9009\u62e9"));
-    m_planLabel = new QLabel(QStringLiteral("\u65b9\u6848\uff1a\u672a\u9501\u5b9a"));
     m_planCombo = new QComboBox();
     m_planCombo->setMinimumWidth(220);
+    m_planSummaryLabel = new QLabel(QStringLiteral("\u5f53\u524d\u65b9\u6848\u6982\u51b5\n\u672a\u9009\u62e9\u6cbb\u7597\u65b9\u6848"));
+    m_planSummaryLabel->setWordWrap(true);
+    m_planSummaryLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_planSummaryLabel->setMinimumHeight(110);
     m_modeLabel = new QLabel(QStringLiteral("\u6a21\u5f0f\uff1a%1").arg(toDisplayString(m_safetyKernel->mode())));
     m_safetyLabel = new QLabel(QStringLiteral("\u5b89\u5168\u72b6\u6001\uff1a%1").arg(m_safetyKernel->snapshot().message));
     m_progressLabel = new QLabel(QStringLiteral("\u6cbb\u7597\u8fdb\u5ea6\uff1a0 / 0"));
@@ -65,8 +68,8 @@ TreatmentPage::TreatmentPage(
     buttonRow->addWidget(m_stopButton);
 
     controlLayout->addWidget(m_patientLabel);
-    controlLayout->addWidget(m_planLabel);
     controlLayout->addWidget(m_planCombo);
+    controlLayout->addWidget(m_planSummaryLabel);
     controlLayout->addWidget(m_modeLabel);
     controlLayout->addWidget(m_safetyLabel);
     controlLayout->addWidget(m_progressLabel);
@@ -83,6 +86,7 @@ TreatmentPage::TreatmentPage(
     connect(m_stopButton, &QPushButton::clicked, this, &TreatmentPage::stopTreatment);
     connect(&m_progressTimer, &QTimer::timeout, this, &TreatmentPage::advanceProgress);
     connect(m_context, &ApplicationContext::activePlanChanged, this, &TreatmentPage::onActivePlanChanged);
+    connect(m_context, &ApplicationContext::activePlanCleared, this, &TreatmentPage::onActivePlanCleared);
     connect(m_context, &ApplicationContext::selectedPatientChanged, this, &TreatmentPage::onPatientChanged);
     connect(m_planCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, &TreatmentPage::onPlanSelectionChanged);
     connect(m_safetyKernel, &SafetyKernel::safetySnapshotChanged, this, &TreatmentPage::onSafetyChanged);
@@ -92,11 +96,20 @@ TreatmentPage::TreatmentPage(
     connect(m_safetyKernel, &SafetyKernel::treatmentAbortRequested, this, &TreatmentPage::onAbortRequested);
 
     setButtonState(false, false, false, false);
-    refreshAvailablePlans();
+    refreshAvailablePlans(true);
 }
 
 void TreatmentPage::startTreatment()
 {
+    if (!m_context->hasActivePlan()) {
+        appendLog(QStringLiteral("\u5f53\u524d\u672a\u9009\u62e9\u6cbb\u7597\u65b9\u6848\uff0c\u65e0\u6cd5\u5f00\u59cb\u6cbb\u7597"));
+        return;
+    }
+    if (!isPlanTreatable(m_context->activePlan())) {
+        appendLog(QStringLiteral("\u5f53\u524d\u65b9\u6848\u5c1a\u672a\u5ba1\u6838\u901a\u8fc7\uff0c\u65e0\u6cd5\u5f00\u59cb\u6cbb\u7597"));
+        return;
+    }
+
     QString reason;
     if (!m_safetyKernel->requestTreatmentStart(&reason)) {
         appendLog(QStringLiteral("\u62d2\u7edd\u5f00\u59cb\u6cbb\u7597\uff1a%1").arg(reason));
@@ -113,6 +126,7 @@ void TreatmentPage::startTreatment()
     m_deliveredEnergyJ = 0.0;
     m_progressBar->setValue(0);
     m_progressTimer.start();
+    m_planCombo->setEnabled(false);
     setButtonState(false, true, false, true);
     appendLog(QStringLiteral("\u5f00\u59cb\u6cbb\u7597\u6267\u884c"));
 }
@@ -127,6 +141,7 @@ void TreatmentPage::pauseTreatment()
 
     m_progressTimer.stop();
     m_simulationDevice->setTreatmentOutputEnabled(false);
+    m_planCombo->setEnabled(false);
     setButtonState(false, false, true, true);
     appendLog(QStringLiteral("\u6cbb\u7597\u5df2\u6682\u505c"));
 }
@@ -145,6 +160,7 @@ void TreatmentPage::resumeTreatment()
     }
 
     m_progressTimer.start();
+    m_planCombo->setEnabled(false);
     setButtonState(false, true, false, true);
     appendLog(QStringLiteral("\u6cbb\u7597\u7ee7\u7eed\u6267\u884c"));
 }
@@ -187,22 +203,54 @@ void TreatmentPage::advanceProgress()
 
 void TreatmentPage::onActivePlanChanged(const TherapyPlan& plan)
 {
-    m_planLabel->setText(QStringLiteral("\u65b9\u6848\uff1a%1 | %2").arg(plan.name, toDisplayString(plan.approvalState)));
+    syncPlanComboEntry(plan);
+
+    if (m_deferStartupPlanSelection) {
+        const int placeholderIndex = m_planCombo->findData(QString());
+        if (placeholderIndex >= 0 && m_planCombo->currentIndex() != placeholderIndex) {
+            const QSignalBlocker blocker(m_planCombo);
+            m_planCombo->setCurrentIndex(placeholderIndex);
+        }
+        updatePlanSummary(nullptr);
+        m_progressLabel->setText(QStringLiteral("\u6cbb\u7597\u8fdb\u5ea6\uff1a0 / 0"));
+        m_progressBar->setValue(0);
+        m_preview->clearPlan();
+        m_preview->setCompletedPointCount(0);
+        m_planCombo->setEnabled(hasSelectablePlans());
+        setButtonState(false, false, false, false);
+        return;
+    }
+
     const int comboIndex = m_planCombo->findData(plan.id);
     if (comboIndex >= 0 && comboIndex != m_planCombo->currentIndex()) {
         const QSignalBlocker blocker(m_planCombo);
         m_planCombo->setCurrentIndex(comboIndex);
     }
+    updatePlanSummary(&plan);
     m_preview->setPlan(plan);
     m_preview->setCompletedPointCount(0);
     m_progressLabel->setText(QStringLiteral("\u6cbb\u7597\u8fdb\u5ea6\uff1a0 / %1").arg(totalPointCount()));
-    setButtonState(plan.approvalState == ApprovalState::Approved || plan.approvalState == ApprovalState::Locked, false, false, false);
+    m_progressBar->setValue(0);
+    m_planCombo->setEnabled(true);
+    setButtonState(m_safetyKernel->snapshot().canStartTreatment && isPlanTreatable(plan), false, false, false);
+}
+
+void TreatmentPage::onActivePlanCleared()
+{
+    updatePlanSummary(nullptr);
+    m_progressLabel->setText(QStringLiteral("\u6cbb\u7597\u8fdb\u5ea6\uff1a0 / 0"));
+    m_progressBar->setValue(0);
+    m_preview->clearPlan();
+    m_preview->setCompletedPointCount(0);
+    m_planCombo->setEnabled(hasSelectablePlans());
+    setButtonState(false, false, false, false);
 }
 
 void TreatmentPage::onPatientChanged(const PatientRecord& patient)
 {
     m_patientLabel->setText(QStringLiteral("\u60a3\u8005\uff1a%1 | %2").arg(patient.name, patient.id));
-    refreshAvailablePlans();
+    m_deferStartupPlanSelection = true;
+    refreshAvailablePlans(true);
 }
 
 void TreatmentPage::onSafetyChanged(const SafetySnapshot& snapshot)
@@ -213,9 +261,7 @@ void TreatmentPage::onSafetyChanged(const SafetySnapshot& snapshot)
         return;
     }
 
-    const bool approved = m_context->hasActivePlan()
-        && (m_context->activePlan().approvalState == ApprovalState::Approved
-            || m_context->activePlan().approvalState == ApprovalState::Locked);
+    const bool approved = m_context->hasActivePlan() && isPlanTreatable(m_context->activePlan());
     setButtonState(snapshot.canStartTreatment && approved, false, m_safetyKernel->mode() == SystemMode::Paused, false);
 }
 
@@ -233,6 +279,12 @@ void TreatmentPage::onPlanSelectionChanged(int index)
 
     const QString planId = m_planCombo->itemData(index).toString();
     if (planId.trimmed().isEmpty()) {
+        m_deferStartupPlanSelection = true;
+        if (m_context->hasActivePlan()) {
+            m_context->clearActivePlan();
+        } else {
+            onActivePlanCleared();
+        }
         return;
     }
 
@@ -242,6 +294,7 @@ void TreatmentPage::onPlanSelectionChanged(int index)
         return;
     }
 
+    m_deferStartupPlanSelection = false;
     m_context->setActivePlan(therapyPlan);
     if (m_safetyKernel != nullptr) {
         m_safetyKernel->setPlanApprovalState(therapyPlan.approvalState);
@@ -256,6 +309,30 @@ void TreatmentPage::setButtonState(bool canStart, bool canPause, bool canResume,
     m_stopButton->setEnabled(canStop);
 }
 
+bool TreatmentPage::isPlanTreatable(const TherapyPlan& plan) const
+{
+    return plan.approvalState == ApprovalState::Approved || plan.approvalState == ApprovalState::Locked;
+}
+
+QString TreatmentPage::planComboText(const TherapyPlan& plan) const
+{
+    return QStringLiteral("%1 | %2").arg(plan.name, toDisplayString(plan.approvalState));
+}
+
+bool TreatmentPage::hasSelectablePlans() const
+{
+    if (m_planCombo == nullptr) {
+        return false;
+    }
+
+    for (int index = 0; index < m_planCombo->count(); ++index) {
+        if (!m_planCombo->itemData(index).toString().trimmed().isEmpty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 int TreatmentPage::totalPointCount() const
 {
     if (!m_context->hasActivePlan()) {
@@ -267,6 +344,73 @@ int TreatmentPage::totalPointCount() const
         total += segment.points.size();
     }
     return total;
+}
+
+void TreatmentPage::syncPlanComboEntry(const TherapyPlan& plan)
+{
+    if (m_planCombo == nullptr || plan.id.trimmed().isEmpty()) {
+        return;
+    }
+
+    const QString displayText = planComboText(plan);
+    const int existingIndex = m_planCombo->findData(plan.id);
+    const QSignalBlocker blocker(m_planCombo);
+    if (existingIndex >= 0) {
+        m_planCombo->setItemText(existingIndex, displayText);
+    } else {
+        const bool hasPlaceholder = m_planCombo->count() > 0 && m_planCombo->itemData(0).toString().trimmed().isEmpty();
+        m_planCombo->insertItem(hasPlaceholder ? 1 : 0, displayText, plan.id);
+    }
+}
+
+void TreatmentPage::updatePlanSummary(const TherapyPlan* plan)
+{
+    if (m_planSummaryLabel == nullptr) {
+        return;
+    }
+
+    if (plan == nullptr) {
+        m_planSummaryLabel->setText(
+            QStringLiteral("\u5f53\u524d\u65b9\u6848\u6982\u51b5\n\u672a\u9009\u62e9\u6cbb\u7597\u65b9\u6848\n\u5f00\u59cb\u6cbb\u7597\u524d\uff0c\u8bf7\u5148\u5728\u4e0a\u65b9\u4e0b\u62c9\u5217\u8868\u91cc\u9009\u62e9\u4e00\u4e2a\u6cbb\u7597\u65b9\u6848\u3002"));
+        return;
+    }
+
+    int pointCount = 0;
+    double durationSeconds = 0.0;
+    for (const TherapySegment& segment : plan->segments) {
+        pointCount += segment.points.size();
+        durationSeconds += segment.plannedDurationSeconds;
+    }
+
+    const QString approvedAtText = plan->approvedAt.isValid()
+        ? plan->approvedAt.toString(QStringLiteral("yyyy-MM-dd hh:mm"))
+        : QStringLiteral("\u672a\u8bb0\u5f55");
+    const QString deliveryText = plan->deliveryMode.trimmed().isEmpty() ? QStringLiteral("\u672a\u8bbe\u7f6e") : plan->deliveryMode;
+    m_planSummaryLabel->setText(
+        QStringLiteral(
+            "\u5f53\u524d\u65b9\u6848\u6982\u51b5\n"
+            "\u540d\u79f0\uff1a%1\n"
+            "\u5ba1\u6838\u72b6\u6001\uff1a%2\n"
+            "\u6cbb\u7597\u65b9\u5f0f\uff1a%3 / %4\n"
+            "\u6cbb\u7597\u53c2\u6570\uff1a%5 W | \u884c\u8ddd %6 mm | \u70b9\u7597 %7 s\n"
+            "\u6cbb\u7597\u5750\u6807\uff1aX %8  Y %9  Z %10  \u6df1\u5ea6 %11 mm\n"
+            "\u6cbb\u7597\u6bb5/\u9776\u70b9\uff1a%12 \u6bb5 / %13 \u70b9 | \u9884\u8ba1 %14 min\n"
+            "\u5ba1\u6279\u65f6\u95f4\uff1a%15")
+            .arg(plan->name)
+            .arg(toDisplayString(plan->approvalState))
+            .arg(deliveryText)
+            .arg(toDisplayString(plan->pattern))
+            .arg(plan->plannedPowerWatts, 0, 'f', 0)
+            .arg(plan->spacingMm, 0, 'f', 1)
+            .arg(plan->dwellSeconds, 0, 'f', 1)
+            .arg(plan->coordinateX, 0, 'f', 2)
+            .arg(plan->coordinateY, 0, 'f', 2)
+            .arg(plan->coordinateZ, 0, 'f', 2)
+            .arg(plan->depthMm, 0, 'f', 2)
+            .arg(plan->segments.size())
+            .arg(pointCount)
+            .arg(durationSeconds / 60.0, 0, 'f', 2)
+            .arg(approvedAtText));
 }
 
 void TreatmentPage::appendLog(const QString& line)
@@ -287,33 +431,56 @@ void TreatmentPage::finalizeTreatment(const QString& status)
         m_safetyKernel->stopTreatment();
     }
 
-    const bool approved = m_context->hasActivePlan()
-        && (m_context->activePlan().approvalState == ApprovalState::Approved
-            || m_context->activePlan().approvalState == ApprovalState::Locked);
+    m_planCombo->setEnabled(true);
+    const bool approved = m_context->hasActivePlan() && isPlanTreatable(m_context->activePlan());
     setButtonState(m_safetyKernel->snapshot().canStartTreatment && approved, false, false, false);
     appendLog(QStringLiteral("\u6cbb\u7597\u6d41\u7a0b\u7ed3\u675f\uff0c\u72b6\u6001\uff1a%1").arg(status));
 }
 
-void TreatmentPage::refreshAvailablePlans()
+void TreatmentPage::refreshAvailablePlans(bool keepSelectionBlank)
 {
     QSignalBlocker blocker(m_planCombo);
     m_planCombo->clear();
 
     if (!m_context->hasSelectedPatient()) {
-        m_planCombo->addItem(QStringLiteral("\u65e0\u53ef\u7528\u65b9\u6848"));
+        m_planCombo->addItem(QStringLiteral("\u8bf7\u5148\u9009\u62e9\u60a3\u8005"), QString());
+        m_planCombo->setEnabled(false);
+        onActivePlanCleared();
         return;
     }
 
-    const QVector<TherapyPlan> therapyPlans = m_clinicalDataService.listTherapyPlansForPatient(m_context->selectedPatient().id);
-    for (const TherapyPlan& plan : therapyPlans) {
-        if (!(plan.approvalState == ApprovalState::Approved || plan.approvalState == ApprovalState::Locked)) {
-            continue;
+    QVector<TherapyPlan> therapyPlans = m_clinicalDataService.listTherapyPlansForPatient(m_context->selectedPatient().id);
+    std::sort(therapyPlans.begin(), therapyPlans.end(), [](const TherapyPlan& left, const TherapyPlan& right) {
+        if (left.createdAt == right.createdAt) {
+            return left.name < right.name;
         }
-        m_planCombo->addItem(QStringLiteral("%1 | %2").arg(plan.name, toDisplayString(plan.approvalState)), plan.id);
+        return left.createdAt > right.createdAt;
+    });
+    m_planCombo->addItem(QStringLiteral("\u8bf7\u9009\u62e9\u6cbb\u7597\u65b9\u6848"), QString());
+    for (const TherapyPlan& plan : therapyPlans) {
+        m_planCombo->addItem(planComboText(plan), plan.id);
     }
 
-    if (m_planCombo->count() == 0) {
-        m_planCombo->addItem(QStringLiteral("\u65e0\u53ef\u7528\u65b9\u6848"));
+    if (m_context->hasActivePlan() && m_planCombo->findData(m_context->activePlan().id) < 0) {
+        m_planCombo->insertItem(1, planComboText(m_context->activePlan()), m_context->activePlan().id);
+    }
+
+    if (m_planCombo->count() <= 1) {
+        m_planCombo->setItemText(0, QStringLiteral("\u5f53\u524d\u60a3\u8005\u6682\u65e0\u6cbb\u7597\u65b9\u6848"));
+        m_planCombo->setEnabled(false);
+        onActivePlanCleared();
+        return;
+    }
+
+    if (keepSelectionBlank) {
+        m_planCombo->setCurrentIndex(0);
+        m_planCombo->setEnabled(true);
+        blocker.unblock();
+        if (m_context->hasActivePlan()) {
+            m_context->clearActivePlan();
+        } else {
+            onActivePlanCleared();
+        }
         return;
     }
 
@@ -323,8 +490,17 @@ void TreatmentPage::refreshAvailablePlans()
         if (existingIndex >= 0) {
             preferredIndex = existingIndex;
         }
+    } else {
+        preferredIndex = 1;
+        for (int index = 0; index < therapyPlans.size(); ++index) {
+            if (isPlanTreatable(therapyPlans.at(index))) {
+                preferredIndex = index + 1;
+                break;
+            }
+        }
     }
     m_planCombo->setCurrentIndex(preferredIndex);
+    m_planCombo->setEnabled(true);
 
     blocker.unblock();
     onPlanSelectionChanged(preferredIndex);

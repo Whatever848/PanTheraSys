@@ -1,5 +1,8 @@
 ﻿#include "modules/shared/mock_ultrasound_view.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
@@ -81,6 +84,35 @@ void MockUltrasoundView::setCaption(const QString& caption)
     update();
 }
 
+void MockUltrasoundView::setBackgroundImage(const QPixmap& image)
+{
+    m_backgroundImage = image;
+    update();
+}
+
+void MockUltrasoundView::clearBackgroundImage()
+{
+    if (m_backgroundImage.isNull()) {
+        return;
+    }
+
+    m_backgroundImage = QPixmap {};
+    update();
+}
+
+void MockUltrasoundView::setSliceContext(int sliceIndex, int totalSliceCount)
+{
+    const int normalizedTotal = std::max(0, totalSliceCount);
+    const int normalizedIndex = normalizedTotal <= 1 ? 0 : std::max(0, std::min(sliceIndex, normalizedTotal - 1));
+    if (m_sliceIndex == normalizedIndex && m_totalSliceCount == normalizedTotal) {
+        return;
+    }
+
+    m_sliceIndex = normalizedIndex;
+    m_totalSliceCount = normalizedTotal;
+    update();
+}
+
 void MockUltrasoundView::setAnnotationEnabled(bool enabled)
 {
     m_annotationEnabled = enabled;
@@ -145,45 +177,76 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
 
     const QRectF canvas = rect().adjusted(16, 8, -16, -24);
     const QPainterPath fanPath = buildFanPath(canvas);
+    const qreal ratio = sliceRatio();
 
-    QLinearGradient gradient(canvas.topLeft(), canvas.bottomLeft());
-    gradient.setColorAt(0.0, QColor(20, 45, 72));
-    gradient.setColorAt(0.55, QColor(50, 92, 128));
-    gradient.setColorAt(1.0, QColor(175, 196, 210));
+    if (!m_backgroundImage.isNull()) {
+        const QPixmap scaled = m_backgroundImage.scaled(canvas.size().toSize(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        const QRectF imageRect(
+            canvas.center().x() - scaled.width() / 2.0,
+            canvas.center().y() - scaled.height() / 2.0,
+            scaled.width(),
+            scaled.height());
+        painter.drawPixmap(imageRect.topLeft(), scaled);
+        painter.setPen(QPen(QColor(42, 58, 82), 1.0));
+        painter.drawRect(canvas.adjusted(0, 0, -1, -1));
+    } else {
+        QLinearGradient gradient(canvas.topLeft(), canvas.bottomLeft());
+        gradient.setColorAt(0.0, QColor(18, 39 + static_cast<int>(ratio * 10.0), 66 + static_cast<int>(ratio * 8.0)));
+        gradient.setColorAt(0.55, QColor(44 + static_cast<int>(ratio * 12.0), 83 + static_cast<int>(ratio * 14.0), 118 + static_cast<int>(ratio * 16.0)));
+        gradient.setColorAt(1.0, QColor(162 + static_cast<int>(ratio * 18.0), 184 + static_cast<int>(ratio * 16.0), 202 + static_cast<int>(ratio * 10.0)));
 
-    painter.save();
-    painter.setClipPath(fanPath);
-    painter.fillPath(fanPath, gradient);
+        painter.save();
+        painter.setClipPath(fanPath);
+        painter.fillPath(fanPath, gradient);
 
-    painter.setPen(QPen(QColor(255, 255, 255, 28), 1.0));
-    const int lineCount = 12;
-    for (int index = 0; index < lineCount; ++index) {
-        const qreal ratio = static_cast<qreal>(index) / (lineCount - 1);
-        const qreal y = canvas.top() + canvas.height() * ratio;
-        painter.drawLine(QPointF(canvas.left(), y), QPointF(canvas.right(), y));
+        painter.setPen(QPen(QColor(255, 255, 255, 28), 1.0));
+        const int lineCount = 12;
+        for (int index = 0; index < lineCount; ++index) {
+            const qreal ratio = static_cast<qreal>(index) / (lineCount - 1);
+            const qreal y = canvas.top() + canvas.height() * ratio;
+            painter.drawLine(QPointF(canvas.left(), y), QPointF(canvas.right(), y));
+        }
+
+        painter.setPen(QPen(QColor(255, 255, 255, 20), 1.0));
+        for (int index = 0; index < 8; ++index) {
+            const qreal x = canvas.left() + 30.0 + index * 55.0;
+            painter.drawLine(QPointF(x, canvas.top()), QPointF(canvas.center().x(), canvas.bottom()));
+        }
+
+        const qreal echoCenterY = canvas.top() + canvas.height() * (0.20 + ratio * 0.48);
+        QLinearGradient echoGradient(QPointF(canvas.left(), echoCenterY - 22.0), QPointF(canvas.left(), echoCenterY + 22.0));
+        echoGradient.setColorAt(0.0, QColor(255, 255, 255, 0));
+        echoGradient.setColorAt(0.5, QColor(255, 255, 255, 34));
+        echoGradient.setColorAt(1.0, QColor(255, 255, 255, 0));
+        painter.fillRect(QRectF(canvas.left(), echoCenterY - 22.0, canvas.width(), 44.0), echoGradient);
+        painter.restore();
+
+        painter.setPen(QPen(QColor(0, 187, 255), 2.0));
+        painter.drawPath(fanPath);
+
+        const qreal lateralShift = (ratio - 0.5) * 9.0;
+        const qreal depthShift = std::sin(ratio * 3.14159265358979323846) * 4.0 - 1.5;
+        QPolygonF lesion;
+        lesion << mapPointToWidget(QPointF(-18.0 + lateralShift, -8.0 + depthShift))
+               << mapPointToWidget(QPointF(-8.0 + lateralShift, -16.0 + depthShift * 0.9))
+               << mapPointToWidget(QPointF(12.0 + lateralShift, -10.0 + depthShift * 0.75))
+               << mapPointToWidget(QPointF(20.0 + lateralShift, 6.0 + depthShift))
+               << mapPointToWidget(QPointF(6.0 + lateralShift, 18.0 + depthShift * 0.85))
+               << mapPointToWidget(QPointF(-14.0 + lateralShift, 12.0 + depthShift));
+
+        painter.setBrush(QColor(255, 144, 0, 80));
+        painter.setPen(QPen(QColor(255, 190, 70), 2.0));
+        painter.drawPolygon(lesion);
+
+        const QPointF focusCenter = mapPointToWidget(QPointF(-4.0 + lateralShift * 0.55, 1.5 + depthShift * 0.8));
+        QRadialGradient focusGradient(focusCenter, 28.0);
+        focusGradient.setColorAt(0.0, QColor(255, 86, 0, 120));
+        focusGradient.setColorAt(0.4, QColor(255, 166, 76, 84));
+        focusGradient.setColorAt(1.0, QColor(255, 166, 76, 0));
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(focusGradient);
+        painter.drawEllipse(focusCenter, 28.0, 28.0);
     }
-
-    painter.setPen(QPen(QColor(255, 255, 255, 20), 1.0));
-    for (int index = 0; index < 8; ++index) {
-        const qreal x = canvas.left() + 30.0 + index * 55.0;
-        painter.drawLine(QPointF(x, canvas.top()), QPointF(canvas.center().x(), canvas.bottom()));
-    }
-    painter.restore();
-
-    painter.setPen(QPen(QColor(0, 187, 255), 2.0));
-    painter.drawPath(fanPath);
-
-    QPolygonF lesion;
-    lesion << mapPointToWidget(QPointF(-18.0, -8.0))
-           << mapPointToWidget(QPointF(-8.0, -16.0))
-           << mapPointToWidget(QPointF(12.0, -10.0))
-           << mapPointToWidget(QPointF(20.0, 6.0))
-           << mapPointToWidget(QPointF(6.0, 18.0))
-           << mapPointToWidget(QPointF(-14.0, 12.0));
-
-    painter.setBrush(QColor(255, 144, 0, 80));
-    painter.setPen(QPen(QColor(255, 190, 70), 2.0));
-    painter.drawPolygon(lesion);
 
     if (m_hasPlan) {
         int currentIndex = 0;
@@ -332,6 +395,14 @@ QPointF MockUltrasoundView::denormalizePoint(const QPointF& normalizedPoint) con
 bool MockUltrasoundView::isDrawablePoint(const QPointF& widgetPoint) const
 {
     return annotationCanvasRect().contains(widgetPoint) && drawingPath().contains(widgetPoint);
+}
+
+qreal MockUltrasoundView::sliceRatio() const
+{
+    if (m_totalSliceCount <= 1) {
+        return 0.5;
+    }
+    return static_cast<qreal>(m_sliceIndex) / static_cast<qreal>(m_totalSliceCount - 1);
 }
 
 }  // namespace panthera::modules
