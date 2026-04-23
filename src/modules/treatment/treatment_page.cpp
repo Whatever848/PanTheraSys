@@ -12,6 +12,26 @@ namespace panthera::modules {
 
 using namespace panthera::core;
 
+namespace {
+
+bool isSeedPlanId(const QString& planId)
+{
+    const QString trimmedId = planId.trimmed();
+    return trimmedId == QStringLiteral("PLAN-20260102091500")
+        || trimmedId == QStringLiteral("PLAN-20260104083000");
+}
+
+bool isSuppressedSystemPlan(const TherapyPlan& plan)
+{
+    if (isSeedPlanId(plan.id)) {
+        return true;
+    }
+
+    return plan.name.trimmed().compare(QStringLiteral("Imported treatment plan"), Qt::CaseInsensitive) == 0;
+}
+
+}  // namespace
+
 TreatmentPage::TreatmentPage(
     ApplicationContext* context,
     SafetyKernel* safetyKernel,
@@ -203,6 +223,15 @@ void TreatmentPage::advanceProgress()
 
 void TreatmentPage::onActivePlanChanged(const TherapyPlan& plan)
 {
+    if (isSuppressedSystemPlan(plan)) {
+        if (m_context->hasActivePlan() && m_context->activePlan().id == plan.id) {
+            m_context->clearActivePlan();
+        } else {
+            onActivePlanCleared();
+        }
+        return;
+    }
+
     syncPlanComboEntry(plan);
 
     if (m_deferStartupPlanSelection) {
@@ -294,6 +323,18 @@ void TreatmentPage::onPlanSelectionChanged(int index)
         return;
     }
 
+    if (isSuppressedSystemPlan(therapyPlan)) {
+        const QSignalBlocker blocker(m_planCombo);
+        m_planCombo->setCurrentIndex(0);
+        m_deferStartupPlanSelection = true;
+        if (m_context->hasActivePlan()) {
+            m_context->clearActivePlan();
+        } else {
+            onActivePlanCleared();
+        }
+        return;
+    }
+
     m_deferStartupPlanSelection = false;
     m_context->setActivePlan(therapyPlan);
     if (m_safetyKernel != nullptr) {
@@ -311,6 +352,10 @@ void TreatmentPage::setButtonState(bool canStart, bool canPause, bool canResume,
 
 bool TreatmentPage::isPlanTreatable(const TherapyPlan& plan) const
 {
+    if (isSuppressedSystemPlan(plan)) {
+        return false;
+    }
+
     return plan.approvalState == ApprovalState::Approved || plan.approvalState == ApprovalState::Locked;
 }
 
@@ -348,7 +393,7 @@ int TreatmentPage::totalPointCount() const
 
 void TreatmentPage::syncPlanComboEntry(const TherapyPlan& plan)
 {
-    if (m_planCombo == nullptr || plan.id.trimmed().isEmpty()) {
+    if (m_planCombo == nullptr || plan.id.trimmed().isEmpty() || isSuppressedSystemPlan(plan)) {
         return;
     }
 
@@ -450,6 +495,12 @@ void TreatmentPage::refreshAvailablePlans(bool keepSelectionBlank)
     }
 
     QVector<TherapyPlan> therapyPlans = m_clinicalDataService.listTherapyPlansForPatient(m_context->selectedPatient().id);
+    therapyPlans.erase(
+        std::remove_if(
+            therapyPlans.begin(),
+            therapyPlans.end(),
+            [](const TherapyPlan& plan) { return isSuppressedSystemPlan(plan); }),
+        therapyPlans.end());
     std::sort(therapyPlans.begin(), therapyPlans.end(), [](const TherapyPlan& left, const TherapyPlan& right) {
         if (left.createdAt == right.createdAt) {
             return left.name < right.name;
@@ -461,14 +512,22 @@ void TreatmentPage::refreshAvailablePlans(bool keepSelectionBlank)
         m_planCombo->addItem(planComboText(plan), plan.id);
     }
 
-    if (m_context->hasActivePlan() && m_planCombo->findData(m_context->activePlan().id) < 0) {
+    const bool hasSuppressedActivePlan = m_context->hasActivePlan() && isSuppressedSystemPlan(m_context->activePlan());
+    if (m_context->hasActivePlan()
+        && !hasSuppressedActivePlan
+        && m_planCombo->findData(m_context->activePlan().id) < 0) {
         m_planCombo->insertItem(1, planComboText(m_context->activePlan()), m_context->activePlan().id);
     }
 
     if (m_planCombo->count() <= 1) {
         m_planCombo->setItemText(0, QStringLiteral("\u5f53\u524d\u60a3\u8005\u6682\u65e0\u6cbb\u7597\u65b9\u6848"));
         m_planCombo->setEnabled(false);
-        onActivePlanCleared();
+        blocker.unblock();
+        if (hasSuppressedActivePlan) {
+            m_context->clearActivePlan();
+        } else {
+            onActivePlanCleared();
+        }
         return;
     }
 
@@ -503,6 +562,9 @@ void TreatmentPage::refreshAvailablePlans(bool keepSelectionBlank)
     m_planCombo->setEnabled(true);
 
     blocker.unblock();
+    if (hasSuppressedActivePlan) {
+        m_context->clearActivePlan();
+    }
     onPlanSelectionChanged(preferredIndex);
 }
 

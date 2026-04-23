@@ -50,7 +50,7 @@ MainWindow::MainWindow(
     titleIcon->setObjectName(QStringLiteral("navTitleIcon"));
     titleIcon->setPixmap(style()->standardIcon(QStyle::SP_DriveNetIcon).pixmap(24, 24));
 
-    auto* titleLabel = new QLabel(QStringLiteral("乳腺超声消融医疗系统 V1.0"));
+    auto* titleLabel = new QLabel(QStringLiteral("\u4f4e\u5f3a\u5ea6\u8d85\u58f0\u7cfb\u7edf V1.0"));
     titleLabel->setObjectName(QStringLiteral("navTitleLabel"));
 
     titleLayout->addWidget(titleIcon);
@@ -118,8 +118,8 @@ MainWindow::MainWindow(
     rootLayout->addWidget(m_stack, 1);
 
     setCentralWidget(centralWidget);
-    resize(1480, 920);
-    setMinimumSize(1380, 860);
+    resize(1600, 920);
+    setMinimumSize(1540, 860);
     setWindowTitle(QStringLiteral("PanTheraSys Console"));
 
     connect(m_dashboardButton, &QToolButton::clicked, this, &MainWindow::showDashboard);

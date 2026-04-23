@@ -526,24 +526,39 @@ PlanningPage::PlanningPage(
     centerColumn->addWidget(previewFrame, 1);
 
     auto* bottomRow = new QHBoxLayout();
-    bottomRow->setSpacing(10);
+    bottomRow->setSpacing(12);
 
     auto* chartCard = new QFrame();
     chartCard->setObjectName(QStringLiteral("planningBottomCard"));
-    chartCard->setMinimumWidth(320);
+    chartCard->setMinimumWidth(300);
     chartCard->setMinimumHeight(210);
+    chartCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     auto* chartLayout = new QVBoxLayout(chartCard);
     chartLayout->setContentsMargins(18, 12, 18, 12);
-    chartLayout->setSpacing(10);
+    chartLayout->setSpacing(8);
 
-    auto* chartHeader = new QHBoxLayout();
+    auto* chartHeader = new QVBoxLayout();
+    chartHeader->setContentsMargins(0, 0, 0, 0);
+    chartHeader->setSpacing(2);
     auto* chartTitle = new QLabel(QStringLiteral("\u80fd\u91cf\u8f93\u51fa\u66f2\u7ebf (J)"));
     chartTitle->setObjectName(QStringLiteral("planningBottomTitle"));
+    chartTitle->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Preferred);
     m_chartSummaryLabel = new QLabel(QStringLiteral("\u5b9e\u65f6\u529f\u7387: --"));
     m_chartSummaryLabel->setObjectName(QStringLiteral("planningChartSummaryLabel"));
-    chartHeader->addWidget(chartTitle);
-    chartHeader->addStretch();
-    chartHeader->addWidget(m_chartSummaryLabel);
+    m_chartSummaryLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+    auto* chartTitleRow = new QHBoxLayout();
+    chartTitleRow->setContentsMargins(0, 0, 0, 0);
+    chartTitleRow->addWidget(chartTitle);
+    chartTitleRow->addStretch();
+
+    auto* chartSummaryRow = new QHBoxLayout();
+    chartSummaryRow->setContentsMargins(0, 0, 0, 0);
+    chartSummaryRow->addStretch();
+    chartSummaryRow->addWidget(m_chartSummaryLabel);
+
+    chartHeader->addLayout(chartTitleRow);
+    chartHeader->addLayout(chartSummaryRow);
 
     m_energyOutputChart = new EnergyOutputChartWidget();
 
@@ -553,16 +568,19 @@ PlanningPage::PlanningPage(
 
     auto* statusCard = new QFrame();
     statusCard->setObjectName(QStringLiteral("planningBottomCard"));
-    statusCard->setMinimumWidth(260);
+    statusCard->setMinimumWidth(220);
     statusCard->setMinimumHeight(210);
+    statusCard->setMaximumWidth(340);
+    statusCard->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     auto* statusLayout = new QVBoxLayout(statusCard);
     statusLayout->setContentsMargins(0, 0, 0, 0);
     statusLayout->setSpacing(0);
 
     auto* imageOpsCard = new QFrame();
     imageOpsCard->setObjectName(QStringLiteral("planningBottomCard"));
-    imageOpsCard->setMinimumWidth(320);
+    imageOpsCard->setMinimumWidth(280);
     imageOpsCard->setMinimumHeight(210);
+    imageOpsCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     auto* imageOpsLayout = new QVBoxLayout(imageOpsCard);
     imageOpsLayout->setContentsMargins(18, 12, 18, 12);
     imageOpsLayout->setSpacing(16);
@@ -581,17 +599,22 @@ PlanningPage::PlanningPage(
     m_storeImageButton = new QPushButton(QStringLiteral("\u672c\u5730\u5b58\u50a8"));
     m_storeImageButton->setObjectName(QStringLiteral("planningActionButton"));
     m_storeImageButton->setToolTip(QStringLiteral("\u5c06\u5f53\u524d\u8def\u5f84\u4e0a\u7684\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\u5bfc\u51fa\u5230\u672c\u5730 PNG \u6587\u4ef6"));
+    m_storeImageButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_loadImageButton = new QPushButton(QStringLiteral("\u8bfb\u53d6\u56fe\u50cf"));
     m_loadImageButton->setObjectName(QStringLiteral("planningActionButton"));
     m_loadImageButton->setToolTip(QStringLiteral("\u4ece\u672c\u5730\u591a\u9009\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf\uff0c\u5e76\u5728\u5de6\u5c4f\u5bf9\u6bd4\u663e\u793a"));
-    imageOpsButtons->addWidget(m_storeImageButton);
-    imageOpsButtons->addWidget(m_loadImageButton);
+    m_loadImageButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    imageOpsButtons->addWidget(m_storeImageButton, 1);
+    imageOpsButtons->addWidget(m_loadImageButton, 1);
 
     imageOpsLayout->addLayout(imageOpsHeader);
     imageOpsLayout->addStretch();
     imageOpsLayout->addLayout(imageOpsButtons);
-    bottomRow->addWidget(imageOpsCard, 1);
-    bottomRow->addWidget(statusCard, 1);
+    bottomRow->addWidget(imageOpsCard, 5);
+    bottomRow->addWidget(statusCard, 4);
+    bottomRow->setStretch(0, 6);
+    bottomRow->setStretch(1, 5);
+    bottomRow->setStretch(2, 4);
 
     centerColumn->addLayout(bottomRow, 0);
     rootLayout->addLayout(centerColumn, 55);
@@ -771,6 +794,8 @@ PlanningPage::PlanningPage(
     m_assessmentPreview = new QPlainTextEdit();
     m_assessmentPreview->setObjectName(QStringLiteral("planningSummaryEdit"));
     m_assessmentPreview->setReadOnly(true);
+    m_assessmentPreview->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    m_assessmentPreview->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_assessmentPreview->setMinimumHeight(0);
     m_assessmentPreview->setMaximumHeight(QWIDGETSIZE_MAX);
 
@@ -820,6 +845,8 @@ PlanningPage::PlanningPage(
     m_planPreview = new QPlainTextEdit();
     m_planPreview->setObjectName(QStringLiteral("planningSummaryEdit"));
     m_planPreview->setReadOnly(true);
+    m_planPreview->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    m_planPreview->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_planPreview->setMinimumHeight(170);
     m_planPreview->setMaximumHeight(210);
 
@@ -1456,26 +1483,8 @@ void PlanningPage::editCurrentPlan()
     approvalCombo->addItem(QStringLiteral("\u5df2\u9501\u5b9a"), static_cast<int>(ApprovalState::Locked));
     approvalCombo->setCurrentIndex(std::max(0, approvalCombo->findData(static_cast<int>(editablePlan.approvalState))));
 
-    auto* xSpin = new QDoubleSpinBox();
-    auto* ySpin = new QDoubleSpinBox();
-    auto* zSpin = new QDoubleSpinBox();
-    auto* depthSpin = new QDoubleSpinBox();
-    const QList<QDoubleSpinBox*> coordinateSpins {xSpin, ySpin, zSpin, depthSpin};
-    for (QDoubleSpinBox* spin : coordinateSpins) {
-        spin->setRange(-9999.0, 9999.0);
-        spin->setDecimals(2);
-    }
-    xSpin->setValue(editablePlan.coordinateX);
-    ySpin->setValue(editablePlan.coordinateY);
-    zSpin->setValue(editablePlan.coordinateZ);
-    depthSpin->setValue(editablePlan.depthMm);
-
     form->addRow(QStringLiteral("\u65b9\u6848\u540d\u79f0"), nameEdit);
     form->addRow(QStringLiteral("\u5ba1\u6838\u72b6\u6001"), approvalCombo);
-    form->addRow(QStringLiteral("X"), xSpin);
-    form->addRow(QStringLiteral("Y"), ySpin);
-    form->addRow(QStringLiteral("Z"), zSpin);
-    form->addRow(QStringLiteral("\u6df1\u5ea6(mm)"), depthSpin);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
@@ -1490,10 +1499,6 @@ void PlanningPage::editCurrentPlan()
 
     editablePlan.name = nameEdit->text().trimmed();
     editablePlan.approvalState = static_cast<ApprovalState>(approvalCombo->currentData().toInt());
-    editablePlan.coordinateX = xSpin->value();
-    editablePlan.coordinateY = ySpin->value();
-    editablePlan.coordinateZ = zSpin->value();
-    editablePlan.depthMm = depthSpin->value();
     if (editablePlan.approvalState == ApprovalState::Approved || editablePlan.approvalState == ApprovalState::Locked) {
         editablePlan.approvedAt = QDateTime::currentDateTime();
     } else {
