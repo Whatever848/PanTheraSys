@@ -22,7 +22,7 @@ endif()
 
 option(PANTHERA_BUILD_TESTS "Build automated tests" ON)
 
-find_package(Qt6 6.2 REQUIRED COMPONENTS Core Gui Widgets Sql Test)
+find_package(Qt6 6.2 REQUIRED COMPONENTS Core Gui Widgets Network Sql Test)
 
 if(MSVC)
     add_compile_options(/W4 /permissive- /EHsc /utf-8)

@@ -40,6 +40,27 @@ struct VolumeReconstructionResult {
     QString summary;
 };
 
+AnnotationStroke normalizeClosedAnnotationStroke(const AnnotationStroke& annotation);
+QVector<AnnotationStroke> normalizeClosedAnnotations(const QVector<AnnotationStroke>& annotations);
+double annotationRegionAreaMm2(const QVector<AnnotationStroke>& annotations);
+QRectF annotationRegionBoundsMm(const QVector<AnnotationStroke>& annotations);
+int therapyLineGroupCount(const QVector<panthera::core::TherapyPoint>& points);
+double contourAreaMm2(const QVector<QPointF>& contour);
+QRectF contourBoundsMm(const QVector<QPointF>& contour);
+bool contourContainsPointMm(const QVector<QPointF>& contour, const QPointF& pointMm, double toleranceMm = 0.0);
+QVector<panthera::core::TherapyPoint> generateTherapyTargetsWithinContour(
+    const QVector<QPointF>& contourMm,
+    panthera::core::TreatmentPattern pattern,
+    double spacingMm,
+    double dwellSeconds,
+    double powerWatts);
+QVector<panthera::core::TherapyPoint> generateTherapyTargetsFromAnnotations(
+    const QVector<AnnotationStroke>& annotations,
+    panthera::core::TreatmentPattern pattern,
+    double spacingMm,
+    double dwellSeconds,
+    double powerWatts);
+
 QVector<QPointF> extractContourFromAnnotations(const QVector<AnnotationStroke>& annotations);
 QVector<QPointF> buildFallbackLesionContourMm(int sliceIndex, int totalSliceCount);
 

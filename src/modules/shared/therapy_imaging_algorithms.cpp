@@ -2,13 +2,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <QDateTime>
 #include <QFont>
+#include <QLineF>
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
+#include <QPolygonF>
 
 namespace panthera::modules {
 
@@ -17,14 +20,96 @@ using namespace panthera::core;
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kLogicalCanvasSpanMm = 60.0;
+constexpr double kLogicalCanvasHalfSpanMm = kLogicalCanvasSpanMm * 0.5;
+constexpr double kMinimumAnnotationPointDistanceNormalized = 0.0015;
+constexpr double kSmoothingPreviousWeight = 0.18;
+constexpr double kSmoothingCurrentWeight = 0.64;
+constexpr double kSmoothingNextWeight = 0.18;
+
+QPointF normalizedPointToMillimeters(const QPointF& normalizedPoint)
+{
+    return QPointF(
+        (normalizedPoint.x() * kLogicalCanvasSpanMm) - kLogicalCanvasHalfSpanMm,
+        (normalizedPoint.y() * kLogicalCanvasSpanMm) - kLogicalCanvasHalfSpanMm);
+}
+
+bool pointsNearlyEqual(const QPointF& left, const QPointF& right, double epsilon = 1e-4)
+{
+    return std::abs(left.x() - right.x()) <= epsilon && std::abs(left.y() - right.y()) <= epsilon;
+}
+
+QVector<QPointF> deduplicateSequentialPoints(const QVector<QPointF>& points, double minimumDistance)
+{
+    QVector<QPointF> deduplicated;
+    deduplicated.reserve(points.size());
+    for (const QPointF& point : points) {
+        if (!deduplicated.isEmpty() && QLineF(deduplicated.constLast(), point).length() < minimumDistance) {
+            continue;
+        }
+        deduplicated.push_back(point);
+    }
+    return deduplicated;
+}
+
+AnnotationStroke normalizeClosedStroke(const AnnotationStroke& stroke)
+{
+    AnnotationStroke normalized = stroke;
+    QVector<QPointF> uniquePoints = deduplicateSequentialPoints(
+        normalized.normalizedPoints,
+        kMinimumAnnotationPointDistanceNormalized);
+
+    if (uniquePoints.size() >= 2 && pointsNearlyEqual(uniquePoints.first(), uniquePoints.last())) {
+        uniquePoints.removeLast();
+    }
+
+    if (uniquePoints.size() >= 6) {
+        QVector<QPointF> smoothedPoints;
+        smoothedPoints.reserve(uniquePoints.size());
+        for (int index = 0; index < uniquePoints.size(); ++index) {
+            const QPointF& previous = uniquePoints.at((index - 1 + uniquePoints.size()) % uniquePoints.size());
+            const QPointF& current = uniquePoints.at(index);
+            const QPointF& next = uniquePoints.at((index + 1) % uniquePoints.size());
+            smoothedPoints.push_back(QPointF(
+                (previous.x() * kSmoothingPreviousWeight)
+                    + (current.x() * kSmoothingCurrentWeight)
+                    + (next.x() * kSmoothingNextWeight),
+                (previous.y() * kSmoothingPreviousWeight)
+                    + (current.y() * kSmoothingCurrentWeight)
+                    + (next.y() * kSmoothingNextWeight)));
+        }
+
+        smoothedPoints = deduplicateSequentialPoints(
+            smoothedPoints,
+            kMinimumAnnotationPointDistanceNormalized * 0.55);
+        if (smoothedPoints.size() >= 3) {
+            uniquePoints = smoothedPoints;
+        }
+    }
+
+    normalized.normalizedPoints = uniquePoints;
+    if (normalized.normalizedPoints.size() >= 3) {
+        normalized.normalizedPoints.push_back(normalized.normalizedPoints.first());
+    }
+
+    return normalized;
+}
+
+QVector<QPointF> annotationPointsInMillimeters(const AnnotationStroke& annotation)
+{
+    QVector<QPointF> points;
+    points.reserve(annotation.normalizedPoints.size());
+    for (const QPointF& normalizedPoint : annotation.normalizedPoints) {
+        points.push_back(normalizedPointToMillimeters(normalizedPoint));
+    }
+    return points;
+}
 
 QVector<QPointF> annotationPointsInMillimeters(const QVector<AnnotationStroke>& annotations)
 {
     QVector<QPointF> points;
     for (const AnnotationStroke& stroke : annotations) {
-        for (const QPointF& normalizedPoint : stroke.normalizedPoints) {
-            points.push_back(QPointF((normalizedPoint.x() * 60.0) - 30.0, (normalizedPoint.y() * 60.0) - 30.0));
-        }
+        points += annotationPointsInMillimeters(stroke);
     }
     return points;
 }
@@ -148,6 +233,443 @@ QRectF polygonBounds(const QVector<QPointF>& polygon)
     return QRectF(QPointF(minX, minY), QPointF(maxX, maxY)).normalized();
 }
 
+double pointToSegmentDistanceMm(const QPointF& point, const QPointF& start, const QPointF& end)
+{
+    const double segmentLengthSquared =
+        std::pow(end.x() - start.x(), 2.0) + std::pow(end.y() - start.y(), 2.0);
+    if (segmentLengthSquared <= 1e-9) {
+        return QLineF(point, start).length();
+    }
+
+    const QPointF offset = point - start;
+    const QPointF direction = end - start;
+    const double projection = std::clamp(
+        ((offset.x() * direction.x()) + (offset.y() * direction.y())) / segmentLengthSquared,
+        0.0,
+        1.0);
+    const QPointF closestPoint(start.x() + (direction.x() * projection), start.y() + (direction.y() * projection));
+    return QLineF(point, closestPoint).length();
+}
+
+int contourVertexCount(const QVector<QPointF>& contour)
+{
+    if (contour.isEmpty()) {
+        return 0;
+    }
+
+    const int rawCount = contour.size();
+    if (rawCount >= 2 && pointsNearlyEqual(contour.first(), contour.last())) {
+        return rawCount - 1;
+    }
+    return rawCount;
+}
+
+QVector<qreal> distributedPositions(qreal minimum, qreal maximum, double spacingMm)
+{
+    QVector<qreal> positions;
+    if (maximum < minimum) {
+        return positions;
+    }
+
+    const qreal span = std::max<qreal>(0.0, maximum - minimum);
+    const double clampedSpacing = std::max(0.5, spacingMm);
+    const int count = std::max(1, static_cast<int>(std::floor(span / clampedSpacing)) + 1);
+    const qreal occupiedSpan = static_cast<qreal>(clampedSpacing * std::max(0, count - 1));
+    const qreal offset = (span - occupiedSpan) * 0.5;
+
+    positions.reserve(count);
+    for (int index = 0; index < count; ++index) {
+        positions.push_back(minimum + offset + static_cast<qreal>(index * clampedSpacing));
+    }
+    return positions;
+}
+
+struct HorizontalSpan {
+    qreal startX {0.0};
+    qreal endX {0.0};
+};
+
+QPainterPath closedStrokePathMm(const AnnotationStroke& annotation)
+{
+    const QVector<QPointF> contour = annotationPointsInMillimeters(annotation);
+    if (contourVertexCount(contour) < 3) {
+        return {};
+    }
+
+    QPainterPath strokePath(contour.first());
+    for (int index = 1; index < contourVertexCount(contour); ++index) {
+        strokePath.lineTo(contour.at(index));
+    }
+    strokePath.closeSubpath();
+    strokePath.setFillRule(Qt::WindingFill);
+    return strokePath.simplified();
+}
+
+QPainterPath annotationRegionPathMm(const QVector<AnnotationStroke>& annotations)
+{
+    QPainterPath mergedPath;
+    mergedPath.setFillRule(Qt::WindingFill);
+
+    const QVector<AnnotationStroke> normalizedAnnotations = normalizeClosedAnnotations(annotations);
+    for (const AnnotationStroke& stroke : normalizedAnnotations) {
+        const QPainterPath strokePath = closedStrokePathMm(stroke);
+        if (strokePath.isEmpty()) {
+            continue;
+        }
+        mergedPath = mergedPath.isEmpty() ? strokePath : mergedPath.united(strokePath);
+    }
+
+    return mergedPath.simplified();
+}
+
+QPainterPath contourRegionPathMm(const QVector<QPointF>& contour)
+{
+    if (contourVertexCount(contour) < 3) {
+        return {};
+    }
+
+    QPainterPath contourPath(contour.first());
+    for (int index = 1; index < contourVertexCount(contour); ++index) {
+        contourPath.lineTo(contour.at(index));
+    }
+    contourPath.closeSubpath();
+    contourPath.setFillRule(Qt::WindingFill);
+    return contourPath.simplified();
+}
+
+QVector<QVector<QPointF>> fillContoursFromPathMm(const QPainterPath& path)
+{
+    QVector<QVector<QPointF>> contours;
+    const QList<QPolygonF> polygons = path.toFillPolygons();
+    contours.reserve(polygons.size());
+    for (const QPolygonF& polygon : polygons) {
+        QVector<QPointF> contour;
+        contour.reserve(polygon.size() + 1);
+        for (const QPointF& point : polygon) {
+            contour.push_back(point);
+        }
+        if (contourVertexCount(contour) >= 3 && !pointsNearlyEqual(contour.first(), contour.last())) {
+            contour.push_back(contour.first());
+        }
+        if (contourVertexCount(contour) >= 3) {
+            contours.push_back(contour);
+        }
+    }
+    return contours;
+}
+
+double contourCollectionAreaMm2(const QVector<QVector<QPointF>>& contours)
+{
+    double totalAreaMm2 = 0.0;
+    for (const QVector<QPointF>& contour : contours) {
+        totalAreaMm2 += polygonAreaMm2(contour);
+    }
+    return totalAreaMm2;
+}
+
+QRectF contourCollectionBoundsMm(const QVector<QVector<QPointF>>& contours)
+{
+    QRectF bounds;
+    bool firstContour = true;
+    for (const QVector<QPointF>& contour : contours) {
+        const QRectF contourBounds = polygonBounds(contour);
+        if (!contourBounds.isValid()) {
+            continue;
+        }
+        if (firstContour) {
+            bounds = contourBounds;
+            firstContour = false;
+        } else {
+            bounds = bounds.united(contourBounds);
+        }
+    }
+    return bounds;
+}
+
+bool pathContainsPointMm(const QPainterPath& path, const QPointF& pointMm, double toleranceMm)
+{
+    if (path.contains(pointMm)) {
+        return true;
+    }
+    if (toleranceMm <= 0.0) {
+        return false;
+    }
+
+    const QVector<QVector<QPointF>> contours = fillContoursFromPathMm(path);
+    for (const QVector<QPointF>& contour : contours) {
+        if (contourContainsPointMm(contour, pointMm, toleranceMm)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+QVector<HorizontalSpan> mergeHorizontalSpans(QVector<HorizontalSpan> spans, qreal mergeToleranceMm)
+{
+    if (spans.isEmpty()) {
+        return spans;
+    }
+
+    std::sort(spans.begin(), spans.end(), [](const HorizontalSpan& left, const HorizontalSpan& right) {
+        return left.startX < right.startX;
+    });
+
+    QVector<HorizontalSpan> mergedSpans;
+    mergedSpans.push_back(spans.first());
+    for (int index = 1; index < spans.size(); ++index) {
+        HorizontalSpan& current = mergedSpans.last();
+        const HorizontalSpan& candidate = spans.at(index);
+        if (candidate.startX <= current.endX + mergeToleranceMm) {
+            current.endX = std::max(current.endX, candidate.endX);
+            continue;
+        }
+        mergedSpans.push_back(candidate);
+    }
+    return mergedSpans;
+}
+
+QVector<HorizontalSpan> horizontalSpansForRow(
+    const QVector<QVector<QPointF>>& contours,
+    qreal y,
+    qreal minimumSpanMm)
+{
+    QVector<HorizontalSpan> spans;
+    for (const QVector<QPointF>& contour : contours) {
+        const int vertexCount = contourVertexCount(contour);
+        if (vertexCount < 3) {
+            continue;
+        }
+
+        QVector<qreal> intersections;
+        intersections.reserve(vertexCount);
+        for (int index = 0; index < vertexCount; ++index) {
+            const QPointF& start = contour.at(index);
+            const QPointF& end = contour.at((index + 1) % vertexCount);
+            if (std::abs(start.y() - end.y()) <= 1e-6) {
+                continue;
+            }
+
+            const qreal minimumY = std::min(start.y(), end.y());
+            const qreal maximumY = std::max(start.y(), end.y());
+            if (y < minimumY || y >= maximumY) {
+                continue;
+            }
+
+            const qreal ratio = (y - start.y()) / (end.y() - start.y());
+            intersections.push_back(start.x() + ((end.x() - start.x()) * ratio));
+        }
+
+        std::sort(intersections.begin(), intersections.end());
+        for (int index = 0; index + 1 < intersections.size(); index += 2) {
+            const qreal startX = intersections.at(index);
+            const qreal endX = intersections.at(index + 1);
+            if ((endX - startX) >= minimumSpanMm) {
+                spans.push_back(HorizontalSpan {startX, endX});
+            }
+        }
+    }
+
+    return mergeHorizontalSpans(spans, 0.3);
+}
+
+QVector<qreal> samplePositionsForContinuousLineSpan(qreal startX, qreal endX, double spacingMm)
+{
+    if (endX <= startX) {
+        return {};
+    }
+
+    QVector<qreal> positions = distributedPositions(startX, endX, std::max(0.6, spacingMm * 0.85));
+    if (positions.isEmpty()) {
+        return {startX, endX};
+    }
+
+    positions.first() = startX;
+    if (positions.size() == 1 || positions.last() < endX - 0.01) {
+        positions.push_back(endX);
+    } else {
+        positions.last() = endX;
+    }
+    return positions;
+}
+
+QVector<qreal> pointCircleCenterPositionsForSpan(
+    qreal startX,
+    qreal endX,
+    qreal globalStartX,
+    double spacingMm,
+    bool offsetRow)
+{
+    QVector<qreal> positions;
+    if (endX < startX) {
+        return positions;
+    }
+
+    const double clampedSpacing = std::max(0.5, spacingMm);
+    qreal firstX = globalStartX + (offsetRow ? clampedSpacing * 0.5 : 0.0);
+    if (firstX < startX) {
+        const double stepCount = std::ceil((startX - firstX) / clampedSpacing);
+        firstX += static_cast<qreal>(stepCount * clampedSpacing);
+    }
+
+    for (qreal x = firstX; x <= endX + 1e-6; x += clampedSpacing) {
+        positions.push_back(x);
+    }
+
+    if (positions.isEmpty() && (endX - startX) >= clampedSpacing * 0.35) {
+        positions.push_back((startX + endX) * 0.5);
+    }
+    return positions;
+}
+
+bool circleFitsInsidePath(const QPainterPath& path, const QPointF& center, double radiusMm)
+{
+    if (!pathContainsPointMm(path, center, 0.05)) {
+        return false;
+    }
+
+    const double checkedRadius = std::max(0.1, radiusMm);
+    for (int sampleIndex = 0; sampleIndex < 8; ++sampleIndex) {
+        const double angle = (static_cast<double>(sampleIndex) / 8.0) * 2.0 * kPi;
+        const QPointF sample(
+            center.x() + std::cos(angle) * checkedRadius,
+            center.y() + std::sin(angle) * checkedRadius);
+        if (!pathContainsPointMm(path, sample, 0.05)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+QPointF fallbackPointInsidePath(const QPainterPath& path, const QRectF& bounds, double spacingMm)
+{
+    const QPointF preferredPoint = bounds.center();
+    if (pathContainsPointMm(path, preferredPoint, std::max(0.2, spacingMm * 0.15))) {
+        return preferredPoint;
+    }
+
+    QPointF bestPoint = preferredPoint;
+    double bestDistance = std::numeric_limits<double>::max();
+    const QVector<qreal> rows = distributedPositions(bounds.top(), bounds.bottom(), std::max(0.5, spacingMm * 0.5));
+    const QVector<qreal> columns = distributedPositions(bounds.left(), bounds.right(), std::max(0.5, spacingMm * 0.5));
+    for (const qreal y : rows) {
+        for (const qreal x : columns) {
+            const QPointF candidate(x, y);
+            if (!pathContainsPointMm(path, candidate, std::max(0.2, spacingMm * 0.15))) {
+                continue;
+            }
+
+            const double distance = QLineF(candidate, preferredPoint).length();
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestPoint = candidate;
+            }
+        }
+    }
+
+    return bestPoint;
+}
+
+QVector<TherapyPoint> generateTherapyTargetsInRegionPath(
+    const QPainterPath& regionPath,
+    TreatmentPattern pattern,
+    double spacingMm,
+    double dwellSeconds,
+    double powerWatts)
+{
+    QVector<TherapyPoint> targets;
+    const QVector<QVector<QPointF>> contours = fillContoursFromPathMm(regionPath);
+    const QRectF bounds = regionPath.boundingRect();
+    if (contours.isEmpty() || !bounds.isValid() || bounds.width() <= 0.0 || bounds.height() <= 0.0) {
+        return targets;
+    }
+
+    const double clampedSpacing = std::max(0.5, spacingMm);
+    if (pattern == TreatmentPattern::Line) {
+        const double rowSpacingMm = clampedSpacing;
+        const double minimumLineSpanMm = std::max(1.6, clampedSpacing * 1.4);
+        const double endpointInsetMm = std::min(0.8, clampedSpacing * 0.22);
+        const QVector<qreal> rows = distributedPositions(bounds.top(), bounds.bottom(), rowSpacingMm);
+
+        int lineGroupIndex = 0;
+        for (const qreal y : rows) {
+            const QVector<HorizontalSpan> spans = horizontalSpansForRow(contours, y, minimumLineSpanMm);
+            for (const HorizontalSpan& span : spans) {
+                qreal startX = span.startX + endpointInsetMm;
+                qreal endX = span.endX - endpointInsetMm;
+                if (endX <= startX && span.endX > span.startX) {
+                    startX = span.startX;
+                    endX = span.endX;
+                }
+
+                QVector<qreal> lineSamplePositions = samplePositionsForContinuousLineSpan(startX, endX, clampedSpacing);
+                if (lineSamplePositions.size() < 2) {
+                    continue;
+                }
+
+                for (int sampleIndex = 0; sampleIndex < lineSamplePositions.size(); ++sampleIndex) {
+                    TherapyPoint point;
+                    point.positionMm = QPointF(lineSamplePositions.at(sampleIndex), y);
+                    point.dwellSeconds = dwellSeconds;
+                    point.powerWatts = powerWatts;
+                    point.lineGroupIndex = lineGroupIndex;
+                    point.lineSampleIndex = sampleIndex;
+                    point.lineStart = sampleIndex == 0;
+                    point.lineEnd = sampleIndex == lineSamplePositions.size() - 1;
+                    targets.push_back(point);
+                }
+                ++lineGroupIndex;
+            }
+        }
+    } else {
+        const double circleRadiusMm = std::clamp(clampedSpacing * 0.68, 0.45, 4.5);
+        const double rowSpacingMm = std::max(0.5, clampedSpacing * 0.8660254037844386);
+        const QRectF centerBounds = bounds.adjusted(circleRadiusMm, circleRadiusMm, -circleRadiusMm, -circleRadiusMm);
+        const QVector<qreal> rows = centerBounds.isValid()
+            ? distributedPositions(centerBounds.top(), centerBounds.bottom(), rowSpacingMm)
+            : QVector<qreal> {bounds.center().y()};
+
+        for (int rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+            const qreal y = rows.at(rowIndex);
+            const QVector<HorizontalSpan> spans = horizontalSpansForRow(contours, y, circleRadiusMm * 1.5);
+            for (const HorizontalSpan& span : spans) {
+                const qreal startX = span.startX + circleRadiusMm;
+                const qreal endX = span.endX - circleRadiusMm;
+                const QVector<qreal> columns = pointCircleCenterPositionsForSpan(
+                    startX,
+                    endX,
+                    bounds.left() + circleRadiusMm,
+                    clampedSpacing,
+                    rowIndex % 2 == 1);
+                for (const qreal x : columns) {
+                    const QPointF center(x, y);
+                    if (!circleFitsInsidePath(regionPath, center, circleRadiusMm * 0.92)) {
+                        continue;
+                    }
+
+                    TherapyPoint point;
+                    point.positionMm = center;
+                    point.dwellSeconds = dwellSeconds;
+                    point.powerWatts = powerWatts;
+                    targets.push_back(point);
+                }
+            }
+        }
+    }
+
+    if (targets.isEmpty()) {
+        TherapyPoint fallbackPoint;
+        fallbackPoint.positionMm = fallbackPointInsidePath(regionPath, bounds, spacingMm);
+        fallbackPoint.dwellSeconds = dwellSeconds;
+        fallbackPoint.powerWatts = powerWatts;
+        targets.push_back(fallbackPoint);
+    }
+
+    for (int index = 0; index < targets.size(); ++index) {
+        targets[index].index = index;
+    }
+    return targets;
+}
+
 QPointF rawProjectedPoint(const QVector3D& point)
 {
     return QPointF(point.x() + (point.z() * 0.58), -point.y() - (point.z() * 0.42));
@@ -176,13 +698,141 @@ QPainterPath smoothPath(const QVector<QPointF>& points)
 
 }  // namespace
 
+AnnotationStroke normalizeClosedAnnotationStroke(const AnnotationStroke& annotation)
+{
+    return normalizeClosedStroke(annotation);
+}
+
+QVector<AnnotationStroke> normalizeClosedAnnotations(const QVector<AnnotationStroke>& annotations)
+{
+    QVector<AnnotationStroke> normalizedAnnotations;
+    normalizedAnnotations.reserve(annotations.size());
+    for (const AnnotationStroke& stroke : annotations) {
+        normalizedAnnotations.push_back(normalizeClosedAnnotationStroke(stroke));
+    }
+    return normalizedAnnotations;
+}
+
+double annotationRegionAreaMm2(const QVector<AnnotationStroke>& annotations)
+{
+    const QPainterPath regionPath = annotationRegionPathMm(annotations);
+    return contourCollectionAreaMm2(fillContoursFromPathMm(regionPath));
+}
+
+QRectF annotationRegionBoundsMm(const QVector<AnnotationStroke>& annotations)
+{
+    return annotationRegionPathMm(annotations).boundingRect();
+}
+
+int therapyLineGroupCount(const QVector<TherapyPoint>& points)
+{
+    QVector<int> groupIndices;
+    for (const TherapyPoint& point : points) {
+        if (point.lineGroupIndex < 0 || groupIndices.contains(point.lineGroupIndex)) {
+            continue;
+        }
+        groupIndices.push_back(point.lineGroupIndex);
+    }
+    return groupIndices.size();
+}
+
+double contourAreaMm2(const QVector<QPointF>& contour)
+{
+    return polygonAreaMm2(contour);
+}
+
+QRectF contourBoundsMm(const QVector<QPointF>& contour)
+{
+    return polygonBounds(contour);
+}
+
+bool contourContainsPointMm(const QVector<QPointF>& contour, const QPointF& pointMm, double toleranceMm)
+{
+    const int vertexCount = contourVertexCount(contour);
+    if (vertexCount < 3) {
+        return false;
+    }
+
+    QPolygonF polygon;
+    polygon.reserve(vertexCount);
+    for (int index = 0; index < vertexCount; ++index) {
+        polygon << contour.at(index);
+    }
+    if (polygon.containsPoint(pointMm, Qt::OddEvenFill)) {
+        return true;
+    }
+
+    if (toleranceMm <= 0.0) {
+        return false;
+    }
+
+    for (int index = 0; index < vertexCount; ++index) {
+        const QPointF& current = contour.at(index);
+        const QPointF& next = contour.at((index + 1) % vertexCount);
+        if (pointToSegmentDistanceMm(pointMm, current, next) <= toleranceMm) {
+            return true;
+        }
+    }
+    return false;
+}
+
+QVector<TherapyPoint> generateTherapyTargetsWithinContour(
+    const QVector<QPointF>& contourMm,
+    TreatmentPattern pattern,
+    double spacingMm,
+    double dwellSeconds,
+    double powerWatts)
+{
+    return generateTherapyTargetsInRegionPath(
+        contourRegionPathMm(contourMm),
+        pattern,
+        spacingMm,
+        dwellSeconds,
+        powerWatts);
+}
+
+QVector<TherapyPoint> generateTherapyTargetsFromAnnotations(
+    const QVector<AnnotationStroke>& annotations,
+    TreatmentPattern pattern,
+    double spacingMm,
+    double dwellSeconds,
+    double powerWatts)
+{
+    return generateTherapyTargetsInRegionPath(
+        annotationRegionPathMm(annotations),
+        pattern,
+        spacingMm,
+        dwellSeconds,
+        powerWatts);
+}
+
 QVector<QPointF> extractContourFromAnnotations(const QVector<AnnotationStroke>& annotations)
 {
-    const QVector<QPointF> points = annotationPointsInMillimeters(annotations);
+    const QVector<QVector<QPointF>> contours = fillContoursFromPathMm(annotationRegionPathMm(annotations));
+    double largestAreaMm2 = 0.0;
+    QVector<QPointF> largestContour;
+    for (const QVector<QPointF>& contour : contours) {
+        const double areaMm2 = polygonAreaMm2(contour);
+        if (contourVertexCount(contour) >= 3 && areaMm2 > largestAreaMm2) {
+            largestAreaMm2 = areaMm2;
+            largestContour = contour;
+        }
+    }
+    if (largestAreaMm2 > 0.0) {
+        return largestContour;
+    }
+
+    const QVector<AnnotationStroke> normalizedAnnotations = normalizeClosedAnnotations(annotations);
+    const QVector<QPointF> points = annotationPointsInMillimeters(normalizedAnnotations);
     if (points.size() < 3) {
         return points;
     }
-    return buildConvexHull(points);
+
+    QVector<QPointF> hull = buildConvexHull(points);
+    if (!hull.isEmpty() && !pointsNearlyEqual(hull.first(), hull.last())) {
+        hull.push_back(hull.first());
+    }
+    return hull;
 }
 
 QVector<QPointF> buildFallbackLesionContourMm(int sliceIndex, int totalSliceCount)

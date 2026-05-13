@@ -41,6 +41,27 @@ set_tests_properties(
 )
 
 add_executable(
+    panthera_dobot_tcp_client_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/dobot_tcp_client_tests.cpp
+)
+
+target_link_libraries(
+    panthera_dobot_tcp_client_tests
+    PRIVATE
+        panthera_core
+        panthera_adapters
+        Qt6::Network
+        Qt6::Test
+)
+
+add_test(NAME panthera_dobot_tcp_client_tests COMMAND panthera_dobot_tcp_client_tests)
+set_tests_properties(
+    panthera_dobot_tcp_client_tests
+    PROPERTIES
+        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:Qt6::Core>;$ENV{PATH}"
+)
+
+add_executable(
     panthera_mysql_clinical_data_integration_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/integration/mysql_clinical_data_integration_tests.cpp
 )
@@ -59,4 +80,48 @@ set_tests_properties(
     panthera_mysql_clinical_data_integration_tests
     PROPERTIES
         ENVIRONMENT "PATH=$<TARGET_FILE_DIR:Qt6::Core>;$ENV{PATH}"
+)
+
+add_executable(
+    panthera_therapy_imaging_algorithms_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/therapy_imaging_algorithms_tests.cpp
+)
+
+target_link_libraries(
+    panthera_therapy_imaging_algorithms_tests
+    PRIVATE
+        panthera_core
+        panthera_adapters
+        panthera_modules
+        Qt6::Test
+)
+
+add_test(NAME panthera_therapy_imaging_algorithms_tests COMMAND panthera_therapy_imaging_algorithms_tests)
+set_tests_properties(
+    panthera_therapy_imaging_algorithms_tests
+    PROPERTIES
+        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:Qt6::Core>;$ENV{PATH}"
+)
+
+add_executable(
+    panthera_planning_page_regression_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/planning_page_regression_tests.cpp
+)
+
+target_link_libraries(
+    panthera_planning_page_regression_tests
+    PRIVATE
+        panthera_core
+        panthera_adapters
+        panthera_modules
+        Qt6::Test
+        Qt6::Widgets
+)
+
+add_test(NAME panthera_planning_page_regression_tests COMMAND panthera_planning_page_regression_tests)
+set_tests_properties(
+    panthera_planning_page_regression_tests
+    PROPERTIES
+        ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:PanTheraConsole>;PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_QPA_PLATFORM_PLUGIN_PATH=set:$<TARGET_FILE_DIR:PanTheraConsole>/platforms"
 )

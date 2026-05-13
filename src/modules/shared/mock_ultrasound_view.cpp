@@ -2,12 +2,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
+
+#include "modules/shared/therapy_imaging_algorithms.h"
 
 namespace panthera::modules {
 
@@ -25,28 +28,296 @@ QPainterPath buildFanPath(const QRectF& bounds)
     return path;
 }
 
-void drawStroke(QPainter* painter, const AnnotationStroke& stroke, const std::function<QPointF(const QPointF&)>& toWidget)
+bool pointsNearlyEqual(const QPointF& left, const QPointF& right, qreal epsilon = 0.0005)
+{
+    return std::abs(left.x() - right.x()) <= epsilon && std::abs(left.y() - right.y()) <= epsilon;
+}
+
+QVector<QPointF> uniqueStrokePoints(const QVector<QPointF>& points)
+{
+    if (points.size() >= 2 && pointsNearlyEqual(points.first(), points.last())) {
+        return points.first(points.size() - 1);
+    }
+    return points;
+}
+
+QRectF normalizedBounds(const QVector<QPointF>& points)
+{
+    if (points.isEmpty()) {
+        return {};
+    }
+
+    qreal minimumX = points.first().x();
+    qreal maximumX = points.first().x();
+    qreal minimumY = points.first().y();
+    qreal maximumY = points.first().y();
+    for (const QPointF& point : points) {
+        minimumX = std::min(minimumX, point.x());
+        maximumX = std::max(maximumX, point.x());
+        minimumY = std::min(minimumY, point.y());
+        maximumY = std::max(maximumY, point.y());
+    }
+    return QRectF(QPointF(minimumX, minimumY), QPointF(maximumX, maximumY)).normalized();
+}
+
+bool isClosedStroke(const QVector<QPointF>& points)
+{
+    return points.size() >= 4 && pointsNearlyEqual(points.first(), points.last());
+}
+
+qreal closureAssistThreshold(const AnnotationStroke& stroke)
+{
+    const QVector<QPointF> uniquePoints = uniqueStrokePoints(stroke.normalizedPoints);
+    if (uniquePoints.size() < 3) {
+        return 0.0;
+    }
+
+    const QRectF bounds = normalizedBounds(uniquePoints);
+    const qreal maximumSpan = std::max(bounds.width(), bounds.height());
+    return std::clamp(maximumSpan * 0.18, 0.028, 0.085);
+}
+
+bool shouldPreviewClosure(const AnnotationStroke& stroke)
+{
+    const QVector<QPointF> uniquePoints = uniqueStrokePoints(stroke.normalizedPoints);
+    if (uniquePoints.size() < 4) {
+        return false;
+    }
+
+    return QLineF(uniquePoints.first(), uniquePoints.last()).length() <= closureAssistThreshold(stroke);
+}
+
+QPointF midpoint(const QPointF& left, const QPointF& right)
+{
+    return QPointF((left.x() + right.x()) * 0.5, (left.y() + right.y()) * 0.5);
+}
+
+QPainterPath buildSmoothedStrokePath(
+    const QVector<QPointF>& normalizedPoints,
+    bool closed,
+    const std::function<QPointF(const QPointF&)>& toWidget)
+{
+    if (normalizedPoints.isEmpty()) {
+        return {};
+    }
+
+    const QVector<QPointF> uniquePoints = closed ? uniqueStrokePoints(normalizedPoints) : normalizedPoints;
+    if (uniquePoints.isEmpty()) {
+        return {};
+    }
+
+    if (uniquePoints.size() == 1) {
+        return QPainterPath(toWidget(uniquePoints.first()));
+    }
+
+    if (!closed || uniquePoints.size() < 3) {
+        QPainterPath path(toWidget(uniquePoints.first()));
+        for (int index = 1; index < uniquePoints.size(); ++index) {
+            const QPointF previous = toWidget(uniquePoints.at(index - 1));
+            const QPointF current = toWidget(uniquePoints.at(index));
+            path.quadTo(previous, midpoint(previous, current));
+        }
+        path.lineTo(toWidget(uniquePoints.last()));
+        return path;
+    }
+
+    const QPointF startMidpoint = midpoint(
+        toWidget(uniquePoints.constLast()),
+        toWidget(uniquePoints.first()));
+    QPainterPath path(startMidpoint);
+    for (int index = 0; index < uniquePoints.size(); ++index) {
+        const QPointF current = toWidget(uniquePoints.at(index));
+        const QPointF next = toWidget(uniquePoints.at((index + 1) % uniquePoints.size()));
+        path.quadTo(current, midpoint(current, next));
+    }
+    path.closeSubpath();
+    return path;
+}
+
+void drawStroke(
+    QPainter* painter,
+    const AnnotationStroke& stroke,
+    const std::function<QPointF(const QPointF&)>& toWidget,
+    bool closePreview = false,
+    bool highlightClosure = false)
 {
     if (painter == nullptr || stroke.normalizedPoints.isEmpty()) {
         return;
     }
 
+    QVector<QPointF> displayPoints = stroke.normalizedPoints;
+    if (closePreview && displayPoints.size() >= 3 && !pointsNearlyEqual(displayPoints.first(), displayPoints.last())) {
+        displayPoints.push_back(displayPoints.first());
+    }
+
+    const bool closed = isClosedStroke(displayPoints);
+
     QPen pen(stroke.color, 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
     painter->setPen(pen);
     painter->setBrush(Qt::NoBrush);
 
-    if (stroke.normalizedPoints.size() == 1) {
-        const QPointF point = toWidget(stroke.normalizedPoints.first());
+    if (displayPoints.size() == 1) {
+        const QPointF point = toWidget(displayPoints.first());
         painter->setBrush(stroke.color);
         painter->drawEllipse(point, 2.0, 2.0);
         return;
     }
 
-    QPainterPath path(toWidget(stroke.normalizedPoints.first()));
-    for (int index = 1; index < stroke.normalizedPoints.size(); ++index) {
-        path.lineTo(toWidget(stroke.normalizedPoints.at(index)));
+    const QPainterPath path = buildSmoothedStrokePath(displayPoints, closed, toWidget);
+    if (closed) {
+        QColor fillColor = stroke.color;
+        fillColor.setAlpha(highlightClosure ? 64 : 40);
+        painter->fillPath(path, fillColor);
     }
     painter->drawPath(path);
+
+    if (highlightClosure && !displayPoints.isEmpty()) {
+        const QPointF startPoint = toWidget(displayPoints.first());
+        painter->setBrush(QColor(255, 255, 255, 220));
+        painter->setPen(QPen(stroke.color, 1.4));
+        painter->drawEllipse(startPoint, 4.2, 4.2);
+    }
+
+    if (highlightClosure && !closed && displayPoints.size() >= 2) {
+        painter->setBrush(Qt::NoBrush);
+        painter->setPen(QPen(QColor(stroke.color.red(), stroke.color.green(), stroke.color.blue(), 180), 1.5, Qt::DashLine));
+        painter->drawLine(toWidget(displayPoints.constLast()), toWidget(displayPoints.first()));
+    }
+}
+
+struct LineRenderTrack {
+    QVector<QPointF> widgetPoints;
+    int completedSampleCount {0};
+};
+
+bool hasExplicitLineTreatmentMetadata(const TherapySegment& segment)
+{
+    for (const TherapyPoint& point : segment.points) {
+        if (point.lineGroupIndex >= 0 || point.lineStart || point.lineEnd) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hasLineTreatmentTracks(const TherapySegment& segment, TreatmentPattern pattern)
+{
+    if (pattern == TreatmentPattern::Point) {
+        return false;
+    }
+
+    return hasExplicitLineTreatmentMetadata(segment) || pattern == TreatmentPattern::Line;
+}
+
+QVector<LineRenderTrack> buildLineRenderTracks(
+    const TherapySegment& segment,
+    int completedPointCount,
+    int* currentIndex,
+    const std::function<QPointF(const QPointF&)>& mapPointToWidget)
+{
+    QVector<LineRenderTrack> tracks;
+    if (currentIndex == nullptr) {
+        return tracks;
+    }
+
+    LineRenderTrack activeTrack;
+    int activeLineGroupIndex = std::numeric_limits<int>::min();
+    qreal previousY = std::numeric_limits<qreal>::quiet_NaN();
+
+    const auto flushTrack = [&]() {
+        if (!activeTrack.widgetPoints.isEmpty()) {
+            tracks.push_back(activeTrack);
+            activeTrack = LineRenderTrack {};
+        }
+    };
+
+    for (const TherapyPoint& point : segment.points) {
+        const bool done = *currentIndex < completedPointCount;
+        ++(*currentIndex);
+
+        const int resolvedLineGroupIndex = point.lineGroupIndex >= 0 ? point.lineGroupIndex : activeLineGroupIndex;
+        const bool explicitGroupBoundary = !activeTrack.widgetPoints.isEmpty()
+            && point.lineGroupIndex >= 0
+            && point.lineGroupIndex != activeLineGroupIndex;
+        const bool fallbackRowBoundary = !activeTrack.widgetPoints.isEmpty()
+            && point.lineGroupIndex < 0
+            && !std::isnan(previousY)
+            && std::abs(point.positionMm.y() - previousY) > 0.01;
+        if (point.lineStart || explicitGroupBoundary || fallbackRowBoundary) {
+            flushTrack();
+        }
+
+        if (activeTrack.widgetPoints.isEmpty()) {
+            activeLineGroupIndex = resolvedLineGroupIndex;
+        }
+
+        activeTrack.widgetPoints.push_back(mapPointToWidget(point.positionMm));
+        if (done) {
+            ++activeTrack.completedSampleCount;
+        }
+        previousY = point.positionMm.y();
+
+        if (point.lineEnd) {
+            flushTrack();
+            activeLineGroupIndex = std::numeric_limits<int>::min();
+            previousY = std::numeric_limits<qreal>::quiet_NaN();
+        }
+    }
+
+    flushTrack();
+    return tracks;
+}
+
+void drawLineTreatmentTrack(QPainter* painter, const LineRenderTrack& track)
+{
+    if (painter == nullptr || track.widgetPoints.isEmpty()) {
+        return;
+    }
+
+    QPointF lineStartPoint = track.widgetPoints.first();
+    QPointF lineEndPoint = track.widgetPoints.last();
+    if (track.widgetPoints.size() == 1) {
+        lineStartPoint.rx() -= 4.0;
+        lineEndPoint.rx() += 4.0;
+    }
+
+    painter->setBrush(Qt::NoBrush);
+    painter->setPen(QPen(QColor(0, 183, 225, 215), 2.4, Qt::SolidLine, Qt::RoundCap));
+    painter->drawLine(lineStartPoint, lineEndPoint);
+
+    if (track.completedSampleCount <= 0) {
+        return;
+    }
+
+    const int lastPointIndex = static_cast<int>(track.widgetPoints.size()) - 1;
+    const int completedIndex = std::clamp(track.completedSampleCount - 1, 0, lastPointIndex);
+    QPointF completedEndPoint = track.widgetPoints.at(completedIndex);
+    if (track.widgetPoints.size() == 1) {
+        completedEndPoint = lineEndPoint;
+    }
+
+    painter->setPen(QPen(QColor(255, 226, 80, 235), 3.2, Qt::SolidLine, Qt::RoundCap));
+    painter->drawLine(lineStartPoint, completedEndPoint);
+}
+
+qreal pointTreatmentRadiusPx(double spacingMm, const QRectF& canvas)
+{
+    const qreal mmToPx = std::min(canvas.width(), canvas.height()) / 60.0;
+    return std::clamp<qreal>(std::max(0.8, spacingMm) * mmToPx * 0.68, 5.5, 16.0);
+}
+
+void drawPointTreatmentMarker(QPainter* painter, const QPointF& mappedPoint, qreal radiusPx, bool completed)
+{
+    if (painter == nullptr) {
+        return;
+    }
+
+    const QColor strokeColor = completed ? QColor(255, 226, 80, 230) : QColor(0, 201, 215, 210);
+    const QColor fillColor = completed ? QColor(255, 226, 80, 55) : QColor(0, 201, 215, 22);
+
+    painter->setPen(QPen(strokeColor, completed ? 2.0 : 1.6));
+    painter->setBrush(fillColor);
+    painter->drawEllipse(mappedPoint, radiusPx, radiusPx);
 }
 
 }  // namespace
@@ -202,8 +473,8 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
         painter.setPen(QPen(QColor(255, 255, 255, 28), 1.0));
         const int lineCount = 12;
         for (int index = 0; index < lineCount; ++index) {
-            const qreal ratio = static_cast<qreal>(index) / (lineCount - 1);
-            const qreal y = canvas.top() + canvas.height() * ratio;
+            const qreal lineRatio = static_cast<qreal>(index) / (lineCount - 1);
+            const qreal y = canvas.top() + canvas.height() * lineRatio;
             painter.drawLine(QPointF(canvas.left(), y), QPointF(canvas.right(), y));
         }
 
@@ -250,15 +521,26 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
 
     if (m_hasPlan) {
         int currentIndex = 0;
+        const qreal pointRadiusPx = pointTreatmentRadiusPx(m_plan.spacingMm, annotationCanvasRect());
         for (const TherapySegment& segment : m_plan.segments) {
+            if (hasLineTreatmentTracks(segment, m_plan.pattern)) {
+                const QVector<LineRenderTrack> tracks = buildLineRenderTracks(
+                    segment,
+                    m_completedPointCount,
+                    &currentIndex,
+                    [this](const QPointF& point) { return mapPointToWidget(point); });
+                for (const LineRenderTrack& track : tracks) {
+                    drawLineTreatmentTrack(&painter, track);
+                }
+                continue;
+            }
+
             QPolygonF linePath;
             for (const TherapyPoint& point : segment.points) {
                 const QPointF mapped = mapPointToWidget(point.positionMm);
                 linePath << mapped;
                 const bool done = currentIndex < m_completedPointCount;
-                painter.setBrush(done ? QColor(255, 226, 80) : QColor(0, 164, 255, 160));
-                painter.setPen(QPen(done ? QColor(255, 226, 80) : QColor(0, 164, 255), 1.5));
-                painter.drawEllipse(mapped, done ? 7.0 : 5.0, done ? 7.0 : 5.0);
+                drawPointTreatmentMarker(&painter, mapped, pointRadiusPx, done);
                 ++currentIndex;
             }
 
@@ -279,7 +561,8 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
         drawStroke(&painter, stroke, toWidget);
     }
     if (!m_activeStroke.normalizedPoints.isEmpty()) {
-        drawStroke(&painter, m_activeStroke, toWidget);
+        const bool previewClosure = shouldPreviewClosure(m_activeStroke);
+        drawStroke(&painter, m_activeStroke, toWidget, previewClosure, previewClosure);
     }
     painter.restore();
 
@@ -343,8 +626,11 @@ void MockUltrasoundView::mouseReleaseEvent(QMouseEvent* event)
 
     m_isDrawing = false;
     if (!m_activeStroke.normalizedPoints.isEmpty()) {
-        m_annotationStrokes.push_back(m_activeStroke);
-        emit annotationStrokesChanged();
+        const AnnotationStroke finalizedStroke = normalizeClosedAnnotationStroke(m_activeStroke);
+        if (!finalizedStroke.normalizedPoints.isEmpty()) {
+            m_annotationStrokes.push_back(finalizedStroke);
+            emit annotationStrokesChanged();
+        }
     }
     m_activeStroke = AnnotationStroke {};
     update();

@@ -144,6 +144,7 @@ private:
     void refreshCurrentSliceVisualization();
     void restoreSliceControls(int row);
     void storeCurrentSliceControls();
+    void invalidateCurrentSliceTargets(const QString& title = {}, const QString& detail = {});
     void clearSliceTargets(bool clearAnnotations);
     void updateSliceAssessmentMetrics();
     void updateAssessmentMetricsPanel(double estimatedVolumeCm3, double ablatedVolumeCm3);

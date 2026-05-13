@@ -136,7 +136,7 @@ void TreatmentPage::startTreatment()
         return;
     }
 
-    if (!m_simulationDevice->setTreatmentOutputEnabled(true, &reason)) {
+    if (m_simulationDevice != nullptr && !m_simulationDevice->setTreatmentOutputEnabled(true, &reason)) {
         appendLog(QStringLiteral("\u529f\u7387\u94fe\u8def\u672a\u5c31\u7eea\uff1a%1").arg(reason));
         m_safetyKernel->stopTreatment();
         return;
@@ -160,7 +160,9 @@ void TreatmentPage::pauseTreatment()
     }
 
     m_progressTimer.stop();
-    m_simulationDevice->setTreatmentOutputEnabled(false);
+    if (m_simulationDevice != nullptr) {
+        m_simulationDevice->setTreatmentOutputEnabled(false);
+    }
     m_planCombo->setEnabled(false);
     setButtonState(false, false, true, true);
     appendLog(QStringLiteral("\u6cbb\u7597\u5df2\u6682\u505c"));
@@ -174,7 +176,7 @@ void TreatmentPage::resumeTreatment()
         return;
     }
 
-    if (!m_simulationDevice->setTreatmentOutputEnabled(true, &reason)) {
+    if (m_simulationDevice != nullptr && !m_simulationDevice->setTreatmentOutputEnabled(true, &reason)) {
         appendLog(QStringLiteral("\u529f\u7387\u94fe\u8def\u672a\u5c31\u7eea\uff1a%1").arg(reason));
         return;
     }
@@ -471,7 +473,9 @@ void TreatmentPage::appendLog(const QString& line)
 void TreatmentPage::finalizeTreatment(const QString& status)
 {
     m_progressTimer.stop();
-    m_simulationDevice->setTreatmentOutputEnabled(false);
+    if (m_simulationDevice != nullptr) {
+        m_simulationDevice->setTreatmentOutputEnabled(false);
+    }
     if (m_safetyKernel->mode() != SystemMode::Alarm) {
         m_safetyKernel->stopTreatment();
     }

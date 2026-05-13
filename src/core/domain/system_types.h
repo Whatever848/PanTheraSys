@@ -108,6 +108,10 @@ struct TherapyPoint {
     QPointF positionMm;
     double dwellSeconds {0.0};
     double powerWatts {0.0};
+    int lineGroupIndex {-1};
+    int lineSampleIndex {0};
+    bool lineStart {false};
+    bool lineEnd {false};
 };
 
 struct TherapySegment {

@@ -157,45 +157,43 @@ QPixmap loadHistoryPixmap(const QString& storagePath)
     return QPixmap::fromImage(reader.read());
 }
 
-QVector<QPointF> logicalAnnotationPoints(const QVector<AnnotationStroke>& annotations)
+QString formatStepSize(int stepMm)
 {
-    QVector<QPointF> logicalPoints;
-    for (const AnnotationStroke& stroke : annotations) {
-        for (const QPointF& normalizedPoint : stroke.normalizedPoints) {
-            logicalPoints.push_back(QPointF((normalizedPoint.x() * 60.0) - 30.0, (normalizedPoint.y() * 60.0) - 30.0));
+    return QStringLiteral("%1 mm").arg(stepMm);
+}
+
+QString targetSummaryText(TreatmentPattern pattern, const QVector<TherapyPoint>& points)
+{
+    if (pattern == TreatmentPattern::Line) {
+        return QStringLiteral("治疗线 %1 条 | 采样点 %2 个")
+            .arg(therapyLineGroupCount(points))
+            .arg(points.size());
+    }
+    return QStringLiteral("靶点 %1 个").arg(points.size());
+}
+
+double totalDwellSeconds(const QVector<TherapyPoint>& points)
+{
+    double durationSeconds = 0.0;
+    for (int index = 0; index < points.size(); ++index) {
+        durationSeconds += points.at(index).dwellSeconds;
+    }
+    return durationSeconds;
+}
+
+bool annotationStrokesEqual(const QVector<AnnotationStroke>& left, const QVector<AnnotationStroke>& right)
+{
+    if (left.size() != right.size()) {
+        return false;
+    }
+
+    for (int index = 0; index < left.size(); ++index) {
+        if (left.at(index).color != right.at(index).color
+            || left.at(index).normalizedPoints != right.at(index).normalizedPoints) {
+            return false;
         }
     }
-    return logicalPoints;
-}
-
-QRectF annotationBounds(const QVector<AnnotationStroke>& annotations)
-{
-    const QVector<QPointF> logicalPoints = logicalAnnotationPoints(annotations);
-    if (logicalPoints.isEmpty()) {
-        return {};
-    }
-
-    qreal minX = logicalPoints.first().x();
-    qreal maxX = logicalPoints.first().x();
-    qreal minY = logicalPoints.first().y();
-    qreal maxY = logicalPoints.first().y();
-    for (const QPointF& point : logicalPoints) {
-        minX = std::min(minX, point.x());
-        maxX = std::max(maxX, point.x());
-        minY = std::min(minY, point.y());
-        maxY = std::max(maxY, point.y());
-    }
-    return QRectF(QPointF(minX, minY), QPointF(maxX, maxY)).normalized();
-}
-
-double estimateAnnotatedAreaMm2(const QVector<AnnotationStroke>& annotations)
-{
-    const QRectF bounds = annotationBounds(annotations);
-    if (!bounds.isValid() || bounds.width() <= 0.0 || bounds.height() <= 0.0) {
-        return 0.0;
-    }
-
-    return bounds.width() * bounds.height() * 0.72;
+    return true;
 }
 
 QString patternSummaryText(TreatmentPattern pattern)
@@ -309,6 +307,7 @@ PlanningPage::PlanningPage(
     m_stepSpin->setValue(1);
     m_stepSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_stepSpin->setObjectName(QStringLiteral("planningMetricSpin"));
+    m_stepSpin->setSuffix(QStringLiteral(" mm"));
 
     captureForm->addRow(QStringLiteral("\u5c42\u6570"), m_layerCountSpin);
     captureForm->addRow(QStringLiteral("\u6b65\u957f"), m_stepSpin);
@@ -929,8 +928,31 @@ PlanningPage::PlanningPage(
     connect(m_spacingSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [refreshMetrics](double) { refreshMetrics(); });
     connect(m_dwellSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [refreshMetrics](double) { refreshMetrics(); });
     connect(m_layerCountSpin, qOverload<int>(&QSpinBox::valueChanged), this, [refreshMetrics](int) { refreshMetrics(); });
-    connect(m_pointTreatmentRadio, &QRadioButton::toggled, this, [refreshMetrics](bool) { refreshMetrics(); });
-    connect(m_lineTreatmentRadio, &QRadioButton::toggled, this, [refreshMetrics](bool) { refreshMetrics(); });
+    const auto onPatternModeToggled = [this, refreshMetrics](bool checked) {
+        refreshMetrics();
+        if (!checked || m_initializingUi) {
+            return;
+        }
+        if (m_currentStagedSliceIndex < 0 || m_currentStagedSliceIndex >= m_stagedSlices.size()) {
+            return;
+        }
+
+        const TreatmentPattern selectedPattern =
+            m_lineTreatmentRadio->isChecked() ? TreatmentPattern::Line : TreatmentPattern::Point;
+        const StagedSliceState& slice = m_stagedSlices.at(m_currentStagedSliceIndex);
+        if (!slice.targetsGenerated || slice.pattern == selectedPattern) {
+            return;
+        }
+
+        invalidateCurrentSliceTargets(
+            QStringLiteral("\u6cbb\u7597\u6a21\u5f0f\u5207\u6362"),
+            QStringLiteral("\u5df2\u5207\u6362\u4e3a%1\uff0c\u65e7\u9776\u70b9\u5df2\u5931\u6548\uff0c\u8bf7\u91cd\u65b0\u70b9\u51fb\u201c\u751f\u6210\u9776\u70b9\u201d\u3002")
+                .arg(selectedPattern == TreatmentPattern::Line
+                        ? QStringLiteral("\u7ebf\u6cbb\u7597")
+                        : QStringLiteral("\u70b9\u6cbb\u7597")));
+    };
+    connect(m_pointTreatmentRadio, &QRadioButton::toggled, this, onPatternModeToggled);
+    connect(m_lineTreatmentRadio, &QRadioButton::toggled, this, onPatternModeToggled);
     connect(m_directTreatmentRadio, &QRadioButton::toggled, this, [refreshMetrics](bool) { refreshMetrics(); });
     connect(m_segmentedTreatmentRadio, &QRadioButton::toggled, this, [refreshMetrics](bool) { refreshMetrics(); });
     connect(m_powerSlider, &QSlider::valueChanged, this, [this](int value) {
@@ -1051,7 +1073,8 @@ void PlanningPage::generateTargetsForCurrentSlice()
         return;
     }
 
-    const QRectF bounds = annotationBounds(slice.annotations);
+    const QVector<QPointF> contourMm = extractContourFromAnnotations(slice.annotations);
+    const QRectF bounds = contourBoundsMm(contourMm);
     if (!bounds.isValid() || bounds.width() <= 0.0 || bounds.height() <= 0.0) {
         updateAcquisitionSummary(
             QStringLiteral("\u751f\u6210\u9776\u70b9"),
@@ -1069,57 +1092,14 @@ void PlanningPage::generateTargetsForCurrentSlice()
     slice.powerWatts = m_powerSlider->value();
     slice.respiratoryTrackingEnabled = m_respiratoryTrackingCheck->isChecked();
     slice.deliveryMode = m_segmentedTreatmentRadio->isChecked() ? QStringLiteral("\u5206\u6bb5\u6267\u884c") : QStringLiteral("\u76f4\u63a5\u6cbb\u7597");
+    slice.targets = generateTherapyTargetsWithinContour(
+        contourMm,
+        slice.pattern,
+        slice.spacingMm,
+        slice.dwellSeconds,
+        slice.powerWatts);
 
-    int pointIndex = 0;
-    const double spacing = std::max(0.5, slice.spacingMm);
-    if (slice.pattern == TreatmentPattern::Line) {
-        const int rowCount = std::max(1, static_cast<int>(std::round(bounds.height() / spacing)));
-        for (int row = 0; row < rowCount; ++row) {
-            const qreal y = bounds.top() + ((rowCount == 1) ? bounds.height() / 2.0 : (row * bounds.height() / std::max(1, rowCount - 1)));
-            QVector<TherapyPoint> rowTargets;
-            const int columnCount = std::max(2, static_cast<int>(std::round(bounds.width() / std::max(0.8, spacing * 0.8))) + 1);
-            for (int column = 0; column < columnCount; ++column) {
-                const qreal x = bounds.left() + (column * bounds.width() / std::max(1, columnCount - 1));
-                TherapyPoint point;
-                point.index = pointIndex++;
-                point.positionMm = QPointF(x, y);
-                point.dwellSeconds = slice.dwellSeconds;
-                point.powerWatts = slice.powerWatts;
-                rowTargets.push_back(point);
-            }
-
-            if (row % 2 == 1) {
-                std::reverse(rowTargets.begin(), rowTargets.end());
-            }
-            slice.targets += rowTargets;
-        }
-    } else {
-        const int rowCount = std::max(1, static_cast<int>(std::round(bounds.height() / spacing)));
-        const int columnCount = std::max(1, static_cast<int>(std::round(bounds.width() / spacing)));
-        for (int row = 0; row < rowCount; ++row) {
-            const qreal y = bounds.top() + ((rowCount == 1) ? bounds.height() / 2.0 : (row * bounds.height() / std::max(1, rowCount - 1)));
-            for (int column = 0; column < columnCount; ++column) {
-                const qreal x = bounds.left() + ((columnCount == 1) ? bounds.width() / 2.0 : (column * bounds.width() / std::max(1, columnCount - 1)));
-                TherapyPoint point;
-                point.index = pointIndex++;
-                point.positionMm = QPointF(x, y);
-                point.dwellSeconds = slice.dwellSeconds;
-                point.powerWatts = slice.powerWatts;
-                slice.targets.push_back(point);
-            }
-        }
-    }
-
-    if (slice.targets.isEmpty()) {
-        TherapyPoint centerPoint;
-        centerPoint.index = 0;
-        centerPoint.positionMm = bounds.center();
-        centerPoint.dwellSeconds = slice.dwellSeconds;
-        centerPoint.powerWatts = slice.powerWatts;
-        slice.targets.push_back(centerPoint);
-    }
-
-    slice.annotatedAreaMm2 = estimateAnnotatedAreaMm2(slice.annotations);
+    slice.annotatedAreaMm2 = contourAreaMm2(contourMm);
     slice.estimatedVolumeCm3 = (slice.annotatedAreaMm2 * std::max(1, m_stepSpin->value())) / 1000.0;
     const double ablationFactor = slice.pattern == TreatmentPattern::Line ? 0.82 : 0.62;
     slice.ablatedVolumeCm3 = std::min(
@@ -1201,10 +1181,10 @@ void PlanningPage::generateAssessmentForCurrentPlan()
                 std::hypot(slice.respiratoryOffsetMm.x(), slice.respiratoryOffsetMm.y()));
         }
         sliceLines.push_back(
-            QStringLiteral("%1 | %2 | \u9776\u70b9 %3 | \u9884\u5b9a %4 cm\u00b3 | \u5df2\u6cbb\u7597 %5 cm\u00b3 | \u547c\u5438 %6")
+            QStringLiteral("%1 | %2 | %3 | \u9884\u5b9a %4 cm\u00b3 | \u5df2\u6cbb\u7597 %5 cm\u00b3 | \u547c\u5438 %6")
                 .arg(slice.label)
                 .arg(patternSummaryText(slice.pattern))
-                .arg(slice.targets.size())
+                .arg(targetSummaryText(slice.pattern, slice.targets))
                 .arg(slice.estimatedVolumeCm3, 0, 'f', 2)
                 .arg(slice.ablatedVolumeCm3, 0, 'f', 2)
                 .arg(slice.respiratoryTrackingEnabled
@@ -1427,10 +1407,7 @@ TherapyPlan PlanningPage::buildPlanFromSlices(ApprovalState approvalState) const
         segment.orderIndex = segmentIndex;
         segment.label = QStringLiteral("%1 | %2").arg(slice.label, patternSummaryText(slice.pattern));
         segment.points = slice.targets;
-        segment.plannedDurationSeconds = 0.0;
-        for (const TherapyPoint& point : segment.points) {
-            segment.plannedDurationSeconds += point.dwellSeconds;
-        }
+        segment.plannedDurationSeconds = totalDwellSeconds(slice.targets);
 
         totalTargetCount += segment.points.size();
         totalDurationSeconds += segment.plannedDurationSeconds;
@@ -1696,22 +1673,7 @@ void PlanningPage::onPreviewAnnotationsChanged()
 
     StagedSliceState& slice = m_stagedSlices[m_currentStagedSliceIndex];
     if (slice.targetsGenerated) {
-        slice.targets.clear();
-        slice.targetsGenerated = false;
-        slice.annotatedAreaMm2 = 0.0;
-        slice.estimatedVolumeCm3 = 0.0;
-        slice.ablatedVolumeCm3 = 0.0;
-        clearRespiratoryTrackingState(slice);
-        refreshCurrentSliceVisualization();
-        updateSliceAssessmentMetrics();
-        refreshDerivedMetrics();
-        if (hasGeneratedSliceTargets()) {
-            const ApprovalState previewState = m_context->hasActivePlan() ? m_context->activePlan().approvalState : ApprovalState::Draft;
-            const TherapyPlan refreshedPlan = buildPlanFromSlices(previewState);
-            updatePlanPreviewText(&refreshedPlan);
-        } else {
-            updatePlanPreviewText(nullptr);
-        }
+        invalidateCurrentSliceTargets();
     }
 }
 
@@ -1788,7 +1750,12 @@ void PlanningPage::persistCurrentSliceAnnotations()
     }
 
     StagedSliceState& slice = m_stagedSlices[m_currentStagedSliceIndex];
-    slice.annotations = m_preview->annotationStrokes();
+    const QVector<AnnotationStroke> rawAnnotations = m_preview->annotationStrokes();
+    const QVector<AnnotationStroke> normalizedAnnotations = normalizeClosedAnnotations(rawAnnotations);
+    if (!annotationStrokesEqual(rawAnnotations, normalizedAnnotations)) {
+        m_preview->setAnnotationStrokes(normalizedAnnotations);
+    }
+    slice.annotations = normalizedAnnotations;
     slice.edited = !slice.annotations.isEmpty();
 }
 
@@ -1867,18 +1834,18 @@ QPixmap PlanningPage::renderCurrentSlicePixmap(int row, const QSize& size) const
     renderView.setSliceContext(row, m_stagedSlices.size());
     renderView.setAnnotationStrokes(slice.annotations);
     if (slice.targetsGenerated && !slice.targets.isEmpty()) {
+        const QVector<TherapyPoint>& previewPoints =
+            slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated && !slice.respiratoryAdjustedTargets.isEmpty()
+            ? slice.respiratoryAdjustedTargets
+            : slice.targets;
         TherapyPlan previewPlan;
         previewPlan.pattern = slice.pattern;
         TherapySegment segment;
         segment.id = QStringLiteral("PREVIEW-%1").arg(row + 1);
         segment.orderIndex = 0;
         segment.label = slice.label;
-        segment.points = slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated && !slice.respiratoryAdjustedTargets.isEmpty()
-            ? slice.respiratoryAdjustedTargets
-            : slice.targets;
-        for (const TherapyPoint& point : segment.points) {
-            segment.plannedDurationSeconds += point.dwellSeconds;
-        }
+        segment.points = previewPoints;
+        segment.plannedDurationSeconds = totalDwellSeconds(previewPoints);
         previewPlan.segments.push_back(segment);
         renderView.setPlan(previewPlan);
         renderView.setCompletedPointCount(0);
@@ -1922,18 +1889,18 @@ void PlanningPage::refreshCurrentSliceVisualization()
             .arg(respiratoryCaption));
     m_preview->setCompletedPointCount(0);
     if (slice.targetsGenerated && !slice.targets.isEmpty()) {
+        const QVector<TherapyPoint>& previewPoints =
+            slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated && !slice.respiratoryAdjustedTargets.isEmpty()
+            ? slice.respiratoryAdjustedTargets
+            : slice.targets;
         TherapyPlan previewPlan;
         previewPlan.pattern = slice.pattern;
         TherapySegment segment;
         segment.id = QStringLiteral("SLICE-%1").arg(m_currentStagedSliceIndex + 1);
         segment.orderIndex = 0;
         segment.label = slice.label;
-        segment.points = slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated && !slice.respiratoryAdjustedTargets.isEmpty()
-            ? slice.respiratoryAdjustedTargets
-            : slice.targets;
-        for (const TherapyPoint& point : segment.points) {
-            segment.plannedDurationSeconds += point.dwellSeconds;
-        }
+        segment.points = previewPoints;
+        segment.plannedDurationSeconds = totalDwellSeconds(previewPoints);
         previewPlan.segments.push_back(segment);
         m_preview->setPlan(previewPlan);
     } else {
@@ -1945,12 +1912,12 @@ void PlanningPage::refreshCurrentSliceVisualization()
     }
     if (m_currentSliceSummaryLabel != nullptr) {
         m_currentSliceSummaryLabel->setText(
-            QStringLiteral("\u7b2c %1/%2 \u5f20 | %3 | \u7b14\u8ff9 %4 | \u9776\u70b9 %5%6")
+            QStringLiteral("\u7b2c %1/%2 \u5f20 | %3 | \u7b14\u8ff9 %4 | %5%6")
                 .arg(m_currentStagedSliceIndex + 1)
                 .arg(m_stagedSlices.size())
                 .arg(slice.image.storagePath)
                 .arg(slice.annotations.size())
-                .arg(slice.targets.size())
+                .arg(targetSummaryText(slice.pattern, slice.targets))
                 .arg(slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated
                     ? QStringLiteral(" | \u547c\u5438\u8865\u507f dX %1 / dY %2")
                           .arg(slice.respiratoryOffsetMm.x(), 0, 'f', 2)
@@ -2008,6 +1975,54 @@ void PlanningPage::storeCurrentSliceControls()
     slice.powerWatts = m_powerSlider->value();
     slice.respiratoryTrackingEnabled = m_respiratoryTrackingCheck->isChecked();
     slice.deliveryMode = m_segmentedTreatmentRadio->isChecked() ? QStringLiteral("\u5206\u6bb5\u6267\u884c") : QStringLiteral("\u76f4\u63a5\u6cbb\u7597");
+}
+
+void PlanningPage::invalidateCurrentSliceTargets(const QString& title, const QString& detail)
+{
+    if (m_currentStagedSliceIndex < 0 || m_currentStagedSliceIndex >= m_stagedSlices.size()) {
+        return;
+    }
+
+    StagedSliceState& slice = m_stagedSlices[m_currentStagedSliceIndex];
+    slice.targets.clear();
+    slice.targetsGenerated = false;
+    slice.annotatedAreaMm2 = 0.0;
+    slice.estimatedVolumeCm3 = 0.0;
+    slice.ablatedVolumeCm3 = 0.0;
+    clearRespiratoryTrackingState(slice);
+    storeCurrentSliceControls();
+
+    refreshCurrentSliceVisualization();
+    updateSliceAssessmentMetrics();
+    refreshDerivedMetrics();
+
+    if (hasGeneratedSliceTargets()) {
+        const ApprovalState previewState = m_context->hasActivePlan() ? m_context->activePlan().approvalState : ApprovalState::Draft;
+        const TherapyPlan refreshedPlan = buildPlanFromSlices(previewState);
+        m_context->setActivePlan(refreshedPlan);
+        if (m_safetyKernel != nullptr) {
+            m_safetyKernel->setPlanApprovalState(refreshedPlan.approvalState);
+        }
+        updatePlanPreviewText(&refreshedPlan);
+    } else {
+        if (m_context != nullptr && m_context->hasActivePlan()) {
+            m_context->clearActivePlan();
+        }
+        if (m_safetyKernel != nullptr) {
+            m_safetyKernel->setPlanApprovalState(ApprovalState::Draft);
+        }
+        updatePlanPreviewText(nullptr);
+    }
+
+    if (!title.trimmed().isEmpty()) {
+        QStringList lines {
+            QStringLiteral("\u5207\u7247\uff1a%1").arg(slice.label)
+        };
+        if (!detail.trimmed().isEmpty()) {
+            lines.push_back(detail);
+        }
+        updateAcquisitionSummary(title, lines);
+    }
 }
 
 void PlanningPage::clearRespiratoryTrackingState(StagedSliceState& slice)
@@ -2847,7 +2862,7 @@ void PlanningPage::simulateImageAcquisition()
             .arg(channelCoordinate)
             .arg(layerIndex + 1)
             .arg(layerCount)
-            .arg(step);
+            .arg(formatStepSize(step));
         stagedSlice.createdAt = now;
         m_stagedImageSeries.push_back(stagedSlice);
 
@@ -2894,7 +2909,7 @@ void PlanningPage::simulateImageAcquisition()
             QStringLiteral("\u5f53\u524d\u901a\u9053\uff1a%1").arg(channelLabel),
             QStringLiteral("\u8d77\u59cb\u5750\u6807\uff1a%1").arg(channelCoordinate),
             QStringLiteral("\u5c42\u6570\uff1a%1").arg(layerCount),
-            QStringLiteral("\u6b65\u957f\uff1a%1").arg(step),
+            QStringLiteral("\u6b65\u957f\uff1a%1").arg(formatStepSize(step)),
             QStringLiteral("\u6682\u5b58\u56fe\u50cf\uff1a%1 \u5f20").arg(m_stagedImageSeries.size()),
             QStringLiteral("\u5f53\u524d\u4ec5\u5b8c\u6210\u6682\u5b58\uff0c\u8fd8\u6ca1\u6709\u5199\u5165\u8be5\u60a3\u8005\u7684\u5f71\u50cf\u6570\u636e\u3002"),
             QStringLiteral("\u70b9\u51fb\u53f3\u4e0b\u89d2\u201c\u672c\u5730\u5b58\u50a8\u201d\u540e\uff0c\u624d\u4f1a\u628a\u8fd9\u6279\u56fe\u50cf\u4fdd\u5b58\u5230\u5f71\u50cf\u6570\u636e\u4e2d\u3002")

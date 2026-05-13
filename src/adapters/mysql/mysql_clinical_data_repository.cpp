@@ -133,6 +133,10 @@ QJsonObject therapyPointToJson(const TherapyPoint& point)
     json.insert(QStringLiteral("y"), point.positionMm.y());
     json.insert(QStringLiteral("dwell_seconds"), point.dwellSeconds);
     json.insert(QStringLiteral("power_watts"), point.powerWatts);
+    json.insert(QStringLiteral("line_group_index"), point.lineGroupIndex);
+    json.insert(QStringLiteral("line_sample_index"), point.lineSampleIndex);
+    json.insert(QStringLiteral("line_start"), point.lineStart);
+    json.insert(QStringLiteral("line_end"), point.lineEnd);
     return json;
 }
 
@@ -143,6 +147,10 @@ TherapyPoint therapyPointFromJson(const QJsonObject& json)
     point.positionMm = QPointF(json.value(QStringLiteral("x")).toDouble(), json.value(QStringLiteral("y")).toDouble());
     point.dwellSeconds = json.value(QStringLiteral("dwell_seconds")).toDouble();
     point.powerWatts = json.value(QStringLiteral("power_watts")).toDouble();
+    point.lineGroupIndex = json.value(QStringLiteral("line_group_index")).toInt(-1);
+    point.lineSampleIndex = json.value(QStringLiteral("line_sample_index")).toInt();
+    point.lineStart = json.value(QStringLiteral("line_start")).toBool(false);
+    point.lineEnd = json.value(QStringLiteral("line_end")).toBool(false);
     return point;
 }
 
