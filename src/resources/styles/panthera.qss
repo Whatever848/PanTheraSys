@@ -442,6 +442,34 @@ QFrame#planningBottomCard {
     border-radius: 14px;
 }
 
+QWidget#planningPage {
+    background-color: #07182a;
+}
+
+QWidget#planningSectionBody,
+QWidget#planningImageOpsBody {
+    background-color: transparent;
+}
+
+QScrollArea#planningControlScroll {
+    background-color: transparent;
+    border: none;
+}
+
+QWidget#planningControlScrollViewport {
+    background-color: transparent;
+}
+
+QDialog#planningPlanPreviewDialog {
+    background-color: #121f34;
+}
+
+QDialog#planningPlanPreviewDialog QLabel {
+    background: transparent;
+    color: #eaf4ff;
+    font-weight: 700;
+}
+
 QFrame#planningPreviewFrame {
     background-color: #121b2f;
     border: 1px solid #627089;
@@ -463,7 +491,7 @@ QFrame#planningModeCard {
 QLabel#planningCardTitle,
 QLabel#planningBottomTitle {
     color: #f4fbff;
-    font-size: 15pt;
+    font-size: 16pt;
     font-weight: 700;
     background: transparent;
 }
@@ -473,11 +501,24 @@ QLabel#planningHeaderIcon {
     font-size: 16pt;
     font-weight: 700;
     background: transparent;
+    min-width: 22px;
+    max-width: 22px;
+    min-height: 28px;
+    max-height: 28px;
+    margin-right: 2px;
+}
+
+QLabel#planningHeaderIcon[variant="compact"] {
+    font-size: 13pt;
+    min-width: 18px;
+    max-width: 18px;
+    min-height: 26px;
+    max-height: 26px;
 }
 
 QLabel#planningPaneHeaderLabel {
     color: #8fc8ff;
-    font-size: 10pt;
+    font-size: 10.5pt;
     font-weight: 700;
     background: transparent;
     padding-left: 4px;
@@ -491,14 +532,14 @@ QFrame#planningAssessmentMetricsCard {
 
 QLabel#planningAssessmentMetricLabel {
     color: #9eb3c8;
-    font-size: 9.5pt;
+    font-size: 10pt;
     background: transparent;
 }
 
 QLabel#planningAssessmentMetricValueLabel,
 QLabel#planningAssessmentMetricAccentLabel {
     color: #f2f7ff;
-    font-size: 10pt;
+    font-size: 10.5pt;
     font-weight: 700;
     background: transparent;
 }
@@ -509,7 +550,7 @@ QLabel#planningAssessmentMetricAccentLabel {
 
 QLabel#planningSliceInfoLabel {
     color: #d6e4f5;
-    font-size: 9.5pt;
+    font-size: 10pt;
     background: transparent;
 }
 
@@ -521,6 +562,10 @@ QListWidget#planningModelList {
     padding: 2px;
 }
 
+QWidget#planningListViewport {
+    background-color: #162337;
+}
+
 QListWidget#planningPathList::item,
 QListWidget#planningModelList::item {
     min-height: 28px;
@@ -530,6 +575,7 @@ QListWidget#planningModelList::item {
     border-radius: 6px;
     background-color: #1a2a43;
     color: #cfe4fb;
+    font-size: 10.5pt;
 }
 
 QListWidget#planningPathList::item:selected,
@@ -547,7 +593,7 @@ QPushButton#planningActionButton {
     border-radius: 10px;
     color: #f7fbff;
     font-weight: 700;
-    font-size: 10.5pt;
+    font-size: 11pt;
 }
 
 QPushButton#planningActionButton:hover {
@@ -562,7 +608,7 @@ QPushButton#planningGhostButton {
     border-radius: 10px;
     color: #eef5ff;
     font-weight: 700;
-    font-size: 10.5pt;
+    font-size: 11pt;
 }
 
 QPushButton#planningGhostButton:hover {
@@ -577,7 +623,7 @@ QPushButton#planningPrimaryOutlineButton {
     border-radius: 12px;
     color: #ffffff;
     font-weight: 700;
-    font-size: 10.5pt;
+    font-size: 11pt;
 }
 
 QPushButton#planningPrimaryOutlineButton:hover {
@@ -585,7 +631,8 @@ QPushButton#planningPrimaryOutlineButton:hover {
 }
 
 QDoubleSpinBox#planningMetricSpin,
-QSpinBox#planningMetricSpin {
+QSpinBox#planningMetricSpin,
+QLabel#planningMetricValueLabel {
     min-width: 108px;
     min-height: 24px;
     padding: 3px 10px;
@@ -594,27 +641,27 @@ QSpinBox#planningMetricSpin {
     border-radius: 12px;
     color: #ffffff;
     font-weight: 700;
+    font-size: 10.5pt;
 }
 
-QLabel#planningMetricValueLabel {
-    min-width: 108px;
-    min-height: 24px;
-    padding: 4px 10px;
-    background-color: #12233d;
-    border: 1px solid #365277;
-    border-radius: 0;
-    color: #ffffff;
-    font-size: 12pt;
+QLabel#planningFormLabel {
+    color: #eff7ff;
+    background-color: transparent;
+    min-height: 30px;
+    font-size: 10.5pt;
     font-weight: 700;
+    padding: 2px 2px 0 2px;
 }
 
 QLabel#planningSectionLabel,
 QLabel#planningChartSummaryLabel,
-QLabel#planningContextLabel {
+QLabel#planningContextLabel,
+QLabel#treatmentLayerLabel,
+QLabel#treatmentTimeSummaryLabel {
     color: #eff7ff;
     font-weight: 700;
     background: transparent;
-    font-size: 11pt;
+    font-size: 11.5pt;
 }
 
 QLabel#planningPowerValueLabel {
@@ -661,6 +708,29 @@ QSlider#planningSliceSlider:disabled::groove:horizontal {
     background-color: #142338;
 }
 
+QSlider#treatmentLayerSlider::groove:horizontal {
+    height: 6px;
+    background-color: #1b304b;
+    border-radius: 3px;
+}
+
+QSlider#treatmentLayerSlider::sub-page:horizontal {
+    background-color: #22c7dd;
+    border-radius: 3px;
+}
+
+QSlider#treatmentLayerSlider::handle:horizontal {
+    width: 16px;
+    margin: -5px 0;
+    background-color: #edf5ff;
+    border: 1px solid #c9d7e9;
+    border-radius: 8px;
+}
+
+QSlider#treatmentLayerSlider:disabled::groove:horizontal {
+    background-color: #142338;
+}
+
 QCheckBox#planningToggleCheck {
     spacing: 0;
     background: transparent;
@@ -689,6 +759,7 @@ QRadioButton {
     background: transparent;
     spacing: 8px;
     font-weight: 700;
+    font-size: 10.5pt;
 }
 
 QRadioButton::indicator {
@@ -710,7 +781,11 @@ QPlainTextEdit#planningSummaryEdit {
     border-radius: 12px;
     color: #dbe9f8;
     padding: 8px;
-    font-size: 10pt;
+    font-size: 10.5pt;
+}
+
+QWidget#planningSummaryViewport {
+    background-color: #18253d;
 }
 
 QFrame#planningChartCanvas {
@@ -732,6 +807,142 @@ QToolButton#planningIconButton {
 
 QToolButton#planningIconButton:hover {
     background-color: #364964;
+}
+
+QToolButton#planningCollapseButton {
+    min-width: 28px;
+    min-height: 28px;
+    max-width: 28px;
+    max-height: 28px;
+    background-color: #20324e;
+    border: 1px solid #3a5577;
+    border-radius: 8px;
+    color: #eaf4ff;
+    font-size: 12pt;
+    font-weight: 700;
+    padding: 0;
+}
+
+QToolButton#planningCollapseButton:hover {
+    background-color: #2a4163;
+    border-color: #4c75a4;
+}
+
+QToolButton#planningMaximizeButton {
+    min-width: 34px;
+    min-height: 34px;
+    background-color: rgba(43, 57, 80, 0.94);
+    border: 1px solid #7f8ba0;
+    border-radius: 8px;
+    color: #ffffff;
+    font-size: 15pt;
+    font-weight: 800;
+    margin: 8px;
+}
+
+QToolButton#planningMaximizeButton:hover {
+    background-color: #364964;
+}
+
+QToolButton#planningMaximizeButton:disabled {
+    color: #6f8198;
+    background-color: rgba(31, 43, 62, 0.72);
+    border-color: #40536d;
+}
+
+QToolButton#planningApprovalButton {
+    min-width: 58px;
+    min-height: 34px;
+    border-radius: 12px;
+    color: #ffffff;
+    font-size: 11pt;
+    font-weight: 800;
+    padding: 0 10px;
+}
+
+QToolButton#planningApprovalButton[approvalState="pending"] {
+    background-color: #c94132;
+    border: 1px solid #ff8a78;
+}
+
+QToolButton#planningApprovalButton[approvalState="pending"]:hover {
+    background-color: #e25242;
+}
+
+QToolButton#planningApprovalButton[approvalState="approved"] {
+    background-color: #18b96c;
+    border: 1px solid #66e4a4;
+}
+
+QToolButton#planningApprovalButton[approvalState="approved"]:hover {
+    background-color: #21ca79;
+}
+
+QPushButton#treatmentVolumeButton {
+    min-height: 48px;
+    padding: 10px 16px;
+    background-color: #1e3a5a;
+    border: 1px solid #2f78ad;
+    border-radius: 10px;
+    color: #f7fbff;
+    font-size: 12pt;
+    font-weight: 800;
+}
+
+QPushButton#treatmentVolumeButton:hover {
+    background-color: #285177;
+    border-color: #37a0dc;
+}
+
+QPushButton#treatmentVolumeButton:disabled {
+    color: #7c97b7;
+    background-color: #17283f;
+    border-color: #29415d;
+}
+
+QPushButton#treatmentControlButton {
+    min-height: 40px;
+    padding: 8px 16px;
+    background-color: #17304c;
+    border: 1px solid #24547f;
+    border-radius: 8px;
+    color: #ffffff;
+    font-size: 11pt;
+    font-weight: 700;
+}
+
+QPushButton#treatmentControlButton:hover {
+    background-color: #21466d;
+}
+
+QPushButton#treatmentControlButton:disabled {
+    color: #7c97b7;
+    background-color: #16283e;
+    border-color: #29415d;
+}
+
+QDialog#treatmentVolumePreviewDialog {
+    background-color: #121f34;
+}
+
+QDialog#treatmentVolumePreviewDialog QLabel {
+    background: transparent;
+    color: #eaf4ff;
+    font-weight: 700;
+}
+
+QScrollArea#treatmentVolumeScrollArea {
+    background-color: #0d1524;
+    border: 1px solid #213450;
+    border-radius: 12px;
+}
+
+QPlainTextEdit#treatmentVolumeSummaryEdit {
+    background-color: #18253d;
+    border: 1px solid #2d3f5a;
+    border-radius: 12px;
+    color: #dbe9f8;
+    padding: 8px;
 }
 
 QFrame#planningAnnotationPanel {

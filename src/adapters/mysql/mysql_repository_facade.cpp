@@ -29,6 +29,9 @@ bool MySqlRepositoryFacade::open(const DatabaseConnectionSettings& settings)
     database.setDatabaseName(settings.schema);
     database.setUserName(settings.username);
     database.setPassword(settings.password);
+    if (!settings.connectOptions.trimmed().isEmpty()) {
+        database.setConnectOptions(settings.connectOptions);
+    }
 
     if (!database.open()) {
         m_lastError = database.lastError().text();

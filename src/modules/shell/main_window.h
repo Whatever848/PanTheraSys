@@ -40,14 +40,22 @@ private slots:
     void updateStatusBarSummary();
 
 private:
+    void ensurePlanningPage();
+    void ensureTreatmentPage();
+    void ensureDataManagementPage();
+    void replacePlaceholderPage(int index, QWidget* page);
     void showDataManagementSection(DataManagementPage::Section section);
     void setActivePage(int index, QAbstractButton* activeButton);
 
+    panthera::core::ApplicationContext* m_context {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
+    panthera::core::AuditService* m_auditService {nullptr};
     panthera::core::IClinicalDataRepository* m_clinicalDataRepository {nullptr};
     panthera::adapters::SimulationDeviceFacade* m_simulationDevice {nullptr};
 
     QStackedWidget* m_stack {nullptr};
+    PlanningPage* m_planningPage {nullptr};
+    TreatmentPage* m_treatmentPage {nullptr};
     QToolButton* m_dashboardButton {nullptr};
     QToolButton* m_planningButton {nullptr};
     QToolButton* m_treatmentButton {nullptr};

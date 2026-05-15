@@ -47,7 +47,7 @@ public:
         QWidget* parent = nullptr);
 
 private slots:
-    void loadDemoPatient();
+    void loadDemoPatient(bool refreshHistoricalImages = true);
     void generateDraftPlan();
     void generateTargetsForCurrentSlice();
     void generateAssessmentForCurrentPlan();
@@ -60,8 +60,6 @@ private slots:
     void generateThreeDimensionalImage();
     void previewCurrentPlan();
     void editCurrentPlan();
-    void saveCurrentPlan();
-    void deleteCurrentPlan();
     void toggleAnnotationPanel();
     void onPathSelectionChanged(int row);
     void onStagedSliceSelectionChanged(int row);
@@ -71,6 +69,7 @@ private slots:
     void refreshDerivedMetrics();
     void storeCapturedImages();
     void loadStoredImages();
+    void showHistoryPreviewMaximized();
 
 private:
     struct StagedSliceState {
@@ -116,6 +115,7 @@ private:
     void populatePatientSelector();
     void refreshImagingPaths(const QString& patientId);
     void syncPatientSelector(const QString& patientId);
+    void refreshContextSummary(bool refreshHistoricalImages);
     void updateAssessmentText(const panthera::core::TherapyPlan* plan);
     void updatePlanPreviewText(const panthera::core::TherapyPlan* plan);
     void populateDefaultScanChannels();
@@ -132,12 +132,14 @@ private:
     void clearStartupDisplay();
     bool hasActivePathSelection() const;
     void updatePathActionState();
+    void updatePlanApprovalButtonState();
     void refreshPowerCurve();
     double currentRealtimeTransducerPowerWatts() const;
     void loadHistoricalImages(bool announce = false, bool forceReload = false);
     void loadHistoricalFiles(const QStringList& filePaths);
     void loadHistoricalSlice(int row, bool announce = false);
     void clearHistoricalComparison(const QString& overlayText);
+    void updateHistoryMaximizeButtonState();
     void persistCurrentSliceAnnotations();
     void loadStagedSlice(int row);
     QPixmap renderCurrentSlicePixmap(int row, const QSize& size) const;
@@ -197,9 +199,8 @@ private:
     QPushButton* m_generateTargetsButton {nullptr};
     QPushButton* m_generateAssessmentButton {nullptr};
     QPushButton* m_previewPlanButton {nullptr};
-    QPushButton* m_addPlanButton {nullptr};
-    QPushButton* m_deletePlanButton {nullptr};
     QToolButton* m_editPlanButton {nullptr};
+    QToolButton* m_historyMaximizeButton {nullptr};
     QPushButton* m_addPathButton {nullptr};
     QPushButton* m_removePathButton {nullptr};
     QPushButton* m_acquireImageButton {nullptr};
@@ -229,6 +230,7 @@ private:
     int m_nextPathStateId {1};
     bool m_initializingUi {true};
     bool m_deferStartupContextSummary {true};
+    bool m_suppressNextPatientHistoryRefresh {false};
     QDateTime m_lastAcquisitionAt;
     panthera::core::DeviceSnapshot m_latestDeviceSnapshot;
     bool m_hasDeviceSnapshot {false};

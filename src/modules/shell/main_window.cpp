@@ -25,7 +25,9 @@ MainWindow::MainWindow(
     adapters::SimulationDeviceFacade* simulationDevice,
     QWidget* parent)
     : QMainWindow(parent)
+    , m_context(context)
     , m_safetyKernel(safetyKernel)
+    , m_auditService(auditService)
     , m_clinicalDataRepository(clinicalDataRepository)
     , m_simulationDevice(simulationDevice)
 {
@@ -111,10 +113,9 @@ MainWindow::MainWindow(
 
     m_stack = new QStackedWidget();
     m_stack->addWidget(new DeviceMonitorPage(simulationDevice, safetyKernel));
-    m_stack->addWidget(new PlanningPage(context, safetyKernel, auditService, m_clinicalDataRepository, simulationDevice));
-    m_stack->addWidget(new TreatmentPage(context, safetyKernel, auditService, m_clinicalDataRepository, simulationDevice));
-    m_dataManagementPage = new DataManagementPage(context, auditService, m_clinicalDataRepository);
-    m_stack->addWidget(m_dataManagementPage);
+    m_stack->addWidget(new QWidget());
+    m_stack->addWidget(new QWidget());
+    m_stack->addWidget(new QWidget());
     rootLayout->addWidget(m_stack, 1);
 
     setCentralWidget(centralWidget);
@@ -154,11 +155,13 @@ void MainWindow::showDashboard()
 void MainWindow::showPlanning()
 {
     m_safetyKernel->enterPlanningMode();
+    ensurePlanningPage();
     setActivePage(1, m_planningButton);
 }
 
 void MainWindow::showTreatment()
 {
+    ensureTreatmentPage();
     setActivePage(2, m_treatmentButton);
 }
 
@@ -169,6 +172,7 @@ void MainWindow::showDataManagement()
 
 void MainWindow::showDataManagementSection(DataManagementPage::Section section)
 {
+    ensureDataManagementPage();
     if (m_dataPatientInfoAction != nullptr) {
         m_dataPatientInfoAction->setChecked(section == DataManagementPage::Section::PatientInfo);
     }
@@ -185,6 +189,50 @@ void MainWindow::showDataManagementSection(DataManagementPage::Section section)
         m_dataManagementPage->showSection(section);
     }
     setActivePage(3, m_dataButton);
+}
+
+void MainWindow::ensurePlanningPage()
+{
+    if (m_planningPage != nullptr) {
+        return;
+    }
+
+    m_planningPage = new PlanningPage(m_context, m_safetyKernel, m_auditService, m_clinicalDataRepository, m_simulationDevice);
+    replacePlaceholderPage(1, m_planningPage);
+}
+
+void MainWindow::ensureTreatmentPage()
+{
+    if (m_treatmentPage != nullptr) {
+        return;
+    }
+
+    m_treatmentPage = new TreatmentPage(m_context, m_safetyKernel, m_auditService, m_clinicalDataRepository, m_simulationDevice);
+    replacePlaceholderPage(2, m_treatmentPage);
+}
+
+void MainWindow::ensureDataManagementPage()
+{
+    if (m_dataManagementPage != nullptr) {
+        return;
+    }
+
+    m_dataManagementPage = new DataManagementPage(m_context, m_auditService, m_clinicalDataRepository);
+    replacePlaceholderPage(3, m_dataManagementPage);
+}
+
+void MainWindow::replacePlaceholderPage(int index, QWidget* page)
+{
+    if (m_stack == nullptr || page == nullptr) {
+        return;
+    }
+
+    QWidget* placeholder = m_stack->widget(index);
+    m_stack->insertWidget(index, page);
+    if (placeholder != nullptr && placeholder != page) {
+        m_stack->removeWidget(placeholder);
+        placeholder->deleteLater();
+    }
 }
 
 void MainWindow::updateStatusBarSummary()

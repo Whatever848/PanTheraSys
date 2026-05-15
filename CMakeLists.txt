@@ -35,6 +35,8 @@ add_subdirectory(src/adapters)
 add_subdirectory(src/modules)
 add_subdirectory(apps/console)
 
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT PanTheraConsole)
+
 if(PANTHERA_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

@@ -11,6 +11,7 @@ struct DatabaseConnectionSettings {
     QString schema;
     QString username;
     QString password;
+    QString connectOptions;
     int port {3306};
 };
 

@@ -4,6 +4,9 @@
 #include <QFileInfo>
 #include <QResource>
 #include <QSettings>
+#include <QTimer>
+
+#include <algorithm>
 
 #include "adapters/config/local_settings_store.h"
 #include "adapters/mysql/mysql_clinical_data_repository.h"
@@ -49,7 +52,20 @@ panthera::adapters::DatabaseConnectionSettings loadDatabaseSettings(const QStrin
     connectionSettings.username = settings.value(QStringLiteral("database/username"), QStringLiteral("panthera_app")).toString();
     connectionSettings.password = settings.value(QStringLiteral("database/password")).toString();
     connectionSettings.port = settings.value(QStringLiteral("database/port"), 3306).toInt();
+    const int connectTimeoutSeconds = std::max(1, settings.value(QStringLiteral("database/connect_timeout_seconds"), 2).toInt());
+    connectionSettings.connectOptions = QStringLiteral("MYSQL_OPT_CONNECT_TIMEOUT=%1;MYSQL_OPT_READ_TIMEOUT=%1;MYSQL_OPT_WRITE_TIMEOUT=%1")
+        .arg(connectTimeoutSeconds);
     return connectionSettings;
+}
+
+bool isDatabaseEnabled(const QString& defaultsIniPath)
+{
+    if (!QFileInfo::exists(defaultsIniPath)) {
+        return false;
+    }
+
+    QSettings settings(defaultsIniPath, QSettings::IniFormat);
+    return settings.value(QStringLiteral("database/enabled"), false).toBool();
 }
 
 }  // namespace
@@ -57,6 +73,7 @@ panthera::adapters::DatabaseConnectionSettings loadDatabaseSettings(const QStrin
 int main(int argc, char* argv[])
 {
     QApplication application(argc, argv);
+    application.setQuitOnLastWindowClosed(false);
     application.setOrganizationName(QStringLiteral("PanTheraSys"));
     application.setApplicationName(QStringLiteral("PanTheraConsole"));
     Q_INIT_RESOURCE(resources);
@@ -111,7 +128,7 @@ int main(int argc, char* argv[])
     const QString defaultsIniPath = resolveRuntimePath(QStringLiteral("config/defaults.ini"));
     const QString schemaFilePath = resolveRuntimePath(QStringLiteral("db/schema/mysql_5_7_init.sql"));
 
-    if (QFileInfo::exists(defaultsIniPath) && mysqlClinicalDataRepository.open(loadDatabaseSettings(defaultsIniPath))) {
+    if (isDatabaseEnabled(defaultsIniPath) && mysqlClinicalDataRepository.open(loadDatabaseSettings(defaultsIniPath))) {
         bool mysqlReady = true;
         if (QFileInfo::exists(schemaFilePath) && !mysqlClinicalDataRepository.initializeSchemaFromFile(schemaFilePath)) {
             auditService.appendEntry(QStringLiteral("system"), QStringLiteral("database"), QStringLiteral("MySQL schema init failed: %1").arg(mysqlClinicalDataRepository.lastError()));
@@ -137,16 +154,29 @@ int main(int argc, char* argv[])
             mysqlClinicalDataRepository.close();
         }
     } else {
-        const QString reason = QFileInfo::exists(defaultsIniPath)
+        const QString reason = isDatabaseEnabled(defaultsIniPath)
             ? mysqlClinicalDataRepository.lastError()
-            : QStringLiteral("defaults.ini not found");
+            : QStringLiteral("MySQL disabled; using seed data for startup");
         auditService.appendEntry(QStringLiteral("system"), QStringLiteral("database"), QStringLiteral("Fallback to seed clinical data repository: %1").arg(reason));
     }
 
     simulationDevice.start();
 
     panthera::modules::MainWindow mainWindow(&context, &safetyKernel, &auditService, clinicalDataRepository, &simulationDevice);
-    mainWindow.show();
+    QTimer::singleShot(0, &application, [&application, &mainWindow]() {
+        mainWindow.show();
+        mainWindow.raise();
+        mainWindow.activateWindow();
+        QTimer::singleShot(3000, &application, [&application]() {
+            application.setQuitOnLastWindowClosed(true);
+        });
+    });
+    QTimer::singleShot(250, &application, [&mainWindow]() {
+        if (mainWindow.isVisible()) {
+            mainWindow.raise();
+            mainWindow.activateWindow();
+        }
+    });
 
     return QApplication::exec();
 }

@@ -20,8 +20,10 @@
 #include <QListWidgetItem>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QStyle>
 #include <QTime>
 #include <QTimer>
+#include <QToolButton>
 #include <QVector3D>
 #include <QVBoxLayout>
 
@@ -209,6 +211,64 @@ QString patternSummaryText(TreatmentPattern pattern)
     }
 }
 
+bool isPlanApprovedForTreatment(ApprovalState approvalState)
+{
+    return approvalState == ApprovalState::Approved || approvalState == ApprovalState::Locked;
+}
+
+QWidget* createSectionBody()
+{
+    auto* body = new QWidget();
+    body->setObjectName(QStringLiteral("planningSectionBody"));
+    body->setAttribute(Qt::WA_StyledBackground, true);
+    body->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
+    return body;
+}
+
+QLabel* createHeaderMarker(const QString& variant = QString())
+{
+    auto* marker = new QLabel(QStringLiteral("="));
+    marker->setObjectName(QStringLiteral("planningHeaderIcon"));
+    if (!variant.isEmpty()) {
+        marker->setProperty("variant", variant);
+    }
+    marker->setAlignment(Qt::AlignCenter);
+    marker->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    return marker;
+}
+
+QLabel* createFormLabel(const QString& text)
+{
+    auto* label = new QLabel(text);
+    label->setObjectName(QStringLiteral("planningFormLabel"));
+    label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    label->setMinimumHeight(32);
+    return label;
+}
+
+QToolButton* createCollapseButton(QWidget* content, bool expanded = true)
+{
+    auto* button = new QToolButton();
+    button->setObjectName(QStringLiteral("planningCollapseButton"));
+    button->setCheckable(true);
+    button->setChecked(expanded);
+    button->setToolTip(QStringLiteral("\u5c55\u5f00/\u6536\u8d77\u529f\u80fd\u6846"));
+
+    const auto updateButton = [button, content](bool checked) {
+        if (content != nullptr) {
+            content->setVisible(checked);
+            for (QWidget* widget = content; widget != nullptr; widget = widget->parentWidget()) {
+                widget->updateGeometry();
+            }
+        }
+        button->setText(checked ? QStringLiteral("\u2303") : QStringLiteral("\u2304"));
+    };
+    updateButton(expanded);
+    QObject::connect(button, &QToolButton::toggled, button, updateButton);
+    return button;
+}
+
 }  // namespace
 
 PlanningPage::PlanningPage(
@@ -226,6 +286,9 @@ PlanningPage::PlanningPage(
     , m_clinicalDataService(clinicalDataRepository)
     , m_simulationDevice(simulationDevice)
 {
+    setObjectName(QStringLiteral("planningPage"));
+    setAttribute(Qt::WA_StyledBackground, true);
+
     auto* rootLayout = new QHBoxLayout(this);
     rootLayout->setContentsMargins(12, 12, 12, 12);
     rootLayout->setSpacing(12);
@@ -237,7 +300,9 @@ PlanningPage::PlanningPage(
     auto* pathCard = new QFrame();
     pathCard->setObjectName(QStringLiteral("planningSidebarCard"));
     pathCard->setMinimumWidth(292);
+    pathCard->setMinimumHeight(62);
     pathCard->setMaximumHeight(330);
+    pathCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     auto* pathLayout = new QVBoxLayout(pathCard);
     pathLayout->setContentsMargins(12, 12, 12, 12);
     pathLayout->setSpacing(10);
@@ -245,14 +310,15 @@ PlanningPage::PlanningPage(
     auto* pathHeader = new QHBoxLayout();
     auto* pathTitle = new QLabel(QStringLiteral("\u56fe\u50cf\u901a\u9053\u91c7\u96c6\u5217\u8868"));
     pathTitle->setObjectName(QStringLiteral("planningCardTitle"));
-    auto* pathIcon = new QLabel(QStringLiteral("="));
-    pathIcon->setObjectName(QStringLiteral("planningHeaderIcon"));
+    auto* pathIcon = createHeaderMarker();
     pathHeader->addWidget(pathTitle);
     pathHeader->addStretch();
     pathHeader->addWidget(pathIcon);
 
     m_pathList = new QListWidget();
     m_pathList->setObjectName(QStringLiteral("planningPathList"));
+    m_pathList->setMinimumHeight(180);
+    m_pathList->viewport()->setObjectName(QStringLiteral("planningListViewport"));
 
     auto* pathButtons = new QHBoxLayout();
     pathButtons->setSpacing(10);
@@ -265,15 +331,24 @@ PlanningPage::PlanningPage(
     pathButtons->addWidget(m_addPathButton);
     pathButtons->addWidget(m_removePathButton);
 
+    auto* pathBody = createSectionBody();
+    auto* pathBodyLayout = new QVBoxLayout(pathBody);
+    pathBodyLayout->setContentsMargins(0, 0, 0, 0);
+    pathBodyLayout->setSpacing(10);
+    pathBodyLayout->addWidget(m_pathList, 1);
+    pathBodyLayout->addLayout(pathButtons);
+    pathHeader->addWidget(createCollapseButton(pathBody, false));
+
     pathLayout->addLayout(pathHeader);
-    pathLayout->addWidget(m_pathList, 1);
-    pathLayout->addLayout(pathButtons);
-    leftColumn->addWidget(pathCard, 2);
+    pathLayout->addWidget(pathBody, 1);
+    leftColumn->addWidget(pathCard);
 
     auto* captureCard = new QFrame();
     captureCard->setObjectName(QStringLiteral("planningSidebarCard"));
     captureCard->setMinimumWidth(292);
+    captureCard->setMinimumHeight(62);
     captureCard->setMaximumHeight(240);
+    captureCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     auto* captureLayout = new QVBoxLayout(captureCard);
     captureLayout->setContentsMargins(12, 12, 12, 12);
     captureLayout->setSpacing(10);
@@ -281,8 +356,7 @@ PlanningPage::PlanningPage(
     auto* captureHeader = new QHBoxLayout();
     auto* captureTitle = new QLabel(QStringLiteral("\u56fe\u50cf\u91c7\u96c6"));
     captureTitle->setObjectName(QStringLiteral("planningCardTitle"));
-    auto* captureIcon = new QLabel(QStringLiteral("I"));
-    captureIcon->setObjectName(QStringLiteral("planningHeaderIcon"));
+    auto* captureIcon = createHeaderMarker();
     captureHeader->addWidget(captureTitle);
     captureHeader->addStretch();
     captureHeader->addWidget(captureIcon);
@@ -309,22 +383,31 @@ PlanningPage::PlanningPage(
     m_stepSpin->setObjectName(QStringLiteral("planningMetricSpin"));
     m_stepSpin->setSuffix(QStringLiteral(" mm"));
 
-    captureForm->addRow(QStringLiteral("\u5c42\u6570"), m_layerCountSpin);
-    captureForm->addRow(QStringLiteral("\u6b65\u957f"), m_stepSpin);
+    captureForm->addRow(createFormLabel(QStringLiteral("\u5c42\u6570")), m_layerCountSpin);
+    captureForm->addRow(createFormLabel(QStringLiteral("\u6b65\u957f")), m_stepSpin);
 
     m_acquireImageButton = new QPushButton(QStringLiteral("> \u56fe\u50cf\u91c7\u96c6"));
     m_acquireImageButton->setObjectName(QStringLiteral("planningActionButton"));
     m_acquireImageButton->setMinimumHeight(38);
 
+    auto* captureBody = createSectionBody();
+    auto* captureBodyLayout = new QVBoxLayout(captureBody);
+    captureBodyLayout->setContentsMargins(0, 0, 0, 0);
+    captureBodyLayout->setSpacing(10);
+    captureBodyLayout->addLayout(captureForm);
+    captureBodyLayout->addWidget(m_acquireImageButton, 0, Qt::AlignLeft);
+    captureHeader->addWidget(createCollapseButton(captureBody, false));
+
     captureLayout->addLayout(captureHeader);
-    captureLayout->addLayout(captureForm);
-    captureLayout->addWidget(m_acquireImageButton, 0, Qt::AlignLeft);
-    leftColumn->addWidget(captureCard, 1);
+    captureLayout->addWidget(captureBody);
+    leftColumn->addWidget(captureCard);
 
     auto* modelCard = new QFrame();
     modelCard->setObjectName(QStringLiteral("planningSidebarCard"));
     modelCard->setMinimumWidth(292);
+    modelCard->setMinimumHeight(62);
     modelCard->setMaximumHeight(300);
+    modelCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     auto* modelLayout = new QVBoxLayout(modelCard);
     modelLayout->setContentsMargins(12, 12, 12, 12);
     modelLayout->setSpacing(10);
@@ -336,19 +419,28 @@ PlanningPage::PlanningPage(
     auto* modelHeader = new QHBoxLayout();
     auto* modelTitle = new QLabel(QStringLiteral("\u4e09\u7ef4\u56fe\u50cf\u5217\u8868"));
     modelTitle->setObjectName(QStringLiteral("planningCardTitle"));
-    auto* modelIcon = new QLabel(QStringLiteral("L"));
-    modelIcon->setObjectName(QStringLiteral("planningHeaderIcon"));
+    auto* modelIcon = createHeaderMarker();
     modelHeader->addWidget(modelTitle);
     modelHeader->addStretch();
     modelHeader->addWidget(modelIcon);
 
     m_modelList = new QListWidget();
     m_modelList->setObjectName(QStringLiteral("planningModelList"));
+    m_modelList->setMinimumHeight(170);
+    m_modelList->viewport()->setObjectName(QStringLiteral("planningListViewport"));
 
-    modelLayout->addWidget(m_generate3dButton, 0, Qt::AlignLeft);
+    auto* modelBody = createSectionBody();
+    auto* modelBodyLayout = new QVBoxLayout(modelBody);
+    modelBodyLayout->setContentsMargins(0, 0, 0, 0);
+    modelBodyLayout->setSpacing(10);
+    modelBodyLayout->addWidget(m_generate3dButton, 0, Qt::AlignLeft);
+    modelBodyLayout->addWidget(m_modelList, 1);
+    modelHeader->addWidget(createCollapseButton(modelBody, false));
+
     modelLayout->addLayout(modelHeader);
-    modelLayout->addWidget(m_modelList, 1);
-    leftColumn->addWidget(modelCard, 2);
+    modelLayout->addWidget(modelBody, 1);
+    leftColumn->addWidget(modelCard);
+    leftColumn->addStretch(1);
 
     rootLayout->addLayout(leftColumn, 21);
 
@@ -391,8 +483,15 @@ PlanningPage::PlanningPage(
     m_historyPreviewOverlayLabel->setAlignment(Qt::AlignCenter);
     m_historyPreviewOverlayLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
 
+    m_historyMaximizeButton = new QToolButton();
+    m_historyMaximizeButton->setObjectName(QStringLiteral("planningMaximizeButton"));
+    m_historyMaximizeButton->setText(QStringLiteral("\u26f6"));
+    m_historyMaximizeButton->setToolTip(QStringLiteral("\u6700\u5927\u5316\u67e5\u770b\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+    m_historyMaximizeButton->setEnabled(false);
+
     historyStack->addWidget(m_historyPreview, 0, 0);
     historyStack->addWidget(m_historyPreviewOverlayLabel, 0, 0);
+    historyStack->addWidget(m_historyMaximizeButton, 0, 0, Qt::AlignTop | Qt::AlignRight);
     historyLayout->addLayout(historyStack, 1);
 
     m_historySliceSummaryLabel = new QLabel(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf\uff1a\u6682\u65e0\u6570\u636e"));
@@ -530,8 +629,8 @@ PlanningPage::PlanningPage(
     auto* chartCard = new QFrame();
     chartCard->setObjectName(QStringLiteral("planningBottomCard"));
     chartCard->setMinimumWidth(300);
-    chartCard->setMinimumHeight(210);
-    chartCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    chartCard->setMinimumHeight(54);
+    chartCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto* chartLayout = new QVBoxLayout(chartCard);
     chartLayout->setContentsMargins(18, 12, 18, 12);
     chartLayout->setSpacing(8);
@@ -550,6 +649,7 @@ PlanningPage::PlanningPage(
     chartTitleRow->setContentsMargins(0, 0, 0, 0);
     chartTitleRow->addWidget(chartTitle);
     chartTitleRow->addStretch();
+    chartTitleRow->addWidget(createHeaderMarker());
 
     auto* chartSummaryRow = new QHBoxLayout();
     chartSummaryRow->setContentsMargins(0, 0, 0, 0);
@@ -557,63 +657,115 @@ PlanningPage::PlanningPage(
     chartSummaryRow->addWidget(m_chartSummaryLabel);
 
     chartHeader->addLayout(chartTitleRow);
-    chartHeader->addLayout(chartSummaryRow);
 
     m_energyOutputChart = new EnergyOutputChartWidget();
+    auto* chartBody = createSectionBody();
+    auto* chartBodyLayout = new QVBoxLayout(chartBody);
+    chartBodyLayout->setContentsMargins(0, 0, 0, 0);
+    chartBodyLayout->setSpacing(8);
+    chartBodyLayout->addLayout(chartSummaryRow);
+    chartBodyLayout->addWidget(m_energyOutputChart, 1);
+
+    chartTitleRow->addWidget(createCollapseButton(chartBody, false));
 
     chartLayout->addLayout(chartHeader);
-    chartLayout->addWidget(m_energyOutputChart, 1);
+    chartLayout->addWidget(chartBody, 1);
     bottomRow->addWidget(chartCard, 1);
 
     auto* statusCard = new QFrame();
     statusCard->setObjectName(QStringLiteral("planningBottomCard"));
-    statusCard->setMinimumWidth(220);
-    statusCard->setMinimumHeight(210);
-    statusCard->setMaximumWidth(340);
-    statusCard->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    statusCard->setMinimumWidth(320);
+    statusCard->setMinimumHeight(54);
+    statusCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto* statusLayout = new QVBoxLayout(statusCard);
-    statusLayout->setContentsMargins(0, 0, 0, 0);
-    statusLayout->setSpacing(0);
+    statusLayout->setContentsMargins(18, 12, 18, 12);
+    statusLayout->setSpacing(8);
+    auto* statusHeader = new QHBoxLayout();
+    statusHeader->setContentsMargins(0, 0, 0, 0);
+    auto* statusTitle = new QLabel(QStringLiteral("\u65b9\u6848\u8be6\u60c5"));
+    statusTitle->setObjectName(QStringLiteral("planningBottomTitle"));
+    auto* statusBody = createSectionBody();
+    auto* statusBodyLayout = new QVBoxLayout(statusBody);
+    statusBodyLayout->setContentsMargins(0, 0, 0, 0);
+    statusBodyLayout->setSpacing(0);
+    statusHeader->addWidget(statusTitle);
+    statusHeader->addStretch();
+    statusHeader->addWidget(createHeaderMarker());
+    statusHeader->addWidget(createCollapseButton(statusBody, false));
+    statusLayout->addLayout(statusHeader);
+    statusLayout->addWidget(statusBody, 1);
 
     auto* imageOpsCard = new QFrame();
     imageOpsCard->setObjectName(QStringLiteral("planningBottomCard"));
-    imageOpsCard->setMinimumWidth(280);
-    imageOpsCard->setMinimumHeight(210);
-    imageOpsCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    imageOpsCard->setMinimumWidth(220);
+    imageOpsCard->setMaximumWidth(260);
+    imageOpsCard->setMinimumHeight(54);
+    imageOpsCard->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto* imageOpsLayout = new QVBoxLayout(imageOpsCard);
     imageOpsLayout->setContentsMargins(18, 12, 18, 12);
     imageOpsLayout->setSpacing(16);
+    auto* imageOpsTopSpacer = new QSpacerItem(0, 0, QSizePolicy::Minimum, QSizePolicy::Fixed);
+    auto* imageOpsBottomSpacer = new QSpacerItem(0, 0, QSizePolicy::Minimum, QSizePolicy::Fixed);
 
     auto* imageOpsHeader = new QHBoxLayout();
+    imageOpsHeader->setContentsMargins(0, 0, 0, 0);
+    imageOpsHeader->setSpacing(8);
     auto* imageOpsTitle = new QLabel(QStringLiteral("\u56fe\u50cf\u64cd\u4f5c"));
     imageOpsTitle->setObjectName(QStringLiteral("planningBottomTitle"));
-    auto* imageOpsIcon = new QLabel(QStringLiteral("S"));
-    imageOpsIcon->setObjectName(QStringLiteral("planningHeaderIcon"));
-    imageOpsHeader->addWidget(imageOpsTitle);
+    auto* imageOpsIcon = createHeaderMarker();
+    imageOpsHeader->addWidget(imageOpsTitle, 0, Qt::AlignTop);
     imageOpsHeader->addStretch();
-    imageOpsHeader->addWidget(imageOpsIcon);
+    imageOpsHeader->addWidget(imageOpsIcon, 0, Qt::AlignTop);
 
-    auto* imageOpsButtons = new QHBoxLayout();
-    imageOpsButtons->setSpacing(12);
+    auto* imageOpsButtons = new QVBoxLayout();
+    imageOpsButtons->setContentsMargins(0, 0, 0, 0);
+    imageOpsButtons->setSpacing(10);
     m_storeImageButton = new QPushButton(QStringLiteral("\u672c\u5730\u5b58\u50a8"));
     m_storeImageButton->setObjectName(QStringLiteral("planningActionButton"));
     m_storeImageButton->setToolTip(QStringLiteral("\u5c06\u5f53\u524d\u8def\u5f84\u4e0a\u7684\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\u5bfc\u51fa\u5230\u672c\u5730 PNG \u6587\u4ef6"));
     m_storeImageButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_storeImageButton->setMinimumHeight(40);
     m_loadImageButton = new QPushButton(QStringLiteral("\u8bfb\u53d6\u56fe\u50cf"));
     m_loadImageButton->setObjectName(QStringLiteral("planningActionButton"));
     m_loadImageButton->setToolTip(QStringLiteral("\u4ece\u672c\u5730\u591a\u9009\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf\uff0c\u5e76\u5728\u5de6\u5c4f\u5bf9\u6bd4\u663e\u793a"));
     m_loadImageButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    imageOpsButtons->addWidget(m_storeImageButton, 1);
-    imageOpsButtons->addWidget(m_loadImageButton, 1);
+    m_loadImageButton->setMinimumHeight(40);
+    imageOpsButtons->addWidget(m_storeImageButton);
+    imageOpsButtons->addWidget(m_loadImageButton);
 
+    auto* imageOpsBody = createSectionBody();
+    imageOpsBody->setObjectName(QStringLiteral("planningImageOpsBody"));
+    imageOpsBody->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    imageOpsBody->setMinimumHeight(128);
+    auto* imageOpsBodyLayout = new QVBoxLayout(imageOpsBody);
+    imageOpsBodyLayout->setContentsMargins(0, 0, 0, 0);
+    imageOpsBodyLayout->setSpacing(0);
+    imageOpsBodyLayout->addStretch(1);
+    imageOpsBodyLayout->addLayout(imageOpsButtons);
+    imageOpsBodyLayout->addStretch(1);
+    auto* imageOpsCollapseButton = createCollapseButton(imageOpsBody, false);
+    imageOpsHeader->addWidget(imageOpsCollapseButton, 0, Qt::AlignTop);
+
+    const auto updateImageOpsCollapseLayout = [imageOpsLayout, imageOpsCard, imageOpsTopSpacer, imageOpsBottomSpacer](bool expanded) {
+        const QSizePolicy::Policy spacerPolicy = expanded ? QSizePolicy::Fixed : QSizePolicy::Expanding;
+        imageOpsTopSpacer->changeSize(0, 0, QSizePolicy::Minimum, spacerPolicy);
+        imageOpsBottomSpacer->changeSize(0, 0, QSizePolicy::Minimum, spacerPolicy);
+        imageOpsLayout->setSpacing(expanded ? 16 : 0);
+        imageOpsLayout->invalidate();
+        imageOpsCard->updateGeometry();
+    };
+    updateImageOpsCollapseLayout(false);
+    connect(imageOpsCollapseButton, &QToolButton::toggled, imageOpsCard, updateImageOpsCollapseLayout);
+
+    imageOpsLayout->addItem(imageOpsTopSpacer);
     imageOpsLayout->addLayout(imageOpsHeader);
-    imageOpsLayout->addStretch();
-    imageOpsLayout->addLayout(imageOpsButtons);
-    bottomRow->addWidget(imageOpsCard, 5);
-    bottomRow->addWidget(statusCard, 4);
-    bottomRow->setStretch(0, 6);
-    bottomRow->setStretch(1, 5);
-    bottomRow->setStretch(2, 4);
+    imageOpsLayout->addWidget(imageOpsBody, 1);
+    imageOpsLayout->addItem(imageOpsBottomSpacer);
+    bottomRow->addWidget(imageOpsCard);
+    bottomRow->addWidget(statusCard, 1);
+    bottomRow->setStretch(0, 7);
+    bottomRow->setStretch(1, 0);
+    bottomRow->setStretch(2, 6);
 
     centerColumn->addLayout(bottomRow, 0);
     rootLayout->addLayout(centerColumn, 55);
@@ -626,16 +778,31 @@ PlanningPage::PlanningPage(
     controlsFrame->setObjectName(QStringLiteral("planningControlFrame"));
     controlsFrame->setMinimumWidth(360);
     controlsFrame->setMaximumWidth(360);
+    controlsFrame->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
     auto* controlsLayout = new QVBoxLayout(controlsFrame);
     controlsLayout->setContentsMargins(14, 14, 14, 14);
     controlsLayout->setSpacing(12);
+    controlsLayout->setSizeConstraint(QLayout::SetMinAndMaxSize);
 
     auto* modeCard = new QFrame();
     modeCard->setObjectName(QStringLiteral("planningModeCard"));
-    modeCard->setMinimumHeight(228);
+    modeCard->setMinimumHeight(54);
+    modeCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     auto* modeLayout = new QVBoxLayout(modeCard);
     modeLayout->setContentsMargins(12, 10, 12, 10);
     modeLayout->setSpacing(8);
+    auto* modeHeader = new QHBoxLayout();
+    modeHeader->setContentsMargins(0, 0, 0, 0);
+    auto* modeTitle = new QLabel(QStringLiteral("\u6cbb\u7597\u53c2\u6570"));
+    modeTitle->setObjectName(QStringLiteral("planningSectionLabel"));
+    auto* modeBody = createSectionBody();
+    auto* modeBodyLayout = new QVBoxLayout(modeBody);
+    modeBodyLayout->setContentsMargins(0, 0, 0, 0);
+    modeBodyLayout->setSpacing(8);
+    modeHeader->addWidget(modeTitle);
+    modeHeader->addStretch();
+    modeHeader->addWidget(createHeaderMarker(QStringLiteral("compact")));
+    modeHeader->addWidget(createCollapseButton(modeBody, false));
 
     auto* executeRow = new QHBoxLayout();
     executeRow->setSpacing(18);
@@ -686,24 +853,35 @@ PlanningPage::PlanningPage(
 
     m_totalDurationValueLabel = new QLabel(QStringLiteral("12.45 min"));
     m_totalDurationValueLabel->setObjectName(QStringLiteral("planningMetricValueLabel"));
+    m_totalDurationValueLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_totalDurationValueLabel->setMinimumHeight(32);
+    m_totalDurationValueLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
-    metricsForm->addRow(QStringLiteral("\u6cbb\u7597\u884c\u8ddd"), m_spacingSpin);
-    metricsForm->addRow(QStringLiteral("\u70b9\u7597\u65f6\u957f"), m_dwellSpin);
-    metricsForm->addRow(QStringLiteral("\u6cbb\u7597\u603b\u65f6\u957f"), m_totalDurationValueLabel);
+    metricsForm->addRow(createFormLabel(QStringLiteral("\u6cbb\u7597\u884c\u8ddd")), m_spacingSpin);
+    metricsForm->addRow(createFormLabel(QStringLiteral("\u70b9\u7597\u65f6\u957f")), m_dwellSpin);
+    metricsForm->addRow(createFormLabel(QStringLiteral("\u6cbb\u7597\u603b\u65f6\u957f")), m_totalDurationValueLabel);
     m_generateTargetsButton = new QPushButton(QStringLiteral("\u751f\u6210\u9776\u70b9"));
     m_generateTargetsButton->setObjectName(QStringLiteral("planningActionButton"));
     m_generateTargetsButton->setMinimumHeight(34);
 
-    modeLayout->addLayout(executeRow);
-    modeLayout->addLayout(patternRow);
-    modeLayout->addLayout(metricsForm);
-    modeLayout->addWidget(m_generateTargetsButton, 0, Qt::AlignLeft);
+    modeBodyLayout->addLayout(executeRow);
+    modeBodyLayout->addLayout(patternRow);
+    modeBodyLayout->addLayout(metricsForm);
+    modeBodyLayout->addWidget(m_generateTargetsButton, 0, Qt::AlignLeft);
+    modeLayout->addLayout(modeHeader);
+    modeLayout->addWidget(modeBody);
 
     auto* powerCard = new QFrame();
     powerCard->setObjectName(QStringLiteral("planningModeCard"));
+    powerCard->setMinimumHeight(54);
+    powerCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     auto* powerCardLayout = new QVBoxLayout(powerCard);
     powerCardLayout->setContentsMargins(12, 10, 12, 10);
     powerCardLayout->setSpacing(10);
+    auto* powerBody = createSectionBody();
+    auto* powerBodyLayout = new QVBoxLayout(powerBody);
+    powerBodyLayout->setContentsMargins(0, 0, 0, 0);
+    powerBodyLayout->setSpacing(10);
 
     auto* powerTitle = new QLabel(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u529f\u7387"));
     powerTitle->setObjectName(QStringLiteral("planningSectionLabel"));
@@ -714,6 +892,8 @@ PlanningPage::PlanningPage(
     powerRow->addWidget(powerTitle);
     powerRow->addStretch();
     powerRow->addWidget(m_powerValueLabel);
+    powerRow->addWidget(createHeaderMarker(QStringLiteral("compact")));
+    powerRow->addWidget(createCollapseButton(powerBody, false));
 
     m_powerSpin = new QDoubleSpinBox();
     m_powerSpin->setRange(20.0, 800.0);
@@ -738,19 +918,32 @@ PlanningPage::PlanningPage(
     m_generateAssessmentButton->setObjectName(QStringLiteral("planningActionButton"));
     m_generateAssessmentButton->setMinimumHeight(34);
 
+    powerBodyLayout->addWidget(m_powerSlider);
+    powerBodyLayout->addLayout(respiratoryRow);
+    powerBodyLayout->addWidget(m_generateAssessmentButton, 0, Qt::AlignLeft);
     powerCardLayout->addLayout(powerRow);
-    powerCardLayout->addWidget(m_powerSlider);
-    powerCardLayout->addLayout(respiratoryRow);
-    powerCardLayout->addWidget(m_generateAssessmentButton, 0, Qt::AlignLeft);
+    powerCardLayout->addWidget(powerBody);
 
     auto* assessmentCard = new QFrame();
     assessmentCard->setObjectName(QStringLiteral("planningModeCard"));
+    assessmentCard->setMinimumHeight(54);
+    assessmentCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     auto* assessmentLayout = new QVBoxLayout(assessmentCard);
     assessmentLayout->setContentsMargins(12, 10, 12, 10);
     assessmentLayout->setSpacing(8);
 
+    auto* assessmentHeader = new QHBoxLayout();
+    assessmentHeader->setContentsMargins(0, 0, 0, 0);
     auto* assessmentTitle = new QLabel(QStringLiteral("\u65b9\u6848\u8bc4\u4f30"));
     assessmentTitle->setObjectName(QStringLiteral("planningSectionLabel"));
+    auto* assessmentBody = createSectionBody();
+    auto* assessmentBodyLayout = new QVBoxLayout(assessmentBody);
+    assessmentBodyLayout->setContentsMargins(0, 0, 0, 0);
+    assessmentBodyLayout->setSpacing(8);
+    assessmentHeader->addWidget(assessmentTitle);
+    assessmentHeader->addStretch();
+    assessmentHeader->addWidget(createHeaderMarker(QStringLiteral("compact")));
+    assessmentHeader->addWidget(createCollapseButton(assessmentBody, false));
 
     auto* assessmentMetricsCard = new QFrame();
     assessmentMetricsCard->setObjectName(QStringLiteral("planningAssessmentMetricsCard"));
@@ -797,17 +990,21 @@ PlanningPage::PlanningPage(
     m_assessmentPreview->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_assessmentPreview->setMinimumHeight(0);
     m_assessmentPreview->setMaximumHeight(QWIDGETSIZE_MAX);
+    m_assessmentPreview->viewport()->setObjectName(QStringLiteral("planningSummaryViewport"));
 
     assessmentMetricsLayout->addLayout(plannedVolumeRow);
     assessmentMetricsLayout->addLayout(ablatedVolumeRow);
     assessmentMetricsLayout->addLayout(coverageRatioRow);
     assessmentMetricsLayout->addWidget(m_coverageProgressBar);
-    assessmentLayout->addWidget(assessmentTitle);
-    assessmentLayout->addWidget(assessmentMetricsCard);
-    statusLayout->addWidget(m_assessmentPreview, 1);
+    assessmentBodyLayout->addWidget(assessmentMetricsCard);
+    assessmentLayout->addLayout(assessmentHeader);
+    assessmentLayout->addWidget(assessmentBody);
+    statusBodyLayout->addWidget(m_assessmentPreview, 1);
 
     auto* planCard = new QFrame();
     planCard->setObjectName(QStringLiteral("planningModeCard"));
+    planCard->setMinimumHeight(54);
+    planCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     auto* planCardLayout = new QVBoxLayout(planCard);
     planCardLayout->setContentsMargins(12, 10, 12, 10);
     planCardLayout->setSpacing(8);
@@ -817,37 +1014,28 @@ PlanningPage::PlanningPage(
     planOpsTitle->setObjectName(QStringLiteral("planningSectionLabel"));
     m_previewPlanButton = new QPushButton(QStringLiteral("\u9884\u89c8"));
     m_previewPlanButton->setObjectName(QStringLiteral("planningActionButton"));
+    m_previewPlanButton->setToolTip(QStringLiteral("\u9884\u89c8\u5f53\u524d\u6cbb\u7597\u65b9\u6848"));
     m_previewPlanButton->setMinimumWidth(82);
     m_previewPlanButton->setMinimumHeight(34);
+    m_editPlanButton = new QToolButton();
+    m_editPlanButton->setObjectName(QStringLiteral("planningApprovalButton"));
+    m_editPlanButton->setText(QStringLiteral("\u5ba1\u6838"));
+    m_editPlanButton->setToolTip(QStringLiteral("\u5ba1\u6838\u5f53\u524d\u6cbb\u7597\u65b9\u6848"));
+    m_editPlanButton->setMinimumSize(58, 34);
     planOpsHeader->addWidget(planOpsTitle);
     planOpsHeader->addStretch();
     planOpsHeader->addWidget(m_previewPlanButton);
+    planOpsHeader->addWidget(m_editPlanButton);
 
-    auto* planButtonRow = new QHBoxLayout();
-    planButtonRow->setSpacing(8);
-    m_addPlanButton = new QPushButton(QStringLiteral("+ \u6dfb\u52a0"));
-    m_addPlanButton->setObjectName(QStringLiteral("planningActionButton"));
-    m_addPlanButton->setMinimumHeight(34);
-    m_addPlanButton->setToolTip(QStringLiteral("\u5c06\u5f53\u524d\u8def\u5f84\u4e0a\u5df2\u7f16\u8f91\u7684\u6240\u6709\u5207\u7247\u4fdd\u5b58\u4e3a\u4e00\u4e2a\u6cbb\u7597\u65b9\u6848"));
-    m_deletePlanButton = new QPushButton(QStringLiteral("\u00d7 \u5220\u9664"));
-    m_deletePlanButton->setObjectName(QStringLiteral("planningGhostButton"));
-    m_deletePlanButton->setMinimumHeight(34);
-    m_editPlanButton = new QToolButton();
-    m_editPlanButton->setObjectName(QStringLiteral("planningIconButton"));
-    m_editPlanButton->setText(QStringLiteral("\u270e"));
-    m_editPlanButton->setMinimumSize(34, 34);
-    planButtonRow->addWidget(m_addPlanButton);
-    planButtonRow->addWidget(m_deletePlanButton);
-    planButtonRow->addStretch();
-    planButtonRow->addWidget(m_editPlanButton);
-
-    m_planPreview = new QPlainTextEdit();
+    m_planPreview = new QPlainTextEdit(this);
     m_planPreview->setObjectName(QStringLiteral("planningSummaryEdit"));
     m_planPreview->setReadOnly(true);
     m_planPreview->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     m_planPreview->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_planPreview->setMinimumHeight(170);
     m_planPreview->setMaximumHeight(210);
+    m_planPreview->viewport()->setObjectName(QStringLiteral("planningSummaryViewport"));
+    m_planPreview->hide();
 
     m_patientSummaryLabel = new QLabel();
     m_patientSummaryLabel->setObjectName(QStringLiteral("planningContextLabel"));
@@ -859,8 +1047,6 @@ PlanningPage::PlanningPage(
     m_planSummaryLabel->hide();
 
     planCardLayout->addLayout(planOpsHeader);
-    planCardLayout->addLayout(planButtonRow);
-    planCardLayout->addWidget(m_planPreview);
 
     controlsLayout->addWidget(modeCard);
     controlsLayout->addWidget(powerCard);
@@ -868,7 +1054,16 @@ PlanningPage::PlanningPage(
     controlsLayout->addWidget(planCard);
     controlsLayout->addStretch();
 
-    rightColumn->addWidget(controlsFrame);
+    auto* controlsScroll = new QScrollArea();
+    controlsScroll->setObjectName(QStringLiteral("planningControlScroll"));
+    controlsScroll->setFrameShape(QFrame::NoFrame);
+    controlsScroll->setWidgetResizable(true);
+    controlsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    controlsScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    controlsScroll->viewport()->setObjectName(QStringLiteral("planningControlScrollViewport"));
+    controlsScroll->setWidget(controlsFrame);
+
+    rightColumn->addWidget(controlsScroll);
     rootLayout->addLayout(rightColumn, 24);
 
     connect(m_addPathButton, &QPushButton::clicked, this, &PlanningPage::addPathItem);
@@ -881,6 +1076,7 @@ PlanningPage::PlanningPage(
     connect(m_historySliceSlider, &QSlider::valueChanged, this, [this](int value) {
         loadHistoricalSlice(value, true);
     });
+    connect(m_historyMaximizeButton, &QToolButton::clicked, this, &PlanningPage::showHistoryPreviewMaximized);
     connect(m_currentSliceSlider, &QSlider::valueChanged, this, [this](int value) {
         if (m_modelList != nullptr && value < m_modelList->count() && m_modelList->currentRow() != value) {
             m_modelList->setCurrentRow(value);
@@ -895,31 +1091,31 @@ PlanningPage::PlanningPage(
     connect(m_generateTargetsButton, &QPushButton::clicked, this, &PlanningPage::generateTargetsForCurrentSlice);
     connect(m_generateAssessmentButton, &QPushButton::clicked, this, &PlanningPage::generateAssessmentForCurrentPlan);
     connect(m_previewPlanButton, &QPushButton::clicked, this, &PlanningPage::previewCurrentPlan);
-    connect(m_addPlanButton, &QPushButton::clicked, this, &PlanningPage::saveCurrentPlan);
-    connect(m_deletePlanButton, &QPushButton::clicked, this, &PlanningPage::deleteCurrentPlan);
-    connect(m_editPlanButton, &QToolButton::clicked, this, &PlanningPage::editCurrentPlan);
+    connect(m_editPlanButton, &QToolButton::clicked, this, &PlanningPage::approveCurrentPlan);
     connect(m_respiratoryTrackingCheck, &QCheckBox::toggled, this, &PlanningPage::onRespiratoryTrackingToggled);
     connect(m_context, &ApplicationContext::selectedPatientChanged, this, [this](const PatientRecord&) {
+        const bool refreshHistoricalImages = !m_suppressNextPatientHistoryRefresh;
+        m_suppressNextPatientHistoryRefresh = false;
         if (m_deferStartupContextSummary) {
             if (m_context->hasSelectedPatient()) {
                 syncPatientSelector(m_context->selectedPatient().id);
             }
             return;
         }
-        updateContextSummary();
+        refreshContextSummary(refreshHistoricalImages);
     });
     connect(m_context, &ApplicationContext::activePlanChanged, this, [this](const TherapyPlan& plan) {
         if (m_deferStartupContextSummary) {
             return;
         }
         applyPlanToUi(plan);
-        updateContextSummary();
+        refreshContextSummary(false);
     });
     connect(m_context, &ApplicationContext::activePlanCleared, this, [this]() {
         if (m_deferStartupContextSummary) {
             return;
         }
-        updateContextSummary();
+        refreshContextSummary(false);
     });
 
     const auto refreshMetrics = [this]() {
@@ -998,32 +1194,35 @@ PlanningPage::PlanningPage(
     });
 }
 
-void PlanningPage::loadDemoPatient()
+void PlanningPage::loadDemoPatient(bool refreshHistoricalImages)
 {
+    const auto selectPatient = [this, refreshHistoricalImages](const PatientRecord& patient) {
+        m_suppressNextPatientHistoryRefresh = !refreshHistoricalImages;
+        m_context->selectPatient(patient);
+        m_suppressNextPatientHistoryRefresh = false;
+        if (m_safetyKernel != nullptr) {
+            m_safetyKernel->setPatientSelected(true);
+        }
+    };
+
     if (m_clinicalDataRepository != nullptr && m_patientCombo->count() > 0) {
         PatientRecord patient;
         const QString patientId = m_patientCombo->currentData().toString();
         if (m_clinicalDataRepository->findPatientById(patientId, &patient)) {
-            m_context->selectPatient(patient);
-            if (m_safetyKernel != nullptr) {
-                m_safetyKernel->setPatientSelected(true);
-            }
+            selectPatient(patient);
             return;
         }
     }
 
     const PatientRecord fallbackPatient = buildFallbackPatient();
-    m_context->selectPatient(fallbackPatient);
-    if (m_safetyKernel != nullptr) {
-        m_safetyKernel->setPatientSelected(true);
-    }
+    selectPatient(fallbackPatient);
 }
 
 void PlanningPage::generateDraftPlan()
 {
     activatePlanningWorkspace();
     if (!m_context->hasSelectedPatient()) {
-        loadDemoPatient();
+        loadDemoPatient(false);
     }
 
     storeCurrentSliceControls();
@@ -1046,7 +1245,7 @@ void PlanningPage::generateTargetsForCurrentSlice()
 {
     activatePlanningWorkspace();
     if (!m_context->hasSelectedPatient()) {
-        loadDemoPatient();
+        loadDemoPatient(false);
     }
 
     persistCurrentSliceAnnotations();
@@ -1222,10 +1421,51 @@ void PlanningPage::approveCurrentPlan()
         generateDraftPlan();
     }
 
+    if (!m_context->hasActivePlan()) {
+        updatePlanApprovalButtonState();
+        return;
+    }
+
+    if (isPlanApprovedForTreatment(m_context->activePlan().approvalState)) {
+        updatePlanApprovalButtonState();
+        updateAcquisitionSummary(
+            QStringLiteral("\u65b9\u6848\u5ba1\u6838"),
+            {
+                QStringLiteral("\u5f53\u524d\u6cbb\u7597\u65b9\u6848\u5df2\u901a\u8fc7\u5ba1\u6838\u3002"),
+                QStringLiteral("\u6cbb\u7597\u9636\u6bb5\u5df2\u53ef\u9009\u7528\u8be5\u65b9\u6848\u3002")
+            });
+        return;
+    }
+
+    persistCurrentSliceAnnotations();
     storeCurrentSliceControls();
-    TherapyPlan approvedPlan = hasGeneratedSliceTargets() ? buildPlanFromSlices(ApprovalState::Locked) : buildPlanFromUi(ApprovalState::Locked);
-    approvedPlan.id = m_context->activePlan().id;
+
+    TherapyPlan approvedPlan = hasGeneratedSliceTargets() ? buildPlanFromSlices(ApprovalState::Approved) : m_context->activePlan();
+    const TherapyPlan previousPlan = m_context->activePlan();
+    approvedPlan.id = previousPlan.id;
+    if (!previousPlan.name.trimmed().isEmpty()) {
+        approvedPlan.name = previousPlan.name;
+    }
+    approvedPlan.coordinateX = previousPlan.coordinateX;
+    approvedPlan.coordinateY = previousPlan.coordinateY;
+    approvedPlan.coordinateZ = previousPlan.coordinateZ;
+    approvedPlan.depthMm = previousPlan.depthMm;
+    approvedPlan.createdAt = previousPlan.createdAt;
+    approvedPlan.approvalState = ApprovalState::Approved;
     approvedPlan.approvedAt = QDateTime::currentDateTime();
+    approvedPlan.approvedBy = QStringLiteral("physician");
+
+    if (m_clinicalDataRepository != nullptr) {
+        TherapyPlan persistedPlan = approvedPlan;
+        if (m_clinicalDataService.saveTherapyPlan(&persistedPlan)) {
+            approvedPlan = persistedPlan;
+        } else if (m_auditService != nullptr) {
+            m_auditService->appendEntry(
+                QStringLiteral("system"),
+                QStringLiteral("planning"),
+                QStringLiteral("\u5ba1\u6838\u65b9\u6848\u5df2\u8fdb\u5165\u5f53\u524d\u4e0a\u4e0b\u6587\uff0c\u4f46\u5199\u5165\u4e34\u5e8a\u6570\u636e\u4ed3\u5931\u8d25\uff1a%1").arg(m_clinicalDataService.lastError()));
+        }
+    }
 
     m_context->setActivePlan(approvedPlan);
     if (m_safetyKernel != nullptr) {
@@ -1233,9 +1473,17 @@ void PlanningPage::approveCurrentPlan()
     }
     m_preview->setPlan(approvedPlan);
     updatePlanPreviewText(&approvedPlan);
+    updatePlanApprovalButtonState();
+    updateAcquisitionSummary(
+        QStringLiteral("\u65b9\u6848\u5ba1\u6838\u5b8c\u6210"),
+        {
+            QStringLiteral("\u5f53\u524d\u6cbb\u7597\u65b9\u6848\u5df2\u901a\u8fc7\u5ba1\u6838\u3002"),
+            QStringLiteral("\u6cbb\u7597\u9636\u6bb5\u5df2\u53ef\u9009\u7528\u8be5\u65b9\u6848\u3002")
+        });
+    saveCurrentPathState();
 
     if (m_auditService != nullptr) {
-        m_auditService->appendEntry(QStringLiteral("physician"), QStringLiteral("planning"), QStringLiteral("\u5ba1\u6279\u5e76\u9501\u5b9a\u65b9\u6848\uff1a%1").arg(approvedPlan.id));
+        m_auditService->appendEntry(QStringLiteral("physician"), QStringLiteral("planning"), QStringLiteral("\u5ba1\u6838\u901a\u8fc7\u65b9\u6848\uff1a%1").arg(approvedPlan.id));
     }
 }
 
@@ -1263,11 +1511,18 @@ void PlanningPage::revertPlanToDraft()
 
 void PlanningPage::updateContextSummary()
 {
+    refreshContextSummary(true);
+}
+
+void PlanningPage::refreshContextSummary(bool refreshHistoricalImages)
+{
     if (m_context->hasSelectedPatient()) {
         const PatientRecord& patient = m_context->selectedPatient();
         syncPatientSelector(patient.id);
         refreshImagingPaths(patient.id);
-        loadHistoricalImages(false);
+        if (refreshHistoricalImages) {
+            loadHistoricalImages(false);
+        }
         m_patientSummaryLabel->setText(
             QStringLiteral("\u5f53\u524d\u60a3\u8005\n\u59d3\u540d\uff1a%1\n\u7f16\u53f7\uff1a%2\n\u5e74\u9f84\uff1a%3\n\u8bca\u65ad\uff1a%4")
                 .arg(patient.name)
@@ -1440,7 +1695,7 @@ void PlanningPage::editCurrentPlan()
 {
     activatePlanningWorkspace();
     if (!m_context->hasSelectedPatient()) {
-        loadDemoPatient();
+        loadDemoPatient(false);
     }
 
     TherapyPlan editablePlan = m_context->hasActivePlan() ? m_context->activePlan() : buildPlanFromUi(ApprovalState::Draft);
@@ -1490,126 +1745,6 @@ void PlanningPage::editCurrentPlan()
     m_preview->setPlan(editablePlan);
     updateAssessmentText(&editablePlan);
     updatePlanPreviewText(&editablePlan);
-}
-
-void PlanningPage::saveCurrentPlan()
-{
-    activatePlanningWorkspace();
-    if (!m_context->hasSelectedPatient()) {
-        loadDemoPatient();
-    }
-
-    persistCurrentSliceAnnotations();
-    storeCurrentSliceControls();
-
-    if (!hasGeneratedSliceTargets()) {
-        updateAcquisitionSummary(
-            QStringLiteral("\u65b9\u6848\u4fdd\u5b58"),
-            {
-                QStringLiteral("\u8bf7\u5148\u9488\u5bf9\u8be5\u8def\u5f84\u4e0a\u7684\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\u9010\u5f20\u5708\u753b\u8096\u7624\u533a\u57df\uff0c\u5e76\u751f\u6210\u9776\u70b9\u3002")
-            });
-        return;
-    }
-
-    const ApprovalState saveState = (!m_context->hasActivePlan() || m_context->activePlan().approvalState == ApprovalState::Draft)
-        ? ApprovalState::Locked
-        : m_context->activePlan().approvalState;
-    TherapyPlan planToSave = buildPlanFromSlices(saveState);
-    if (m_context->hasActivePlan()) {
-        planToSave.id = m_context->activePlan().id;
-        if (!m_context->activePlan().name.trimmed().isEmpty()) {
-            planToSave.name = m_context->activePlan().name;
-        }
-        planToSave.coordinateX = m_context->activePlan().coordinateX;
-        planToSave.coordinateY = m_context->activePlan().coordinateY;
-        planToSave.coordinateZ = m_context->activePlan().coordinateZ;
-        planToSave.depthMm = m_context->activePlan().depthMm;
-        planToSave.createdAt = m_context->activePlan().createdAt;
-        planToSave.approvedAt = m_context->activePlan().approvedAt;
-        planToSave.approvedBy = m_context->activePlan().approvedBy;
-    }
-
-    if (!m_clinicalDataService.saveTherapyPlan(&planToSave)) {
-        updateAcquisitionSummary(
-            QStringLiteral("\u65b9\u6848\u4fdd\u5b58\u5931\u8d25"),
-            {
-                QStringLiteral("\u65b9\u6848\uff1a%1").arg(planToSave.name),
-                QStringLiteral("\u9519\u8bef\uff1a%1").arg(m_clinicalDataService.lastError())
-            });
-        return;
-    }
-
-    m_context->setActivePlan(planToSave);
-    if (m_safetyKernel != nullptr) {
-        m_safetyKernel->setPlanApprovalState(planToSave.approvalState);
-    }
-    updateAssessmentText(&planToSave);
-    updatePlanPreviewText(&planToSave);
-    updateSliceAssessmentMetrics();
-    int sliceCount = 0;
-    int targetCount = 0;
-    for (const TherapySegment& segment : planToSave.segments) {
-        ++sliceCount;
-        targetCount += segment.points.size();
-    }
-    updateAcquisitionSummary(
-        QStringLiteral("\u65b9\u6848\u4fdd\u5b58\u5b8c\u6210"),
-        {
-            QStringLiteral("\u65b9\u6848\uff1a%1").arg(planToSave.name),
-            QStringLiteral("\u72b6\u6001\uff1a%1").arg(toDisplayString(planToSave.approvalState)),
-            QStringLiteral("\u5207\u7247\u6570\uff1a%1").arg(sliceCount),
-            QStringLiteral("\u603b\u9776\u70b9\u6570\uff1a%1").arg(targetCount),
-            QStringLiteral("\u8be5\u65b9\u6848\u5df2\u53ef\u5728\u6cbb\u7597\u9636\u6bb5\u4e2d\u88ab\u9009\u7528\u3002")
-        });
-    if (m_auditService != nullptr) {
-        m_auditService->appendEntry(QStringLiteral("physician"), QStringLiteral("planning"), QStringLiteral("\u4fdd\u5b58\u6cbb\u7597\u65b9\u6848\uff1a%1").arg(planToSave.id));
-    }
-}
-
-void PlanningPage::deleteCurrentPlan()
-{
-    activatePlanningWorkspace();
-    if (!m_context->hasActivePlan()) {
-        if (hasGeneratedSliceTargets()) {
-            clearSliceTargets(true);
-            updateAcquisitionSummary(
-                QStringLiteral("\u5220\u9664\u65b9\u6848"),
-                {
-                    QStringLiteral("\u5f53\u524d\u672a\u4fdd\u5b58\u7684\u5207\u7247\u7f16\u8f91\u5df2\u6e05\u7a7a\uff0c\u8bf7\u91cd\u65b0\u5bf9\u6bcf\u5f20\u5f71\u50cf\u8fdb\u884c\u5708\u753b\u548c\u751f\u6210\u9776\u70b9\u3002")
-                });
-            return;
-        }
-        updateAcquisitionSummary(
-            QStringLiteral("\u5220\u9664\u65b9\u6848"),
-            {QStringLiteral("\u5f53\u524d\u6ca1\u6709\u53ef\u5220\u9664\u7684\u6d3b\u52a8\u65b9\u6848\u3002")});
-        return;
-    }
-
-    const QString planId = m_context->activePlan().id;
-    if (!m_clinicalDataService.deleteTherapyPlan(planId)) {
-        updateAcquisitionSummary(
-            QStringLiteral("\u5220\u9664\u65b9\u6848\u5931\u8d25"),
-            {
-                QStringLiteral("\u65b9\u6848\u7f16\u53f7\uff1a%1").arg(planId),
-                QStringLiteral("\u9519\u8bef\uff1a%1").arg(m_clinicalDataService.lastError())
-            });
-        return;
-    }
-
-    m_context->clearActivePlan();
-    clearSliceTargets(true);
-    if (m_safetyKernel != nullptr) {
-        m_safetyKernel->setPlanApprovalState(ApprovalState::Draft);
-    }
-    updateAcquisitionSummary(
-        QStringLiteral("\u5220\u9664\u65b9\u6848"),
-        {
-            QStringLiteral("\u65b9\u6848\u7f16\u53f7\uff1a%1").arg(planId),
-            QStringLiteral("\u5f53\u524d\u8def\u5f84\u4e0a\u7684\u5207\u7247\u7f16\u8f91\u548c\u9776\u70b9\u5df2\u88ab\u6e05\u7a7a\uff0c\u8bf7\u91cd\u65b0\u7f16\u8f91\u3002")
-        });
-    if (m_auditService != nullptr) {
-        m_auditService->appendEntry(QStringLiteral("physician"), QStringLiteral("planning"), QStringLiteral("\u5220\u9664\u6cbb\u7597\u65b9\u6848\uff1a%1").arg(planId));
-    }
 }
 
 void PlanningPage::toggleAnnotationPanel()
@@ -2202,6 +2337,7 @@ void PlanningPage::updatePlanPreviewText(const TherapyPlan* plan)
 {
     if (plan == nullptr) {
         m_planPreview->setPlainText(QStringLiteral("\u6682\u65e0\u65b9\u6848\u9884\u89c8\u3002"));
+        updatePlanApprovalButtonState();
         return;
     }
 
@@ -2237,6 +2373,7 @@ void PlanningPage::updatePlanPreviewText(const TherapyPlan* plan)
                 .arg(m_context->selectedPatient().id));
     }
     m_planPreview->setPlainText(previewText);
+    updatePlanApprovalButtonState();
 }
 
 void PlanningPage::applyPlanToUi(const TherapyPlan& plan)
@@ -2296,7 +2433,32 @@ void PlanningPage::updatePathActionState()
     if (m_generate3dButton != nullptr) {
         m_generate3dButton->setEnabled(hasPathSelection && !m_stagedSlices.isEmpty());
     }
+    updatePlanApprovalButtonState();
     refreshPowerCurve();
+}
+
+void PlanningPage::updatePlanApprovalButtonState()
+{
+    if (m_editPlanButton == nullptr) {
+        return;
+    }
+
+    const bool approved = m_context != nullptr
+        && m_context->hasActivePlan()
+        && isPlanApprovedForTreatment(m_context->activePlan().approvalState);
+    const bool canApprove = !approved
+        && ((m_context != nullptr && m_context->hasActivePlan()) || hasGeneratedSliceTargets());
+
+    m_editPlanButton->setEnabled(approved || canApprove);
+    m_editPlanButton->setText(approved ? QStringLiteral("\u5df2\u5ba1") : QStringLiteral("\u5ba1\u6838"));
+    m_editPlanButton->setToolTip(
+        approved
+            ? QStringLiteral("\u65b9\u6848\u5df2\u5ba1\u6838\u901a\u8fc7\uff0c\u6cbb\u7597\u9636\u6bb5\u53ef\u9009\u7528")
+            : QStringLiteral("\u70b9\u51fb\u5ba1\u6838\u901a\u8fc7\u5f53\u524d\u6cbb\u7597\u65b9\u6848"));
+    m_editPlanButton->setProperty("approvalState", approved ? QStringLiteral("approved") : QStringLiteral("pending"));
+    m_editPlanButton->style()->unpolish(m_editPlanButton);
+    m_editPlanButton->style()->polish(m_editPlanButton);
+    m_editPlanButton->update();
 }
 
 void PlanningPage::refreshPowerCurve()
@@ -2588,6 +2750,116 @@ void PlanningPage::loadPathState(int row)
     updatePathActionState();
 }
 
+void PlanningPage::showHistoryPreviewMaximized()
+{
+    if (m_historyImageSeries.isEmpty()) {
+        return;
+    }
+
+    int selectedRow = m_currentHistorySliceIndex >= 0 ? m_currentHistorySliceIndex : 0;
+    selectedRow = qBound(0, selectedRow, m_historyImageSeries.size() - 1);
+
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("planningHistoryPreviewDialog"));
+    dialog.setWindowTitle(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf\u6700\u5927\u5316\u67e5\u770b"));
+    dialog.resize(1280, 820);
+
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(18, 18, 18, 18);
+    layout->setSpacing(10);
+
+    auto* titleRow = new QHBoxLayout();
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    auto* titleLabel = new QLabel(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+    titleLabel->setObjectName(QStringLiteral("planningCardTitle"));
+    auto* closeButton = new QPushButton(QStringLiteral("\u5173\u95ed"));
+    closeButton->setObjectName(QStringLiteral("planningActionButton"));
+    titleRow->addWidget(titleLabel);
+    titleRow->addStretch();
+    titleRow->addWidget(closeButton);
+    layout->addLayout(titleRow);
+
+    auto* previewStack = new QGridLayout();
+    previewStack->setContentsMargins(0, 0, 0, 0);
+    previewStack->setSpacing(0);
+    auto* maximizedPreview = new MockUltrasoundView();
+    maximizedPreview->setObjectName(QStringLiteral("planningPreviewWidget"));
+    maximizedPreview->setAnnotationEnabled(false);
+    maximizedPreview->setMinimumSize(960, 620);
+
+    auto* overlayLabel = new QLabel();
+    overlayLabel->setObjectName(QStringLiteral("planningPreviewOverlayLabel"));
+    overlayLabel->setAlignment(Qt::AlignCenter);
+    overlayLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+
+    previewStack->addWidget(maximizedPreview, 0, 0);
+    previewStack->addWidget(overlayLabel, 0, 0);
+    layout->addLayout(previewStack, 1);
+
+    auto* summaryLabel = new QLabel();
+    summaryLabel->setObjectName(QStringLiteral("planningSliceInfoLabel"));
+    summaryLabel->setWordWrap(true);
+    auto* sliceSlider = new QSlider(Qt::Horizontal);
+    sliceSlider->setObjectName(QStringLiteral("planningSliceSlider"));
+    sliceSlider->setRange(0, m_historyImageSeries.size() - 1);
+    sliceSlider->setEnabled(m_historyImageSeries.size() > 1);
+    layout->addWidget(summaryLabel);
+    layout->addWidget(sliceSlider);
+
+    const auto applySlice = [&](int row, bool syncMainPreview) {
+        if (m_historyImageSeries.isEmpty()) {
+            return;
+        }
+
+        const int safeRow = qBound(0, row, m_historyImageSeries.size() - 1);
+        const ImageSeriesRecord& image = m_historyImageSeries.at(safeRow);
+        const QPixmap pixmap = safeRow < m_historyPixmaps.size() ? m_historyPixmaps.at(safeRow) : QPixmap {};
+        const QString dateText = image.acquisitionDate.isValid()
+            ? image.acquisitionDate.toString(QStringLiteral("yyyy-MM-dd"))
+            : QStringLiteral("\u65e5\u671f\u672a\u8bb0\u5f55");
+        const QString pathText = image.storagePath.trimmed().isEmpty() ? QStringLiteral("\u672a\u914d\u7f6e\u8def\u5f84") : image.storagePath;
+
+        maximizedPreview->clearPlan();
+        if (!pixmap.isNull()) {
+            maximizedPreview->setBackgroundImage(pixmap);
+        } else {
+            maximizedPreview->clearBackgroundImage();
+        }
+        maximizedPreview->setCompletedPointCount(0);
+        maximizedPreview->setSliceContext(safeRow, m_historyImageSeries.size());
+        maximizedPreview->setCaption(QStringLiteral("\u65e2\u5f80\u6cbb\u7597 %1/%2").arg(safeRow + 1).arg(m_historyImageSeries.size()));
+
+        overlayLabel->setText(pixmap.isNull()
+            ? QStringLiteral("\u672a\u627e\u5230\u8fd9\u5f20\u5386\u53f2\u5f71\u50cf\u7684\u53ef\u9884\u89c8\u6587\u4ef6")
+            : QString());
+        overlayLabel->setVisible(pixmap.isNull());
+        summaryLabel->setText(
+            QStringLiteral("\u7b2c %1/%2 \u5f20 | %3 | %4")
+                .arg(safeRow + 1)
+                .arg(m_historyImageSeries.size())
+                .arg(dateText)
+                .arg(pathText));
+        summaryLabel->setToolTip(pathText);
+
+        if (sliceSlider->value() != safeRow) {
+            const QSignalBlocker blocker(sliceSlider);
+            sliceSlider->setValue(safeRow);
+        }
+        if (syncMainPreview) {
+            loadHistoricalSlice(safeRow, false);
+        }
+    };
+
+    connect(sliceSlider, &QSlider::valueChanged, this, [applySlice](int value) {
+        applySlice(value, true);
+    });
+    connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+
+    applySlice(selectedRow, false);
+    dialog.showMaximized();
+    dialog.exec();
+}
+
 void PlanningPage::loadHistoricalImages(bool announce, bool forceReload)
 {
     if (!m_context->hasSelectedPatient()) {
@@ -2642,6 +2914,7 @@ void PlanningPage::loadHistoricalImages(bool announce, bool forceReload)
         m_historySliceSlider->setEnabled(m_historyImageSeries.size() > 1);
         m_historySliceSlider->setValue(m_historyImageSeries.size() - 1);
     }
+    updateHistoryMaximizeButtonState();
 
     loadHistoricalSlice(m_historyImageSeries.size() - 1, announce);
 }
@@ -2681,6 +2954,7 @@ void PlanningPage::loadHistoricalFiles(const QStringList& filePaths)
         m_historySliceSlider->setEnabled(m_historyImageSeries.size() > 1);
         m_historySliceSlider->setValue(0);
     }
+    updateHistoryMaximizeButtonState();
 
     loadHistoricalSlice(0, true);
 }
@@ -2731,6 +3005,7 @@ void PlanningPage::loadHistoricalSlice(int row, bool announce)
                 .arg(pathText));
         m_historySliceSummaryLabel->setToolTip(pathText);
     }
+    updateHistoryMaximizeButtonState();
 
     if (announce) {
         updateAcquisitionSummary(
@@ -2773,6 +3048,16 @@ void PlanningPage::clearHistoricalComparison(const QString& overlayText)
         m_historySliceSummaryLabel->setText(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf\uff1a\u6682\u65e0\u6570\u636e"));
         m_historySliceSummaryLabel->setToolTip(QString());
     }
+    updateHistoryMaximizeButtonState();
+}
+
+void PlanningPage::updateHistoryMaximizeButtonState()
+{
+    if (m_historyMaximizeButton == nullptr) {
+        return;
+    }
+
+    m_historyMaximizeButton->setEnabled(!m_historyImageSeries.isEmpty());
 }
 
 void PlanningPage::addPathItem()
@@ -3048,7 +3333,7 @@ void PlanningPage::previewCurrentPlan()
 {
     activatePlanningWorkspace();
     if (!m_context->hasSelectedPatient()) {
-        loadDemoPatient();
+        loadDemoPatient(false);
     }
 
     persistCurrentSliceAnnotations();
@@ -3070,12 +3355,22 @@ void PlanningPage::previewCurrentPlan()
         return;
     }
 
+    updatePlanPreviewText(&previewPlan);
+
     QStringList previewLines {
-        summarizePlan(previewPlan),
-        QString(),
-        QStringLiteral("\u5f53\u524d\u901a\u9053\uff1a%1").arg(currentChannelLabel()),
-        QStringLiteral("\u5750\u6807\uff1a%1").arg(currentChannelCoordinate())
+        QStringLiteral("\u5f53\u524d\u6cbb\u7597\u65b9\u6848\u5b8c\u6574\u4fe1\u606f"),
+        QString()
     };
+    const QString planPreviewText = m_planPreview != nullptr ? m_planPreview->toPlainText().trimmed() : QString();
+    previewLines << (planPreviewText.isEmpty() ? summarizePlan(previewPlan) : planPreviewText);
+    previewLines << QString()
+                 << QStringLiteral("\u5f53\u524d\u901a\u9053\uff1a%1").arg(currentChannelLabel())
+                 << QStringLiteral("\u5750\u6807\uff1a%1").arg(currentChannelCoordinate());
+
+    const QString assessmentText = m_assessmentPreview != nullptr ? m_assessmentPreview->toPlainText().trimmed() : QString();
+    if (!assessmentText.isEmpty()) {
+        previewLines << QString() << QStringLiteral("\u65b9\u6848\u8bc4\u4f30\u4e0e\u8fc7\u7a0b\u8bb0\u5f55\uff1a") << assessmentText;
+    }
 
     if (!m_stagedSlices.isEmpty()) {
         previewLines << QString() << QStringLiteral("\u5207\u7247\u603b\u89c8\uff1a");
@@ -3092,12 +3387,16 @@ void PlanningPage::previewCurrentPlan()
 
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("\u6cbb\u7597\u65b9\u6848\u9884\u89c8"));
-    dialog.resize(760, 520);
+    dialog.setObjectName(QStringLiteral("planningPlanPreviewDialog"));
+    dialog.resize(860, 620);
     auto* layout = new QVBoxLayout(&dialog);
-    auto* headerLabel = new QLabel(QStringLiteral("\u8be5\u5f39\u7a97\u6309\u8def\u5f84\u603b\u89c8\u6bcf\u5f20\u5f71\u50cf\u7684\u6cbb\u7597\u9009\u62e9\u4e0e\u9776\u70b9\u7ed3\u679c\u3002"));
+    auto* headerLabel = new QLabel(QStringLiteral("\u5f53\u524d\u9875\u9762\u4ec5\u4fdd\u7559\u64cd\u4f5c\u5165\u53e3\uff0c\u5b8c\u6574\u65b9\u6848\u4fe1\u606f\u5728\u6b64\u9884\u89c8\u3002"));
     headerLabel->setWordWrap(true);
     auto* previewText = new QPlainTextEdit();
+    previewText->setObjectName(QStringLiteral("planningSummaryEdit"));
     previewText->setReadOnly(true);
+    previewText->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    previewText->viewport()->setObjectName(QStringLiteral("planningSummaryViewport"));
     previewText->setPlainText(previewLines.join(QLatin1Char('\n')));
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
