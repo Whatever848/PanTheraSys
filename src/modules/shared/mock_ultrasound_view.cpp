@@ -1,4 +1,4 @@
-﻿#include "modules/shared/mock_ultrasound_view.h"
+#include "modules/shared/mock_ultrasound_view.h"
 
 #include <algorithm>
 #include <cmath>
