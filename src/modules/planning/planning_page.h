@@ -19,6 +19,7 @@
 #include <QSpinBox>
 #include <QStringList>
 #include <QToolButton>
+#include <QVariantMap>
 #include <QVector>
 #include <QWidget>
 
@@ -46,6 +47,11 @@ public:
         panthera::adapters::SimulationDeviceFacade* simulationDevice,
         QWidget* parent = nullptr);
 
+    [[nodiscard]] QStringList personalizationProfileNames() const;
+    [[nodiscard]] QString activePersonalizationProfileName() const;
+    void applyPersonalizationProfile(const QString& profileName);
+    bool saveCurrentPersonalizationProfile(const QString& profileName);
+
 private slots:
     void loadDemoPatient(bool refreshHistoricalImages = true);
     void generateDraftPlan();
@@ -70,6 +76,7 @@ private slots:
     void storeCapturedImages();
     void loadStoredImages();
     void showHistoryPreviewMaximized();
+    void showCurrentPreviewMaximized();
 
 private:
     struct StagedSliceState {
@@ -144,9 +151,12 @@ private:
     void loadStagedSlice(int row);
     QPixmap renderCurrentSlicePixmap(int row, const QSize& size) const;
     void refreshCurrentSliceVisualization();
+    void configureCurrentPreviewView(MockUltrasoundView* preview, int row, bool useActivePreviewAnnotations = false) const;
+    void applyCurrentControlsToAllSlices();
     void restoreSliceControls(int row);
     void storeCurrentSliceControls();
     void invalidateCurrentSliceTargets(const QString& title = {}, const QString& detail = {});
+    void invalidateAllSliceTargets(const QString& title = {}, const QString& detail = {});
     void clearSliceTargets(bool clearAnnotations);
     void updateSliceAssessmentMetrics();
     void updateAssessmentMetricsPanel(double estimatedVolumeCm3, double ablatedVolumeCm3);
@@ -154,6 +164,13 @@ private:
     void clearRespiratoryTrackingState(StagedSliceState& slice);
     void recalculateRespiratoryTrackingForSlice(int row);
     void showThreeDimensionalPreviewDialog(const VolumeReconstructionResult& result) const;
+    void registerCollapseSection(const QString& key, QToolButton* button);
+    [[nodiscard]] QVariantMap currentCollapseStateMap() const;
+    void applyCollapseStateMap(const QVariantMap& stateMap);
+    [[nodiscard]] QVariantMap loadSavedCollapseStateMap(const QString& profileName) const;
+    void setActivePersonalizationProfileName(const QString& profileName);
+    void clearActivePersonalizationProfileName();
+    void restoreLastPersonalizationProfile();
 
     panthera::core::ApplicationContext* m_context {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
@@ -201,6 +218,7 @@ private:
     QPushButton* m_previewPlanButton {nullptr};
     QToolButton* m_editPlanButton {nullptr};
     QToolButton* m_historyMaximizeButton {nullptr};
+    QToolButton* m_currentMaximizeButton {nullptr};
     QPushButton* m_addPathButton {nullptr};
     QPushButton* m_removePathButton {nullptr};
     QPushButton* m_acquireImageButton {nullptr};
@@ -234,6 +252,9 @@ private:
     QDateTime m_lastAcquisitionAt;
     panthera::core::DeviceSnapshot m_latestDeviceSnapshot;
     bool m_hasDeviceSnapshot {false};
+    QHash<QString, QToolButton*> m_collapseButtonsByKey;
+    QString m_activePersonalizationProfileName;
+    bool m_applyingPersonalizationProfile {false};
 };
 
 }  // namespace panthera::modules

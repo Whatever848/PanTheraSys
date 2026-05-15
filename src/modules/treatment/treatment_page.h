@@ -59,6 +59,7 @@ private:
     double pointDwellSeconds(const panthera::core::TherapyPoint& point, const panthera::core::TherapyPlan& plan) const;
     double layerPlannedDurationSeconds(const panthera::core::TherapySegment& segment, const panthera::core::TherapyPlan& plan) const;
     double layerElapsedDurationSeconds(const panthera::core::TherapySegment& segment, const panthera::core::TherapyPlan& plan) const;
+    double planElapsedDurationSeconds(const panthera::core::TherapyPlan& plan) const;
     double planPlannedDurationSeconds(const panthera::core::TherapyPlan& plan) const;
     int completedPointCountForLayer(int layerIndex, const panthera::core::TherapyPlan& plan) const;
     void ensureLayerProgressStorage(const panthera::core::TherapyPlan& plan);
@@ -89,6 +90,10 @@ private:
     QLabel* m_safetyLabel {nullptr};
     QLabel* m_progressLabel {nullptr};
     QLabel* m_timeSummaryLabel {nullptr};
+    QLabel* m_layerRemainingValueLabel {nullptr};
+    QLabel* m_layerTotalValueLabel {nullptr};
+    QLabel* m_planRemainingValueLabel {nullptr};
+    QLabel* m_planTotalValueLabel {nullptr};
     QProgressBar* m_progressBar {nullptr};
     QPlainTextEdit* m_logView {nullptr};
     QComboBox* m_planCombo {nullptr};

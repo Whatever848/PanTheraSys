@@ -4,6 +4,7 @@
 #include <QActionGroup>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QMenu>
 #include <QStyle>
 #include <QVBoxLayout>
@@ -72,10 +73,20 @@ MainWindow::MainWindow(
 
     m_dashboardButton = createNavButton(QStringLiteral("设备监控"), QStyle::SP_ComputerIcon);
     m_planningButton = createNavButton(QStringLiteral("治疗方案"), QStyle::SP_FileDialogDetailedView);
+    m_planningPersonalizationButton = new QToolButton();
+    m_planningPersonalizationButton->setObjectName(QStringLiteral("navUtilityButton"));
+    m_planningPersonalizationButton->setText(QStringLiteral("⚙"));
+    m_planningPersonalizationButton->setToolTip(QStringLiteral("治疗方案个性化设置"));
+    m_planningPersonalizationButton->setPopupMode(QToolButton::InstantPopup);
+    m_planningPersonalizationButton->setAutoRaise(true);
     m_treatmentButton = createNavButton(QStringLiteral("治疗"), QStyle::SP_MediaPlay);
     m_dataButton = createNavButton(QStringLiteral("数据管理"), QStyle::SP_DirIcon);
     m_dataButton->setPopupMode(QToolButton::MenuButtonPopup);
     m_dataButton->setProperty("navMenuButton", true);
+
+    m_planningPersonalizationMenu = new QMenu(m_planningPersonalizationButton);
+    m_planningPersonalizationMenu->setObjectName(QStringLiteral("navDropMenu"));
+    m_planningPersonalizationButton->setMenu(m_planningPersonalizationMenu);
 
     auto* dataMenu = new QMenu(m_dataButton);
     dataMenu->setObjectName(QStringLiteral("navDropMenu"));
@@ -108,6 +119,8 @@ MainWindow::MainWindow(
     m_statusLabel = new QLabel();
     m_statusLabel->setObjectName(QStringLiteral("navStatusLabel"));
     navLayout->addWidget(m_statusLabel);
+    navLayout->addSpacing(8);
+    navLayout->addWidget(m_planningPersonalizationButton, 0, Qt::AlignVCenter);
 
     rootLayout->addWidget(navBar);
 
@@ -125,6 +138,7 @@ MainWindow::MainWindow(
 
     connect(m_dashboardButton, &QToolButton::clicked, this, &MainWindow::showDashboard);
     connect(m_planningButton, &QToolButton::clicked, this, &MainWindow::showPlanning);
+    connect(m_planningPersonalizationMenu, &QMenu::aboutToShow, this, &MainWindow::refreshPlanningPersonalizationMenu);
     connect(m_treatmentButton, &QToolButton::clicked, this, &MainWindow::showTreatment);
     connect(m_dataButton, &QToolButton::clicked, this, &MainWindow::showDataManagement);
     connect(m_dataPatientInfoAction, &QAction::triggered, this, [this]() {
@@ -201,6 +215,71 @@ void MainWindow::ensurePlanningPage()
     replacePlaceholderPage(1, m_planningPage);
 }
 
+void MainWindow::refreshPlanningPersonalizationMenu()
+{
+    if (m_planningPersonalizationMenu == nullptr) {
+        return;
+    }
+
+    ensurePlanningPage();
+    m_planningPersonalizationMenu->clear();
+
+    const QString activeProfileName = m_planningPage != nullptr ? m_planningPage->activePersonalizationProfileName() : QString();
+    const QStringList builtInProfiles {
+        QStringLiteral("全折叠"),
+        QStringLiteral("全展开")
+    };
+    for (const QString& profileName : builtInProfiles) {
+        QAction* action = m_planningPersonalizationMenu->addAction(profileName);
+        action->setCheckable(true);
+        action->setChecked(activeProfileName == profileName);
+        connect(action, &QAction::triggered, this, [this, profileName]() {
+            applyPlanningPersonalizationProfile(profileName);
+        });
+    }
+
+    m_planningPersonalizationMenu->addSeparator();
+    QAction* saveAction = m_planningPersonalizationMenu->addAction(QStringLiteral("保存当前习惯..."));
+    connect(saveAction, &QAction::triggered, this, &MainWindow::savePlanningPersonalizationProfile);
+
+    if (m_planningPage == nullptr) {
+        return;
+    }
+
+    const QStringList profileNames = m_planningPage->personalizationProfileNames();
+    if (profileNames.isEmpty()) {
+        return;
+    }
+
+    m_planningPersonalizationMenu->addSeparator();
+    for (const QString& profileName : profileNames) {
+        QAction* action = m_planningPersonalizationMenu->addAction(profileName);
+        action->setCheckable(true);
+        action->setChecked(activeProfileName == profileName);
+        connect(action, &QAction::triggered, this, [this, profileName]() {
+            applyPlanningPersonalizationProfile(profileName);
+        });
+    }
+}
+
+void MainWindow::savePlanningPersonalizationProfile()
+{
+    showPlanning();
+    if (m_planningPage == nullptr) {
+        return;
+    }
+
+    const QString profileName = QInputDialog::getText(
+        this,
+        QStringLiteral("保存个性化方案"),
+        QStringLiteral("请输入方案名称"));
+    if (profileName.trimmed().isEmpty()) {
+        return;
+    }
+
+    m_planningPage->saveCurrentPersonalizationProfile(profileName);
+}
+
 void MainWindow::ensureTreatmentPage()
 {
     if (m_treatmentPage != nullptr) {
@@ -233,6 +312,16 @@ void MainWindow::replacePlaceholderPage(int index, QWidget* page)
         m_stack->removeWidget(placeholder);
         placeholder->deleteLater();
     }
+}
+
+void MainWindow::applyPlanningPersonalizationProfile(const QString& profileName)
+{
+    showPlanning();
+    if (m_planningPage == nullptr) {
+        return;
+    }
+
+    m_planningPage->applyPersonalizationProfile(profileName);
 }
 
 void MainWindow::updateStatusBarSummary()

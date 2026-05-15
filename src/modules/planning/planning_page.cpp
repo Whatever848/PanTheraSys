@@ -19,6 +19,7 @@
 #include <QLineEdit>
 #include <QListWidgetItem>
 #include <QScrollArea>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QStyle>
 #include <QTime>
@@ -34,6 +35,31 @@ using namespace panthera::core;
 namespace {
 
 constexpr int kPathStateKeyRole = Qt::UserRole + 1;
+
+QString collapseAllProfileName()
+{
+    return QStringLiteral("全折叠");
+}
+
+QString expandAllProfileName()
+{
+    return QStringLiteral("全展开");
+}
+
+QString planningPersonalizationProfilesRoot()
+{
+    return QStringLiteral("ui/planningPersonalization/profiles");
+}
+
+QString planningPersonalizationActiveProfileKey()
+{
+    return QStringLiteral("ui/planningPersonalization/activeProfileName");
+}
+
+QString settingsProfileStorageKey(const QString& profileName)
+{
+    return QString::fromLatin1(profileName.trimmed().toUtf8().toHex());
+}
 
 PatientRecord buildFallbackPatient()
 {
@@ -337,7 +363,9 @@ PlanningPage::PlanningPage(
     pathBodyLayout->setSpacing(10);
     pathBodyLayout->addWidget(m_pathList, 1);
     pathBodyLayout->addLayout(pathButtons);
-    pathHeader->addWidget(createCollapseButton(pathBody, false));
+    auto* pathCollapseButton = createCollapseButton(pathBody, false);
+    pathHeader->addWidget(pathCollapseButton);
+    registerCollapseSection(QStringLiteral("pathList"), pathCollapseButton);
 
     pathLayout->addLayout(pathHeader);
     pathLayout->addWidget(pathBody, 1);
@@ -396,7 +424,9 @@ PlanningPage::PlanningPage(
     captureBodyLayout->setSpacing(10);
     captureBodyLayout->addLayout(captureForm);
     captureBodyLayout->addWidget(m_acquireImageButton, 0, Qt::AlignLeft);
-    captureHeader->addWidget(createCollapseButton(captureBody, false));
+    auto* captureCollapseButton = createCollapseButton(captureBody, false);
+    captureHeader->addWidget(captureCollapseButton);
+    registerCollapseSection(QStringLiteral("imageCapture"), captureCollapseButton);
 
     captureLayout->addLayout(captureHeader);
     captureLayout->addWidget(captureBody);
@@ -435,7 +465,9 @@ PlanningPage::PlanningPage(
     modelBodyLayout->setSpacing(10);
     modelBodyLayout->addWidget(m_generate3dButton, 0, Qt::AlignLeft);
     modelBodyLayout->addWidget(m_modelList, 1);
-    modelHeader->addWidget(createCollapseButton(modelBody, false));
+    auto* modelCollapseButton = createCollapseButton(modelBody, false);
+    modelHeader->addWidget(modelCollapseButton);
+    registerCollapseSection(QStringLiteral("threeDimensionalModels"), modelCollapseButton);
 
     modelLayout->addLayout(modelHeader);
     modelLayout->addWidget(modelBody, 1);
@@ -477,6 +509,7 @@ PlanningPage::PlanningPage(
     m_historyPreview->setMinimumSize(0, 0);
     m_historyPreview->setCaption(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
     m_historyPreview->setAnnotationEnabled(false);
+    m_historyPreview->setImageZoomEnabled(true);
 
     m_historyPreviewOverlayLabel = new QLabel(QStringLiteral("\u5de6\u5c4f\u663e\u793a\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
     m_historyPreviewOverlayLabel->setObjectName(QStringLiteral("planningPreviewOverlayLabel"));
@@ -485,8 +518,8 @@ PlanningPage::PlanningPage(
 
     m_historyMaximizeButton = new QToolButton();
     m_historyMaximizeButton->setObjectName(QStringLiteral("planningMaximizeButton"));
-    m_historyMaximizeButton->setText(QStringLiteral("\u26f6"));
-    m_historyMaximizeButton->setToolTip(QStringLiteral("\u6700\u5927\u5316\u67e5\u770b\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+    m_historyMaximizeButton->setText(QStringLiteral("1:1"));
+    m_historyMaximizeButton->setToolTip(QStringLiteral("\u91cd\u7f6e\u5de6\u4fa7\u65e2\u5f80\u5f71\u50cf\u7f29\u653e"));
     m_historyMaximizeButton->setEnabled(false);
 
     historyStack->addWidget(m_historyPreview, 0, 0);
@@ -510,9 +543,73 @@ PlanningPage::PlanningPage(
     currentLayout->setContentsMargins(4, 4, 4, 4);
     currentLayout->setSpacing(4);
 
+    auto* currentHeader = new QHBoxLayout();
+    currentHeader->setContentsMargins(0, 0, 0, 0);
+    currentHeader->setSpacing(8);
     auto* currentTitle = new QLabel(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u5f71\u50cf"));
     currentTitle->setObjectName(QStringLiteral("planningPaneHeaderLabel"));
-    currentLayout->addWidget(currentTitle);
+    currentHeader->addWidget(currentTitle);
+    currentHeader->addStretch();
+    m_currentMaximizeButton = new QToolButton();
+    m_currentMaximizeButton->setObjectName(QStringLiteral("planningMaximizeButton"));
+    m_currentMaximizeButton->setText(QStringLiteral("\u26f6"));
+    m_currentMaximizeButton->setToolTip(QStringLiteral("\u5168\u5c4f\u67e5\u770b\u53f3\u4fa7\u5f53\u524d\u6cbb\u7597\u5f71\u50cf"));
+    currentHeader->addWidget(m_currentMaximizeButton);
+    currentLayout->addLayout(currentHeader);
+
+    m_annotationPanel = new QFrame();
+    m_annotationPanel->setObjectName(QStringLiteral("planningAnnotationPanel"));
+    m_annotationPanel->setVisible(true);
+    auto* annotationLayout = new QHBoxLayout(m_annotationPanel);
+    annotationLayout->setContentsMargins(12, 10, 12, 10);
+    annotationLayout->setSpacing(10);
+
+    auto* annotationBrushButton = new QToolButton();
+    annotationBrushButton->setObjectName(QStringLiteral("planningAnnotationToolButton"));
+    annotationBrushButton->setText(QStringLiteral("\u270e"));
+    annotationLayout->addWidget(annotationBrushButton);
+
+    auto* separatorTop = new QFrame();
+    separatorTop->setObjectName(QStringLiteral("planningAnnotationSeparator"));
+    separatorTop->setFrameShape(QFrame::VLine);
+    annotationLayout->addWidget(separatorTop);
+
+    m_annotationRedButton = new QToolButton();
+    m_annotationRedButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
+    m_annotationRedButton->setProperty("swatchColor", QStringLiteral("red"));
+    annotationLayout->addWidget(m_annotationRedButton);
+
+    m_annotationBlueButton = new QToolButton();
+    m_annotationBlueButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
+    m_annotationBlueButton->setProperty("swatchColor", QStringLiteral("blue"));
+    annotationLayout->addWidget(m_annotationBlueButton);
+
+    m_annotationGreenButton = new QToolButton();
+    m_annotationGreenButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
+    m_annotationGreenButton->setProperty("swatchColor", QStringLiteral("green"));
+    annotationLayout->addWidget(m_annotationGreenButton);
+
+    m_annotationOrangeButton = new QToolButton();
+    m_annotationOrangeButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
+    m_annotationOrangeButton->setProperty("swatchColor", QStringLiteral("orange"));
+    annotationLayout->addWidget(m_annotationOrangeButton);
+
+    auto* separatorMiddle = new QFrame();
+    separatorMiddle->setObjectName(QStringLiteral("planningAnnotationSeparator"));
+    separatorMiddle->setFrameShape(QFrame::VLine);
+    annotationLayout->addWidget(separatorMiddle);
+
+    m_annotationUndoButton = new QToolButton();
+    m_annotationUndoButton->setObjectName(QStringLiteral("planningAnnotationToolButton"));
+    m_annotationUndoButton->setText(QStringLiteral("\u21b6"));
+    annotationLayout->addWidget(m_annotationUndoButton);
+
+    m_annotationClearButton = new QToolButton();
+    m_annotationClearButton->setObjectName(QStringLiteral("planningAnnotationToolButton"));
+    m_annotationClearButton->setText(QStringLiteral("\U0001F5D1"));
+    annotationLayout->addWidget(m_annotationClearButton);
+    annotationLayout->addStretch();
+    currentLayout->addWidget(m_annotationPanel);
 
     auto* previewStack = new QGridLayout();
     previewStack->setContentsMargins(0, 0, 0, 0);
@@ -521,77 +618,16 @@ PlanningPage::PlanningPage(
     m_preview->setObjectName(QStringLiteral("planningPreviewWidget"));
     m_preview->setMinimumSize(0, 0);
     m_preview->setCaption(QStringLiteral(""));
+    m_preview->setImageZoomEnabled(true);
+    m_preview->setAnnotationEnabled(true);
 
     m_previewOverlayLabel = new QLabel(QStringLiteral("\u56fe\u50cf\u663e\u793a\u533a\u57df"));
     m_previewOverlayLabel->setObjectName(QStringLiteral("planningPreviewOverlayLabel"));
     m_previewOverlayLabel->setAlignment(Qt::AlignCenter);
     m_previewOverlayLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
 
-    m_annotationPanel = new QFrame();
-    m_annotationPanel->setObjectName(QStringLiteral("planningAnnotationPanel"));
-    m_annotationPanel->setVisible(false);
-    auto* annotationLayout = new QVBoxLayout(m_annotationPanel);
-    annotationLayout->setContentsMargins(10, 12, 10, 12);
-    annotationLayout->setSpacing(10);
-
-    auto* annotationBrushButton = new QToolButton();
-    annotationBrushButton->setObjectName(QStringLiteral("planningAnnotationToolButton"));
-    annotationBrushButton->setText(QStringLiteral("\u270e"));
-    annotationLayout->addWidget(annotationBrushButton, 0, Qt::AlignHCenter);
-
-    auto* separatorTop = new QFrame();
-    separatorTop->setObjectName(QStringLiteral("planningAnnotationSeparator"));
-    separatorTop->setFrameShape(QFrame::HLine);
-    annotationLayout->addWidget(separatorTop);
-
-    m_annotationRedButton = new QToolButton();
-    m_annotationRedButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
-    m_annotationRedButton->setProperty("swatchColor", QStringLiteral("red"));
-    annotationLayout->addWidget(m_annotationRedButton, 0, Qt::AlignHCenter);
-
-    m_annotationBlueButton = new QToolButton();
-    m_annotationBlueButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
-    m_annotationBlueButton->setProperty("swatchColor", QStringLiteral("blue"));
-    annotationLayout->addWidget(m_annotationBlueButton, 0, Qt::AlignHCenter);
-
-    m_annotationGreenButton = new QToolButton();
-    m_annotationGreenButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
-    m_annotationGreenButton->setProperty("swatchColor", QStringLiteral("green"));
-    annotationLayout->addWidget(m_annotationGreenButton, 0, Qt::AlignHCenter);
-
-    m_annotationOrangeButton = new QToolButton();
-    m_annotationOrangeButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
-    m_annotationOrangeButton->setProperty("swatchColor", QStringLiteral("orange"));
-    annotationLayout->addWidget(m_annotationOrangeButton, 0, Qt::AlignHCenter);
-
-    auto* separatorMiddle = new QFrame();
-    separatorMiddle->setObjectName(QStringLiteral("planningAnnotationSeparator"));
-    separatorMiddle->setFrameShape(QFrame::HLine);
-    annotationLayout->addWidget(separatorMiddle);
-
-    m_annotationUndoButton = new QToolButton();
-    m_annotationUndoButton->setObjectName(QStringLiteral("planningAnnotationToolButton"));
-    m_annotationUndoButton->setText(QStringLiteral("\u21b6"));
-    annotationLayout->addWidget(m_annotationUndoButton, 0, Qt::AlignHCenter);
-
-    m_annotationClearButton = new QToolButton();
-    m_annotationClearButton->setObjectName(QStringLiteral("planningAnnotationToolButton"));
-    m_annotationClearButton->setText(QStringLiteral("\U0001F5D1"));
-    annotationLayout->addWidget(m_annotationClearButton, 0, Qt::AlignHCenter);
-
-    auto* separatorBottom = new QFrame();
-    separatorBottom->setObjectName(QStringLiteral("planningAnnotationSeparator"));
-    separatorBottom->setFrameShape(QFrame::HLine);
-    annotationLayout->addWidget(separatorBottom);
-
-    m_annotationCollapseButton = new QToolButton();
-    m_annotationCollapseButton->setObjectName(QStringLiteral("planningAnnotationToolButton"));
-    m_annotationCollapseButton->setText(QStringLiteral("\u2303"));
-    annotationLayout->addWidget(m_annotationCollapseButton, 0, Qt::AlignHCenter);
-
     previewStack->addWidget(m_preview, 0, 0);
     previewStack->addWidget(m_previewOverlayLabel, 0, 0);
-    previewStack->addWidget(m_annotationPanel, 0, 0, Qt::AlignTop | Qt::AlignRight);
     currentLayout->addLayout(previewStack, 1);
 
     m_currentSliceSummaryLabel = new QLabel(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\uff1a\u7b49\u5f85\u91c7\u96c6\u6216\u9884\u89c8\u65b9\u6848"));
@@ -609,18 +645,7 @@ PlanningPage::PlanningPage(
     auto* compareContent = new QWidget();
     compareContent->setLayout(compareLayout);
 
-    auto* compareStack = new QGridLayout();
-    compareStack->setContentsMargins(0, 0, 0, 0);
-    compareStack->setSpacing(0);
-
-    m_annotationButton = new QToolButton();
-    m_annotationButton->setObjectName(QStringLiteral("planningIconButton"));
-    m_annotationButton->setText(QStringLiteral("\u270e"));
-    m_annotationButton->setCheckable(true);
-
-    compareStack->addWidget(compareContent, 0, 0);
-    compareStack->addWidget(m_annotationButton, 0, 0, Qt::AlignTop | Qt::AlignRight);
-    previewFrameLayout->addLayout(compareStack, 1);
+    previewFrameLayout->addWidget(compareContent, 1);
     centerColumn->addWidget(previewFrame, 1);
 
     auto* bottomRow = new QHBoxLayout();
@@ -666,7 +691,9 @@ PlanningPage::PlanningPage(
     chartBodyLayout->addLayout(chartSummaryRow);
     chartBodyLayout->addWidget(m_energyOutputChart, 1);
 
-    chartTitleRow->addWidget(createCollapseButton(chartBody, false));
+    auto* chartCollapseButton = createCollapseButton(chartBody, false);
+    chartTitleRow->addWidget(chartCollapseButton);
+    registerCollapseSection(QStringLiteral("energyChart"), chartCollapseButton);
 
     chartLayout->addLayout(chartHeader);
     chartLayout->addWidget(chartBody, 1);
@@ -691,7 +718,9 @@ PlanningPage::PlanningPage(
     statusHeader->addWidget(statusTitle);
     statusHeader->addStretch();
     statusHeader->addWidget(createHeaderMarker());
-    statusHeader->addWidget(createCollapseButton(statusBody, false));
+    auto* statusCollapseButton = createCollapseButton(statusBody, false);
+    statusHeader->addWidget(statusCollapseButton);
+    registerCollapseSection(QStringLiteral("planDetails"), statusCollapseButton);
     statusLayout->addLayout(statusHeader);
     statusLayout->addWidget(statusBody, 1);
 
@@ -745,6 +774,7 @@ PlanningPage::PlanningPage(
     imageOpsBodyLayout->addStretch(1);
     auto* imageOpsCollapseButton = createCollapseButton(imageOpsBody, false);
     imageOpsHeader->addWidget(imageOpsCollapseButton, 0, Qt::AlignTop);
+    registerCollapseSection(QStringLiteral("imageOperations"), imageOpsCollapseButton);
 
     const auto updateImageOpsCollapseLayout = [imageOpsLayout, imageOpsCard, imageOpsTopSpacer, imageOpsBottomSpacer](bool expanded) {
         const QSizePolicy::Policy spacerPolicy = expanded ? QSizePolicy::Fixed : QSizePolicy::Expanding;
@@ -802,7 +832,9 @@ PlanningPage::PlanningPage(
     modeHeader->addWidget(modeTitle);
     modeHeader->addStretch();
     modeHeader->addWidget(createHeaderMarker(QStringLiteral("compact")));
-    modeHeader->addWidget(createCollapseButton(modeBody, false));
+    auto* modeCollapseButton = createCollapseButton(modeBody, false);
+    modeHeader->addWidget(modeCollapseButton);
+    registerCollapseSection(QStringLiteral("treatmentParameters"), modeCollapseButton);
 
     auto* executeRow = new QHBoxLayout();
     executeRow->setSpacing(18);
@@ -860,7 +892,7 @@ PlanningPage::PlanningPage(
     metricsForm->addRow(createFormLabel(QStringLiteral("\u6cbb\u7597\u884c\u8ddd")), m_spacingSpin);
     metricsForm->addRow(createFormLabel(QStringLiteral("\u70b9\u7597\u65f6\u957f")), m_dwellSpin);
     metricsForm->addRow(createFormLabel(QStringLiteral("\u6cbb\u7597\u603b\u65f6\u957f")), m_totalDurationValueLabel);
-    m_generateTargetsButton = new QPushButton(QStringLiteral("\u751f\u6210\u9776\u70b9"));
+    m_generateTargetsButton = new QPushButton(QStringLiteral("\u4e00\u952e\u751f\u6210\u9776\u70b9"));
     m_generateTargetsButton->setObjectName(QStringLiteral("planningActionButton"));
     m_generateTargetsButton->setMinimumHeight(34);
 
@@ -893,7 +925,9 @@ PlanningPage::PlanningPage(
     powerRow->addStretch();
     powerRow->addWidget(m_powerValueLabel);
     powerRow->addWidget(createHeaderMarker(QStringLiteral("compact")));
-    powerRow->addWidget(createCollapseButton(powerBody, false));
+    auto* powerCollapseButton = createCollapseButton(powerBody, false);
+    powerRow->addWidget(powerCollapseButton);
+    registerCollapseSection(QStringLiteral("powerAndAssessment"), powerCollapseButton);
 
     m_powerSpin = new QDoubleSpinBox();
     m_powerSpin->setRange(20.0, 800.0);
@@ -943,7 +977,9 @@ PlanningPage::PlanningPage(
     assessmentHeader->addWidget(assessmentTitle);
     assessmentHeader->addStretch();
     assessmentHeader->addWidget(createHeaderMarker(QStringLiteral("compact")));
-    assessmentHeader->addWidget(createCollapseButton(assessmentBody, false));
+    auto* assessmentCollapseButton = createCollapseButton(assessmentBody, false);
+    assessmentHeader->addWidget(assessmentCollapseButton);
+    registerCollapseSection(QStringLiteral("assessmentMetrics"), assessmentCollapseButton);
 
     auto* assessmentMetricsCard = new QFrame();
     assessmentMetricsCard->setObjectName(QStringLiteral("planningAssessmentMetricsCard"));
@@ -1077,6 +1113,10 @@ PlanningPage::PlanningPage(
         loadHistoricalSlice(value, true);
     });
     connect(m_historyMaximizeButton, &QToolButton::clicked, this, &PlanningPage::showHistoryPreviewMaximized);
+    connect(m_historyPreview, &MockUltrasoundView::imageZoomChanged, this, [this](qreal) {
+        updateHistoryMaximizeButtonState();
+    });
+    connect(m_currentMaximizeButton, &QToolButton::clicked, this, &PlanningPage::showCurrentPreviewMaximized);
     connect(m_currentSliceSlider, &QSlider::valueChanged, this, [this](int value) {
         if (m_modelList != nullptr && value < m_modelList->count() && m_modelList->currentRow() != value) {
             m_modelList->setCurrentRow(value);
@@ -1084,8 +1124,6 @@ PlanningPage::PlanningPage(
         }
         loadStagedSlice(value);
     });
-    connect(m_annotationButton, &QToolButton::clicked, this, &PlanningPage::toggleAnnotationPanel);
-    connect(m_annotationCollapseButton, &QToolButton::clicked, this, &PlanningPage::toggleAnnotationPanel);
     connect(m_modelList, &QListWidget::currentRowChanged, this, &PlanningPage::onStagedSliceSelectionChanged);
     connect(m_preview, &MockUltrasoundView::annotationStrokesChanged, this, &PlanningPage::onPreviewAnnotationsChanged);
     connect(m_generateTargetsButton, &QPushButton::clicked, this, &PlanningPage::generateTargetsForCurrentSlice);
@@ -1121,7 +1159,18 @@ PlanningPage::PlanningPage(
     const auto refreshMetrics = [this]() {
         refreshDerivedMetrics();
     };
-    connect(m_spacingSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [refreshMetrics](double) { refreshMetrics(); });
+    connect(m_spacingSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, refreshMetrics](double value) {
+        const bool hasInvalidatedTargets = std::any_of(m_stagedSlices.cbegin(), m_stagedSlices.cend(), [value](const StagedSliceState& slice) {
+            return slice.targetsGenerated && std::abs(slice.spacingMm - value) > 0.001;
+        });
+        applyCurrentControlsToAllSlices();
+        if (hasInvalidatedTargets && !m_initializingUi) {
+            invalidateAllSliceTargets(
+                QStringLiteral("\u6cbb\u7597\u884c\u8ddd\u8c03\u6574"),
+                QStringLiteral("\u5df2\u66f4\u65b0\u5168\u90e8\u5207\u7247\u7684\u884c\u8ddd\uff0c\u65e7\u9776\u70b9\u5df2\u5931\u6548\uff0c\u8bf7\u91cd\u65b0\u70b9\u51fb\u201c\u4e00\u952e\u751f\u6210\u9776\u70b9\u201d\u3002"));
+        }
+        refreshMetrics();
+    });
     connect(m_dwellSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [refreshMetrics](double) { refreshMetrics(); });
     connect(m_layerCountSpin, qOverload<int>(&QSpinBox::valueChanged), this, [refreshMetrics](int) { refreshMetrics(); });
     const auto onPatternModeToggled = [this, refreshMetrics](bool checked) {
@@ -1129,18 +1178,23 @@ PlanningPage::PlanningPage(
         if (!checked || m_initializingUi) {
             return;
         }
-        if (m_currentStagedSliceIndex < 0 || m_currentStagedSliceIndex >= m_stagedSlices.size()) {
+        if (m_stagedSlices.isEmpty()) {
+            applyCurrentControlsToAllSlices();
             return;
         }
 
         const TreatmentPattern selectedPattern =
             m_lineTreatmentRadio->isChecked() ? TreatmentPattern::Line : TreatmentPattern::Point;
-        const StagedSliceState& slice = m_stagedSlices.at(m_currentStagedSliceIndex);
-        if (!slice.targetsGenerated || slice.pattern == selectedPattern) {
+        const bool hasInvalidatedTargets = std::any_of(m_stagedSlices.cbegin(), m_stagedSlices.cend(), [selectedPattern](const StagedSliceState& slice) {
+            return slice.targetsGenerated && slice.pattern != selectedPattern;
+        });
+        if (!hasInvalidatedTargets) {
+            applyCurrentControlsToAllSlices();
             return;
         }
 
-        invalidateCurrentSliceTargets(
+        applyCurrentControlsToAllSlices();
+        invalidateAllSliceTargets(
             QStringLiteral("\u6cbb\u7597\u6a21\u5f0f\u5207\u6362"),
             QStringLiteral("\u5df2\u5207\u6362\u4e3a%1\uff0c\u65e7\u9776\u70b9\u5df2\u5931\u6548\uff0c\u8bf7\u91cd\u65b0\u70b9\u51fb\u201c\u751f\u6210\u9776\u70b9\u201d\u3002")
                 .arg(selectedPattern == TreatmentPattern::Line
@@ -1188,10 +1242,178 @@ PlanningPage::PlanningPage(
     refreshDerivedMetrics();
     clearStartupDisplay();
     m_activePathStateKey = pathStateKeyForRow(m_pathList != nullptr ? m_pathList->currentRow() : -1);
+    restoreLastPersonalizationProfile();
     m_initializingUi = false;
     QTimer::singleShot(0, this, [this]() {
         m_deferStartupContextSummary = false;
     });
+}
+
+QStringList PlanningPage::personalizationProfileNames() const
+{
+    QSettings settings(QStringLiteral("PanTheraSys"), QStringLiteral("PanTheraConsole"));
+    settings.beginGroup(planningPersonalizationProfilesRoot());
+    const QStringList storageKeys = settings.childGroups();
+    settings.endGroup();
+
+    QStringList profileNames;
+    profileNames.reserve(storageKeys.size());
+    for (const QString& storageKey : storageKeys) {
+        settings.beginGroup(planningPersonalizationProfilesRoot() + QStringLiteral("/") + storageKey);
+        const QString displayName = settings.value(QStringLiteral("displayName")).toString().trimmed();
+        settings.endGroup();
+        if (!displayName.isEmpty()) {
+            profileNames.push_back(displayName);
+        }
+    }
+
+    profileNames.sort(Qt::CaseInsensitive);
+    return profileNames;
+}
+
+QString PlanningPage::activePersonalizationProfileName() const
+{
+    return m_activePersonalizationProfileName;
+}
+
+void PlanningPage::applyPersonalizationProfile(const QString& profileName)
+{
+    const QString normalizedProfileName = profileName.trimmed();
+    if (normalizedProfileName.isEmpty()) {
+        return;
+    }
+
+    QVariantMap stateMap;
+    if (normalizedProfileName == collapseAllProfileName()) {
+        for (auto it = m_collapseButtonsByKey.cbegin(); it != m_collapseButtonsByKey.cend(); ++it) {
+            stateMap.insert(it.key(), false);
+        }
+    } else if (normalizedProfileName == expandAllProfileName()) {
+        for (auto it = m_collapseButtonsByKey.cbegin(); it != m_collapseButtonsByKey.cend(); ++it) {
+            stateMap.insert(it.key(), true);
+        }
+    } else {
+        stateMap = loadSavedCollapseStateMap(normalizedProfileName);
+    }
+
+    if (stateMap.isEmpty() && normalizedProfileName != collapseAllProfileName() && normalizedProfileName != expandAllProfileName()) {
+        return;
+    }
+
+    applyCollapseStateMap(stateMap);
+    setActivePersonalizationProfileName(normalizedProfileName);
+}
+
+bool PlanningPage::saveCurrentPersonalizationProfile(const QString& profileName)
+{
+    const QString normalizedProfileName = profileName.trimmed();
+    if (normalizedProfileName.isEmpty()
+        || normalizedProfileName == collapseAllProfileName()
+        || normalizedProfileName == expandAllProfileName()) {
+        return false;
+    }
+
+    const QString storageKey = settingsProfileStorageKey(normalizedProfileName);
+    QSettings settings(QStringLiteral("PanTheraSys"), QStringLiteral("PanTheraConsole"));
+    settings.beginGroup(planningPersonalizationProfilesRoot() + QStringLiteral("/") + storageKey);
+    settings.remove(QString());
+    settings.setValue(QStringLiteral("displayName"), normalizedProfileName);
+
+    const QVariantMap stateMap = currentCollapseStateMap();
+    for (auto it = stateMap.cbegin(); it != stateMap.cend(); ++it) {
+        settings.setValue(QStringLiteral("states/%1").arg(it.key()), it.value().toBool());
+    }
+    settings.endGroup();
+
+    setActivePersonalizationProfileName(normalizedProfileName);
+    return true;
+}
+
+void PlanningPage::registerCollapseSection(const QString& key, QToolButton* button)
+{
+    if (key.trimmed().isEmpty() || button == nullptr) {
+        return;
+    }
+
+    m_collapseButtonsByKey.insert(key, button);
+    connect(button, &QToolButton::toggled, this, [this]() {
+        if (m_applyingPersonalizationProfile) {
+            return;
+        }
+        clearActivePersonalizationProfileName();
+    });
+}
+
+QVariantMap PlanningPage::currentCollapseStateMap() const
+{
+    QVariantMap stateMap;
+    for (auto it = m_collapseButtonsByKey.cbegin(); it != m_collapseButtonsByKey.cend(); ++it) {
+        stateMap.insert(it.key(), it.value() != nullptr && it.value()->isChecked());
+    }
+    return stateMap;
+}
+
+void PlanningPage::applyCollapseStateMap(const QVariantMap& stateMap)
+{
+    m_applyingPersonalizationProfile = true;
+    for (auto it = m_collapseButtonsByKey.cbegin(); it != m_collapseButtonsByKey.cend(); ++it) {
+        QToolButton* button = it.value();
+        if (button == nullptr || !stateMap.contains(it.key())) {
+            continue;
+        }
+        const bool expanded = stateMap.value(it.key()).toBool();
+        if (button->isChecked() != expanded) {
+            button->setChecked(expanded);
+        }
+    }
+    m_applyingPersonalizationProfile = false;
+}
+
+QVariantMap PlanningPage::loadSavedCollapseStateMap(const QString& profileName) const
+{
+    const QString normalizedProfileName = profileName.trimmed();
+    if (normalizedProfileName.isEmpty()) {
+        return {};
+    }
+
+    QVariantMap stateMap;
+    const QString storageKey = settingsProfileStorageKey(normalizedProfileName);
+    QSettings settings(QStringLiteral("PanTheraSys"), QStringLiteral("PanTheraConsole"));
+    settings.beginGroup(planningPersonalizationProfilesRoot() + QStringLiteral("/") + storageKey + QStringLiteral("/states"));
+    const QStringList sectionKeys = settings.childKeys();
+    for (const QString& sectionKey : sectionKeys) {
+        stateMap.insert(sectionKey, settings.value(sectionKey).toBool());
+    }
+    settings.endGroup();
+    return stateMap;
+}
+
+void PlanningPage::setActivePersonalizationProfileName(const QString& profileName)
+{
+    m_activePersonalizationProfileName = profileName.trimmed();
+    QSettings settings(QStringLiteral("PanTheraSys"), QStringLiteral("PanTheraConsole"));
+    settings.setValue(planningPersonalizationActiveProfileKey(), m_activePersonalizationProfileName);
+}
+
+void PlanningPage::clearActivePersonalizationProfileName()
+{
+    if (m_activePersonalizationProfileName.isEmpty()) {
+        return;
+    }
+
+    m_activePersonalizationProfileName.clear();
+    QSettings settings(QStringLiteral("PanTheraSys"), QStringLiteral("PanTheraConsole"));
+    settings.remove(planningPersonalizationActiveProfileKey());
+}
+
+void PlanningPage::restoreLastPersonalizationProfile()
+{
+    QSettings settings(QStringLiteral("PanTheraSys"), QStringLiteral("PanTheraConsole"));
+    const QString profileName = settings.value(planningPersonalizationActiveProfileKey(), collapseAllProfileName()).toString().trimmed();
+    if (profileName.isEmpty()) {
+        return;
+    }
+    applyPersonalizationProfile(profileName);
 }
 
 void PlanningPage::loadDemoPatient(bool refreshHistoricalImages)
@@ -1251,7 +1473,7 @@ void PlanningPage::generateTargetsForCurrentSlice()
     persistCurrentSliceAnnotations();
     storeCurrentSliceControls();
 
-    if (m_currentStagedSliceIndex < 0 || m_currentStagedSliceIndex >= m_stagedSlices.size()) {
+    if (m_stagedSlices.isEmpty()) {
         updateAcquisitionSummary(
             QStringLiteral("\u751f\u6210\u9776\u70b9"),
             {
@@ -1261,52 +1483,61 @@ void PlanningPage::generateTargetsForCurrentSlice()
         return;
     }
 
-    StagedSliceState& slice = m_stagedSlices[m_currentStagedSliceIndex];
-    if (slice.annotations.isEmpty()) {
+    applyCurrentControlsToAllSlices();
+
+    int generatedSliceCount = 0;
+    int totalTargetCount = 0;
+    QStringList generatedSliceLines;
+    QStringList skippedSliceLines;
+    for (int index = 0; index < m_stagedSlices.size(); ++index) {
+        StagedSliceState& slice = m_stagedSlices[index];
+        if (slice.annotations.isEmpty()) {
+            skippedSliceLines.push_back(QStringLiteral("%1 | \u65e0\u589e\u8bb0\u7b14\u8ff9").arg(slice.label));
+            continue;
+        }
+
+        const QRectF bounds = annotationRegionBoundsMm(slice.annotations);
+        if (!bounds.isValid() || bounds.width() <= 0.0 || bounds.height() <= 0.0) {
+            skippedSliceLines.push_back(QStringLiteral("%1 | \u589e\u8bb0\u533a\u57df\u65e0\u6548").arg(slice.label));
+            continue;
+        }
+
+        slice.targets.clear();
+        slice.targets = generateTherapyTargetsFromAnnotations(
+            slice.annotations,
+            slice.pattern,
+            slice.spacingMm,
+            slice.dwellSeconds,
+            slice.powerWatts);
+
+        slice.annotatedAreaMm2 = annotationRegionAreaMm2(slice.annotations);
+        slice.estimatedVolumeCm3 = (slice.annotatedAreaMm2 * std::max(1, m_stepSpin->value())) / 1000.0;
+        const double ablationFactor = slice.pattern == TreatmentPattern::Line ? 0.82 : 0.62;
+        slice.ablatedVolumeCm3 = std::min(
+            slice.estimatedVolumeCm3,
+            (slice.targets.size() * slice.spacingMm * std::max(1, m_stepSpin->value()) * slice.spacingMm * ablationFactor) / 1000.0);
+        slice.edited = true;
+        slice.targetsGenerated = true;
+        recalculateRespiratoryTrackingForSlice(index);
+
+        ++generatedSliceCount;
+        totalTargetCount += slice.targets.size();
+        generatedSliceLines.push_back(
+            QStringLiteral("%1 | %2 | %3")
+                .arg(slice.label)
+                .arg(patternSummaryText(slice.pattern))
+                .arg(targetSummaryText(slice.pattern, slice.targets)));
+    }
+
+    if (generatedSliceCount == 0) {
         updateAcquisitionSummary(
             QStringLiteral("\u751f\u6210\u9776\u70b9"),
             {
-                QStringLiteral("\u5207\u7247\uff1a%1").arg(slice.label),
-                QStringLiteral("\u8bf7\u5148\u4f7f\u7528\u753b\u7b14\u5728\u53f3\u4fa7\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\u4e0a\u5708\u753b\u8096\u7624\u533a\u57df\u3002")
+                QStringLiteral("\u5f53\u524d\u6240\u6709\u5207\u7247\u90fd\u8fd8\u6ca1\u6709\u53ef\u7528\u7684\u589e\u8bb0\u7b14\u8ff9\u3002"),
+                QStringLiteral("\u8bf7\u5148\u5728\u53f3\u4fa7\u591a\u5f20\u5f71\u50cf\u4e0a\u5708\u753b\u80bf\u7624\u533a\u57df\uff0c\u518d\u70b9\u51fb\u201c\u4e00\u952e\u751f\u6210\u9776\u70b9\u201d\u3002")
             });
         return;
     }
-
-    const QVector<QPointF> contourMm = extractContourFromAnnotations(slice.annotations);
-    const QRectF bounds = contourBoundsMm(contourMm);
-    if (!bounds.isValid() || bounds.width() <= 0.0 || bounds.height() <= 0.0) {
-        updateAcquisitionSummary(
-            QStringLiteral("\u751f\u6210\u9776\u70b9"),
-            {
-                QStringLiteral("\u5207\u7247\uff1a%1").arg(slice.label),
-                QStringLiteral("\u672a\u80fd\u4ece\u753b\u7b14\u8f68\u8ff9\u91cc\u8ba1\u7b97\u51fa\u6709\u6548\u7684\u8096\u7624\u533a\u57df\u3002")
-            });
-        return;
-    }
-
-    slice.targets.clear();
-    slice.pattern = m_lineTreatmentRadio->isChecked() ? TreatmentPattern::Line : TreatmentPattern::Point;
-    slice.spacingMm = m_spacingSpin->value();
-    slice.dwellSeconds = m_dwellSpin->value();
-    slice.powerWatts = m_powerSlider->value();
-    slice.respiratoryTrackingEnabled = m_respiratoryTrackingCheck->isChecked();
-    slice.deliveryMode = m_segmentedTreatmentRadio->isChecked() ? QStringLiteral("\u5206\u6bb5\u6267\u884c") : QStringLiteral("\u76f4\u63a5\u6cbb\u7597");
-    slice.targets = generateTherapyTargetsWithinContour(
-        contourMm,
-        slice.pattern,
-        slice.spacingMm,
-        slice.dwellSeconds,
-        slice.powerWatts);
-
-    slice.annotatedAreaMm2 = contourAreaMm2(contourMm);
-    slice.estimatedVolumeCm3 = (slice.annotatedAreaMm2 * std::max(1, m_stepSpin->value())) / 1000.0;
-    const double ablationFactor = slice.pattern == TreatmentPattern::Line ? 0.82 : 0.62;
-    slice.ablatedVolumeCm3 = std::min(
-        slice.estimatedVolumeCm3,
-        (slice.targets.size() * slice.spacingMm * std::max(1, m_stepSpin->value()) * slice.spacingMm * ablationFactor) / 1000.0);
-    slice.edited = true;
-    slice.targetsGenerated = true;
-    recalculateRespiratoryTrackingForSlice(m_currentStagedSliceIndex);
 
     refreshCurrentSliceVisualization();
     updateSliceAssessmentMetrics();
@@ -1318,27 +1549,24 @@ void PlanningPage::generateTargetsForCurrentSlice()
     }
     updatePlanPreviewText(&draftPlan);
 
-    updateAcquisitionSummary(
-        QStringLiteral("\u9776\u70b9\u751f\u6210\u5b8c\u6210"),
-        {
-            QStringLiteral("\u5207\u7247\uff1a%1").arg(slice.label),
-            QStringLiteral("\u6cbb\u7597\u65b9\u5f0f\uff1a%1 | %2").arg(slice.deliveryMode, patternSummaryText(slice.pattern)),
-            QStringLiteral("\u5df2\u751f\u6210\u9776\u70b9\uff1a%1 \u4e2a").arg(slice.targets.size()),
-            QStringLiteral("\u5f53\u524d\u529f\u7387\uff1a%1 W").arg(slice.powerWatts, 0, 'f', 0),
-            QStringLiteral("\u547c\u5438\u8ddf\u968f\uff1a%1").arg(slice.respiratoryTrackingEnabled ? QStringLiteral("\u5f00\u542f") : QStringLiteral("\u5173\u95ed")),
-            slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated
-                ? QStringLiteral("\u547c\u5438\u8865\u507f\uff1adX %1 mm | dY %2 mm | \u5b9e\u65f6\u9776\u70b9 %3 \u4e2a")
-                      .arg(slice.respiratoryOffsetMm.x(), 0, 'f', 2)
-                      .arg(slice.respiratoryOffsetMm.y(), 0, 'f', 2)
-                      .arg(slice.respiratoryAdjustedTargets.size())
-                : QStringLiteral("\u547c\u5438\u8865\u507f\uff1a%1").arg(
-                    slice.respiratoryTrackingEnabled
-                        ? QStringLiteral("\u7b49\u5f85\u547c\u5438\u6807\u5b9a")
-                        : QStringLiteral("\u672a\u5f00\u542f")),
-            QStringLiteral("\u9884\u4f30\u4f53\u79ef\uff1a%1 cm\u00b3 | \u5df2\u6cbb\u7597\u4f53\u79ef\uff1a%2 cm\u00b3")
-                .arg(slice.estimatedVolumeCm3, 0, 'f', 2)
-                .arg(slice.ablatedVolumeCm3, 0, 'f', 2)
-        });
+    QStringList summaryLines {
+        QStringLiteral("\u5df2\u751f\u6210\u5207\u7247\uff1a%1 / %2").arg(generatedSliceCount).arg(m_stagedSlices.size()),
+        QStringLiteral("\u6cbb\u7597\u65b9\u5f0f\uff1a%1 | %2")
+            .arg(m_segmentedTreatmentRadio->isChecked() ? QStringLiteral("\u5206\u6bb5\u6267\u884c") : QStringLiteral("\u76f4\u63a5\u6cbb\u7597"))
+            .arg(m_lineTreatmentRadio->isChecked() ? QStringLiteral("\u7ebf\u6cbb\u7597") : QStringLiteral("\u70b9\u6cbb\u7597")),
+        QStringLiteral("\u603b\u9776\u70b9\u6570\uff1a%1").arg(totalTargetCount),
+        QStringLiteral("\u5168\u5c40\u884c\u8ddd\uff1a%1 mm | \u70b9\u7597\u65f6\u957f\uff1a%2 s | \u529f\u7387\uff1a%3 W")
+            .arg(m_spacingSpin->value(), 0, 'f', 1)
+            .arg(m_dwellSpin->value(), 0, 'f', 1)
+            .arg(m_powerSlider->value())
+    };
+    if (!generatedSliceLines.isEmpty()) {
+        summaryLines << QString() << QStringLiteral("\u5df2\u751f\u6210\uff1a") << generatedSliceLines;
+    }
+    if (!skippedSliceLines.isEmpty()) {
+        summaryLines << QStringLiteral("\u672a\u751f\u6210\uff1a") << skippedSliceLines;
+    }
+    updateAcquisitionSummary(QStringLiteral("\u9776\u70b9\u751f\u6210\u5b8c\u6210"), summaryLines);
 }
 
 void PlanningPage::generateAssessmentForCurrentPlan()
@@ -1471,7 +1699,11 @@ void PlanningPage::approveCurrentPlan()
     if (m_safetyKernel != nullptr) {
         m_safetyKernel->setPlanApprovalState(approvedPlan.approvalState);
     }
-    m_preview->setPlan(approvedPlan);
+    if (m_stagedSlices.isEmpty()) {
+        m_preview->setPlan(approvedPlan);
+    } else {
+        refreshCurrentSliceVisualization();
+    }
     updatePlanPreviewText(&approvedPlan);
     updatePlanApprovalButtonState();
     updateAcquisitionSummary(
@@ -1749,20 +1981,11 @@ void PlanningPage::editCurrentPlan()
 
 void PlanningPage::toggleAnnotationPanel()
 {
-    if (!m_initializingUi) {
-        activatePlanningWorkspace();
-    }
-    if (m_annotationPanel == nullptr) {
-        return;
-    }
-
-    const bool expanded = !m_annotationPanel->isVisible();
-    m_annotationPanel->setVisible(expanded);
-    if (m_annotationButton != nullptr) {
-        m_annotationButton->setChecked(expanded);
-    }
     if (m_preview != nullptr) {
-        m_preview->setAnnotationEnabled(expanded);
+        m_preview->setAnnotationEnabled(true);
+    }
+    if (m_annotationPanel != nullptr) {
+        m_annotationPanel->setVisible(true);
     }
 }
 
@@ -1962,31 +2185,9 @@ QPixmap PlanningPage::renderCurrentSlicePixmap(int row, const QSize& size) const
         return {};
     }
 
-    const StagedSliceState& slice = m_stagedSlices.at(row);
     MockUltrasoundView renderView;
     renderView.resize(size);
-    renderView.setCaption(QStringLiteral("%1 | %2").arg(slice.label, patternSummaryText(slice.pattern)));
-    renderView.setSliceContext(row, m_stagedSlices.size());
-    renderView.setAnnotationStrokes(slice.annotations);
-    if (slice.targetsGenerated && !slice.targets.isEmpty()) {
-        const QVector<TherapyPoint>& previewPoints =
-            slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated && !slice.respiratoryAdjustedTargets.isEmpty()
-            ? slice.respiratoryAdjustedTargets
-            : slice.targets;
-        TherapyPlan previewPlan;
-        previewPlan.pattern = slice.pattern;
-        TherapySegment segment;
-        segment.id = QStringLiteral("PREVIEW-%1").arg(row + 1);
-        segment.orderIndex = 0;
-        segment.label = slice.label;
-        segment.points = previewPoints;
-        segment.plannedDurationSeconds = totalDwellSeconds(previewPoints);
-        previewPlan.segments.push_back(segment);
-        renderView.setPlan(previewPlan);
-        renderView.setCompletedPointCount(0);
-    } else {
-        renderView.clearPlan();
-    }
+    configureCurrentPreviewView(&renderView, row);
 
     QPixmap pixmap(size);
     pixmap.fill(Qt::transparent);
@@ -2009,38 +2210,7 @@ void PlanningPage::refreshCurrentSliceVisualization()
     }
 
     const StagedSliceState& slice = m_stagedSlices.at(m_currentStagedSliceIndex);
-    m_preview->clearBackgroundImage();
-    m_preview->setAnnotationStrokes(slice.annotations);
-    m_preview->setSliceContext(m_currentStagedSliceIndex, m_stagedSlices.size());
-    const QString respiratoryCaption = slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated
-        ? QStringLiteral(" | \u547c\u5438\u8865\u507f dX %1 dY %2")
-              .arg(slice.respiratoryOffsetMm.x(), 0, 'f', 1)
-              .arg(slice.respiratoryOffsetMm.y(), 0, 'f', 1)
-        : QString();
-    m_preview->setCaption(
-        QStringLiteral("\u5f53\u524d\u6cbb\u7597 %1/%2%3")
-            .arg(m_currentStagedSliceIndex + 1)
-            .arg(m_stagedSlices.size())
-            .arg(respiratoryCaption));
-    m_preview->setCompletedPointCount(0);
-    if (slice.targetsGenerated && !slice.targets.isEmpty()) {
-        const QVector<TherapyPoint>& previewPoints =
-            slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated && !slice.respiratoryAdjustedTargets.isEmpty()
-            ? slice.respiratoryAdjustedTargets
-            : slice.targets;
-        TherapyPlan previewPlan;
-        previewPlan.pattern = slice.pattern;
-        TherapySegment segment;
-        segment.id = QStringLiteral("SLICE-%1").arg(m_currentStagedSliceIndex + 1);
-        segment.orderIndex = 0;
-        segment.label = slice.label;
-        segment.points = previewPoints;
-        segment.plannedDurationSeconds = totalDwellSeconds(previewPoints);
-        previewPlan.segments.push_back(segment);
-        m_preview->setPlan(previewPlan);
-    } else {
-        m_preview->clearPlan();
-    }
+    configureCurrentPreviewView(m_preview, m_currentStagedSliceIndex, true);
 
     if (m_previewOverlayLabel != nullptr) {
         m_previewOverlayLabel->setVisible(false);
@@ -2059,6 +2229,87 @@ void PlanningPage::refreshCurrentSliceVisualization()
                           .arg(slice.respiratoryOffsetMm.y(), 0, 'f', 2)
                     : QString()));
         m_currentSliceSummaryLabel->setToolTip(slice.image.storagePath);
+    }
+}
+
+void PlanningPage::configureCurrentPreviewView(MockUltrasoundView* preview, int row, bool useActivePreviewAnnotations) const
+{
+    if (preview == nullptr) {
+        return;
+    }
+
+    preview->setCompletedPointCount(0);
+
+    if (row >= 0 && row < m_stagedSlices.size()) {
+        const StagedSliceState& slice = m_stagedSlices.at(row);
+        const QVector<AnnotationStroke> annotations = useActivePreviewAnnotations && preview != m_preview && m_preview != nullptr
+            ? m_preview->annotationStrokes()
+            : slice.annotations;
+        preview->clearBackgroundImage();
+        preview->setAnnotationStrokes(annotations);
+        preview->setSliceContext(row, m_stagedSlices.size());
+        const QString respiratoryCaption = slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated
+            ? QStringLiteral(" | \u547c\u5438\u8865\u507f dX %1 dY %2")
+                  .arg(slice.respiratoryOffsetMm.x(), 0, 'f', 1)
+                  .arg(slice.respiratoryOffsetMm.y(), 0, 'f', 1)
+            : QString();
+        preview->setCaption(
+            QStringLiteral("\u5f53\u524d\u6cbb\u7597 %1/%2%3")
+                .arg(row + 1)
+                .arg(m_stagedSlices.size())
+                .arg(respiratoryCaption));
+        if (slice.targetsGenerated && !slice.targets.isEmpty()) {
+            const QVector<TherapyPoint>& previewPoints =
+                slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated && !slice.respiratoryAdjustedTargets.isEmpty()
+                ? slice.respiratoryAdjustedTargets
+                : slice.targets;
+            TherapyPlan previewPlan;
+            previewPlan.pattern = slice.pattern;
+            TherapySegment segment;
+            segment.id = QStringLiteral("SLICE-%1").arg(row + 1);
+            segment.orderIndex = 0;
+            segment.label = slice.label;
+            segment.points = previewPoints;
+            segment.plannedDurationSeconds = totalDwellSeconds(previewPoints);
+            previewPlan.segments.push_back(segment);
+            preview->setPlan(previewPlan);
+        } else {
+            preview->clearPlan();
+        }
+        return;
+    }
+
+    preview->setAnnotationStrokes({});
+    preview->setSliceContext(0, 0);
+    if (m_context->hasActivePlan()) {
+        if (useActivePreviewAnnotations && m_preview != nullptr && preview != m_preview) {
+            preview->setAnnotationStrokes(m_preview->annotationStrokes());
+        }
+        preview->clearBackgroundImage();
+        preview->setPlan(m_context->activePlan());
+        preview->setCaption(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u65b9\u6848\u9884\u89c8"));
+    } else {
+        preview->clearBackgroundImage();
+        preview->clearPlan();
+        preview->setCaption(QStringLiteral(""));
+    }
+}
+
+void PlanningPage::applyCurrentControlsToAllSlices()
+{
+    if (m_stagedSlices.isEmpty()) {
+        return;
+    }
+
+    const TreatmentPattern selectedPattern = m_lineTreatmentRadio->isChecked() ? TreatmentPattern::Line : TreatmentPattern::Point;
+    const QString deliveryMode = m_segmentedTreatmentRadio->isChecked() ? QStringLiteral("\u5206\u6bb5\u6267\u884c") : QStringLiteral("\u76f4\u63a5\u6cbb\u7597");
+    for (StagedSliceState& slice : m_stagedSlices) {
+        slice.pattern = selectedPattern;
+        slice.spacingMm = m_spacingSpin->value();
+        slice.dwellSeconds = m_dwellSpin->value();
+        slice.powerWatts = m_powerSlider->value();
+        slice.respiratoryTrackingEnabled = m_respiratoryTrackingCheck->isChecked();
+        slice.deliveryMode = deliveryMode;
     }
 }
 
@@ -2152,6 +2403,48 @@ void PlanningPage::invalidateCurrentSliceTargets(const QString& title, const QSt
     if (!title.trimmed().isEmpty()) {
         QStringList lines {
             QStringLiteral("\u5207\u7247\uff1a%1").arg(slice.label)
+        };
+        if (!detail.trimmed().isEmpty()) {
+            lines.push_back(detail);
+        }
+        updateAcquisitionSummary(title, lines);
+    }
+}
+
+void PlanningPage::invalidateAllSliceTargets(const QString& title, const QString& detail)
+{
+    bool clearedAnyTargets = false;
+    for (StagedSliceState& slice : m_stagedSlices) {
+        if (slice.targetsGenerated || !slice.targets.isEmpty()) {
+            clearedAnyTargets = true;
+        }
+        slice.targets.clear();
+        slice.targetsGenerated = false;
+        slice.annotatedAreaMm2 = 0.0;
+        slice.estimatedVolumeCm3 = 0.0;
+        slice.ablatedVolumeCm3 = 0.0;
+        clearRespiratoryTrackingState(slice);
+    }
+
+    if (!clearedAnyTargets) {
+        return;
+    }
+
+    refreshCurrentSliceVisualization();
+    updateSliceAssessmentMetrics();
+    refreshDerivedMetrics();
+
+    if (m_context != nullptr && m_context->hasActivePlan()) {
+        m_context->clearActivePlan();
+    }
+    if (m_safetyKernel != nullptr) {
+        m_safetyKernel->setPlanApprovalState(ApprovalState::Draft);
+    }
+    updatePlanPreviewText(nullptr);
+
+    if (!title.trimmed().isEmpty()) {
+        QStringList lines {
+            QStringLiteral("\u5df2\u5c06\u6240\u6709\u5207\u7247\u7684\u65e7\u9776\u70b9\u6807\u8bb0\u4e3a\u5931\u6548\u3002")
         };
         if (!detail.trimmed().isEmpty()) {
             lines.push_back(detail);
@@ -2555,7 +2848,7 @@ void PlanningPage::saveCurrentPathState()
     state.planPreviewText = m_planPreview != nullptr ? m_planPreview->toPlainText() : QString();
     state.lastAcquisitionAt = m_lastAcquisitionAt;
     state.currentStagedSliceIndex = m_currentStagedSliceIndex;
-    state.annotationPanelExpanded = m_annotationPanel != nullptr && m_annotationPanel->isVisible();
+    state.annotationPanelExpanded = true;
     state.hasActivePlan = m_context != nullptr && m_context->hasActivePlan();
     if (state.hasActivePlan) {
         state.activePlan = m_context->activePlan();
@@ -2624,14 +2917,11 @@ void PlanningPage::resetActivePathWorkspace()
         m_preview->setCompletedPointCount(0);
         m_preview->setSliceContext(0, 0);
         m_preview->setCaption(QString());
-        m_preview->setAnnotationEnabled(false);
+        m_preview->setAnnotationEnabled(true);
     }
 
     if (m_annotationPanel != nullptr) {
-        m_annotationPanel->setVisible(false);
-    }
-    if (m_annotationButton != nullptr) {
-        m_annotationButton->setChecked(false);
+        m_annotationPanel->setVisible(true);
     }
 
     {
@@ -2739,30 +3029,36 @@ void PlanningPage::loadPathState(int row)
         }
     }
     if (m_annotationPanel != nullptr) {
-        m_annotationPanel->setVisible(state.annotationPanelExpanded);
-    }
-    if (m_annotationButton != nullptr) {
-        m_annotationButton->setChecked(state.annotationPanelExpanded);
+        m_annotationPanel->setVisible(true);
     }
     if (m_preview != nullptr) {
-        m_preview->setAnnotationEnabled(state.annotationPanelExpanded);
+        m_preview->setAnnotationEnabled(true);
     }
     updatePathActionState();
 }
 
 void PlanningPage::showHistoryPreviewMaximized()
 {
-    if (m_historyImageSeries.isEmpty()) {
+    if (m_historyPreview == nullptr || m_historyImageSeries.isEmpty()) {
+        return;
+    }
+    m_historyPreview->resetImageZoom();
+    updateHistoryMaximizeButtonState();
+}
+
+void PlanningPage::showCurrentPreviewMaximized()
+{
+    if (m_preview == nullptr) {
         return;
     }
 
-    int selectedRow = m_currentHistorySliceIndex >= 0 ? m_currentHistorySliceIndex : 0;
-    selectedRow = qBound(0, selectedRow, m_historyImageSeries.size() - 1);
+    persistCurrentSliceAnnotations();
+    storeCurrentSliceControls();
 
     QDialog dialog(this);
-    dialog.setObjectName(QStringLiteral("planningHistoryPreviewDialog"));
-    dialog.setWindowTitle(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf\u6700\u5927\u5316\u67e5\u770b"));
-    dialog.resize(1280, 820);
+    dialog.setObjectName(QStringLiteral("planningCurrentPreviewDialog"));
+    dialog.setWindowTitle(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\u5168\u5c4f\u67e5\u770b"));
+    dialog.resize(1440, 900);
 
     auto* layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(18, 18, 18, 18);
@@ -2770,7 +3066,7 @@ void PlanningPage::showHistoryPreviewMaximized()
 
     auto* titleRow = new QHBoxLayout();
     titleRow->setContentsMargins(0, 0, 0, 0);
-    auto* titleLabel = new QLabel(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
+    auto* titleLabel = new QLabel(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u5f71\u50cf"));
     titleLabel->setObjectName(QStringLiteral("planningCardTitle"));
     auto* closeButton = new QPushButton(QStringLiteral("\u5173\u95ed"));
     closeButton->setObjectName(QStringLiteral("planningActionButton"));
@@ -2779,85 +3075,115 @@ void PlanningPage::showHistoryPreviewMaximized()
     titleRow->addWidget(closeButton);
     layout->addLayout(titleRow);
 
+    auto* dialogAnnotationPanel = new QFrame();
+    dialogAnnotationPanel->setObjectName(QStringLiteral("planningAnnotationPanel"));
+    auto* dialogAnnotationLayout = new QHBoxLayout(dialogAnnotationPanel);
+    dialogAnnotationLayout->setContentsMargins(12, 10, 12, 10);
+    dialogAnnotationLayout->setSpacing(10);
+
+    auto* dialogBrushButton = new QToolButton();
+    dialogBrushButton->setObjectName(QStringLiteral("planningAnnotationToolButton"));
+    dialogBrushButton->setText(QStringLiteral("\u270e"));
+    dialogAnnotationLayout->addWidget(dialogBrushButton);
+
+    auto* dialogSeparatorTop = new QFrame();
+    dialogSeparatorTop->setObjectName(QStringLiteral("planningAnnotationSeparator"));
+    dialogSeparatorTop->setFrameShape(QFrame::VLine);
+    dialogAnnotationLayout->addWidget(dialogSeparatorTop);
+
+    auto* dialogRedButton = new QToolButton();
+    dialogRedButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
+    dialogRedButton->setProperty("swatchColor", QStringLiteral("red"));
+    dialogAnnotationLayout->addWidget(dialogRedButton);
+
+    auto* dialogBlueButton = new QToolButton();
+    dialogBlueButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
+    dialogBlueButton->setProperty("swatchColor", QStringLiteral("blue"));
+    dialogAnnotationLayout->addWidget(dialogBlueButton);
+
+    auto* dialogGreenButton = new QToolButton();
+    dialogGreenButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
+    dialogGreenButton->setProperty("swatchColor", QStringLiteral("green"));
+    dialogAnnotationLayout->addWidget(dialogGreenButton);
+
+    auto* dialogOrangeButton = new QToolButton();
+    dialogOrangeButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
+    dialogOrangeButton->setProperty("swatchColor", QStringLiteral("orange"));
+    dialogAnnotationLayout->addWidget(dialogOrangeButton);
+
+    auto* dialogSeparatorMiddle = new QFrame();
+    dialogSeparatorMiddle->setObjectName(QStringLiteral("planningAnnotationSeparator"));
+    dialogSeparatorMiddle->setFrameShape(QFrame::VLine);
+    dialogAnnotationLayout->addWidget(dialogSeparatorMiddle);
+
+    auto* dialogUndoButton = new QToolButton();
+    dialogUndoButton->setObjectName(QStringLiteral("planningAnnotationToolButton"));
+    dialogUndoButton->setText(QStringLiteral("\u21b6"));
+    dialogAnnotationLayout->addWidget(dialogUndoButton);
+
+    auto* dialogClearButton = new QToolButton();
+    dialogClearButton->setObjectName(QStringLiteral("planningAnnotationToolButton"));
+    dialogClearButton->setText(QStringLiteral("\U0001F5D1"));
+    dialogAnnotationLayout->addWidget(dialogClearButton);
+    dialogAnnotationLayout->addStretch();
+    layout->addWidget(dialogAnnotationPanel);
+
+    const QSize basePreviewSize = m_preview != nullptr && m_preview->size().isValid()
+        ? m_preview->size()
+        : QSize(720, 540);
+    const QSize expandedPreviewSize = basePreviewSize.scaled(QSize(1400, 1000), Qt::KeepAspectRatio);
+    dialog.resize(expandedPreviewSize.width() + 60, expandedPreviewSize.height() + 120);
+
     auto* previewStack = new QGridLayout();
     previewStack->setContentsMargins(0, 0, 0, 0);
     previewStack->setSpacing(0);
-    auto* maximizedPreview = new MockUltrasoundView();
-    maximizedPreview->setObjectName(QStringLiteral("planningPreviewWidget"));
-    maximizedPreview->setAnnotationEnabled(false);
-    maximizedPreview->setMinimumSize(960, 620);
+    auto* dialogPreview = new MockUltrasoundView();
+    dialogPreview->setObjectName(QStringLiteral("planningPreviewWidget"));
+    dialogPreview->setMinimumSize(expandedPreviewSize);
+    dialogPreview->setMaximumSize(expandedPreviewSize);
+    dialogPreview->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    dialogPreview->setImageZoomEnabled(true);
+    dialogPreview->setAnnotationEnabled(true);
+    configureCurrentPreviewView(dialogPreview, m_currentStagedSliceIndex, true);
 
     auto* overlayLabel = new QLabel();
     overlayLabel->setObjectName(QStringLiteral("planningPreviewOverlayLabel"));
     overlayLabel->setAlignment(Qt::AlignCenter);
     overlayLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+    const bool showOverlay = m_previewOverlayLabel != nullptr && m_previewOverlayLabel->isVisible();
+    overlayLabel->setText(showOverlay && m_previewOverlayLabel != nullptr ? m_previewOverlayLabel->text() : QString());
+    overlayLabel->setVisible(showOverlay);
 
-    previewStack->addWidget(maximizedPreview, 0, 0);
+    previewStack->addWidget(dialogPreview, 0, 0, Qt::AlignCenter);
     previewStack->addWidget(overlayLabel, 0, 0);
     layout->addLayout(previewStack, 1);
 
-    auto* summaryLabel = new QLabel();
-    summaryLabel->setObjectName(QStringLiteral("planningSliceInfoLabel"));
-    summaryLabel->setWordWrap(true);
-    auto* sliceSlider = new QSlider(Qt::Horizontal);
-    sliceSlider->setObjectName(QStringLiteral("planningSliceSlider"));
-    sliceSlider->setRange(0, m_historyImageSeries.size() - 1);
-    sliceSlider->setEnabled(m_historyImageSeries.size() > 1);
-    layout->addWidget(summaryLabel);
-    layout->addWidget(sliceSlider);
+    auto* hintLabel = new QLabel(QStringLiteral("\u5168\u5c4f\u9884\u89c8\u53ef\u7528\u6eda\u8f6e\u7f29\u653e\uff0c\u5de6\u952e\u7ee7\u7eed\u753b\u7b14\u8ff9\uff0c\u53f3\u952e\u62d6\u52a8\u5e73\u79fb\uff0c\u7b14\u8ff9\u4f1a\u968f\u56fe\u50cf\u540c\u6b65\u663e\u793a\u3002"));
+    hintLabel->setObjectName(QStringLiteral("planningSliceInfoLabel"));
+    hintLabel->setWordWrap(true);
+    layout->addWidget(hintLabel);
 
-    const auto applySlice = [&](int row, bool syncMainPreview) {
-        if (m_historyImageSeries.isEmpty()) {
-            return;
-        }
-
-        const int safeRow = qBound(0, row, m_historyImageSeries.size() - 1);
-        const ImageSeriesRecord& image = m_historyImageSeries.at(safeRow);
-        const QPixmap pixmap = safeRow < m_historyPixmaps.size() ? m_historyPixmaps.at(safeRow) : QPixmap {};
-        const QString dateText = image.acquisitionDate.isValid()
-            ? image.acquisitionDate.toString(QStringLiteral("yyyy-MM-dd"))
-            : QStringLiteral("\u65e5\u671f\u672a\u8bb0\u5f55");
-        const QString pathText = image.storagePath.trimmed().isEmpty() ? QStringLiteral("\u672a\u914d\u7f6e\u8def\u5f84") : image.storagePath;
-
-        maximizedPreview->clearPlan();
-        if (!pixmap.isNull()) {
-            maximizedPreview->setBackgroundImage(pixmap);
-        } else {
-            maximizedPreview->clearBackgroundImage();
-        }
-        maximizedPreview->setCompletedPointCount(0);
-        maximizedPreview->setSliceContext(safeRow, m_historyImageSeries.size());
-        maximizedPreview->setCaption(QStringLiteral("\u65e2\u5f80\u6cbb\u7597 %1/%2").arg(safeRow + 1).arg(m_historyImageSeries.size()));
-
-        overlayLabel->setText(pixmap.isNull()
-            ? QStringLiteral("\u672a\u627e\u5230\u8fd9\u5f20\u5386\u53f2\u5f71\u50cf\u7684\u53ef\u9884\u89c8\u6587\u4ef6")
-            : QString());
-        overlayLabel->setVisible(pixmap.isNull());
-        summaryLabel->setText(
-            QStringLiteral("\u7b2c %1/%2 \u5f20 | %3 | %4")
-                .arg(safeRow + 1)
-                .arg(m_historyImageSeries.size())
-                .arg(dateText)
-                .arg(pathText));
-        summaryLabel->setToolTip(pathText);
-
-        if (sliceSlider->value() != safeRow) {
-            const QSignalBlocker blocker(sliceSlider);
-            sliceSlider->setValue(safeRow);
-        }
-        if (syncMainPreview) {
-            loadHistoricalSlice(safeRow, false);
-        }
+    const auto activateDialogColor = [dialogPreview](const QColor& color) {
+        dialogPreview->setCurrentAnnotationColor(color);
+        dialogPreview->setAnnotationEnabled(true);
     };
-
-    connect(sliceSlider, &QSlider::valueChanged, this, [applySlice](int value) {
-        applySlice(value, true);
-    });
+    connect(dialogRedButton, &QToolButton::clicked, this, [activateDialogColor]() { activateDialogColor(QColor(201, 71, 51)); });
+    connect(dialogBlueButton, &QToolButton::clicked, this, [activateDialogColor]() { activateDialogColor(QColor(91, 158, 230)); });
+    connect(dialogGreenButton, &QToolButton::clicked, this, [activateDialogColor]() { activateDialogColor(QColor(163, 239, 76)); });
+    connect(dialogOrangeButton, &QToolButton::clicked, this, [activateDialogColor]() { activateDialogColor(QColor(255, 177, 75)); });
+    connect(dialogUndoButton, &QToolButton::clicked, dialogPreview, &MockUltrasoundView::undoLastAnnotation);
+    connect(dialogClearButton, &QToolButton::clicked, dialogPreview, &MockUltrasoundView::clearAnnotations);
     connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
 
-    applySlice(selectedRow, false);
-    dialog.showMaximized();
+    dialog.show();
     dialog.exec();
+    if (m_preview != nullptr) {
+        m_preview->setAnnotationStrokes(dialogPreview->annotationStrokes());
+        if (m_currentStagedSliceIndex >= 0 && m_currentStagedSliceIndex < m_stagedSlices.size()) {
+            persistCurrentSliceAnnotations();
+            refreshCurrentSliceVisualization();
+        }
+    }
 }
 
 void PlanningPage::loadHistoricalImages(bool announce, bool forceReload)
@@ -3057,7 +3383,11 @@ void PlanningPage::updateHistoryMaximizeButtonState()
         return;
     }
 
-    m_historyMaximizeButton->setEnabled(!m_historyImageSeries.isEmpty());
+    const bool hasHistoryImage = !m_historyImageSeries.isEmpty();
+    const bool canResetZoom = hasHistoryImage
+        && m_historyPreview != nullptr
+        && m_historyPreview->imageZoomFactor() > 1.001;
+    m_historyMaximizeButton->setEnabled(canResetZoom);
 }
 
 void PlanningPage::addPathItem()

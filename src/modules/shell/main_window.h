@@ -4,6 +4,7 @@
 #include <QAbstractButton>
 #include <QLabel>
 #include <QMainWindow>
+#include <QMenu>
 #include <QStackedWidget>
 #include <QToolButton>
 
@@ -38,6 +39,8 @@ private slots:
     void showTreatment();
     void showDataManagement();
     void updateStatusBarSummary();
+    void refreshPlanningPersonalizationMenu();
+    void savePlanningPersonalizationProfile();
 
 private:
     void ensurePlanningPage();
@@ -46,6 +49,7 @@ private:
     void replacePlaceholderPage(int index, QWidget* page);
     void showDataManagementSection(DataManagementPage::Section section);
     void setActivePage(int index, QAbstractButton* activeButton);
+    void applyPlanningPersonalizationProfile(const QString& profileName);
 
     panthera::core::ApplicationContext* m_context {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
@@ -58,8 +62,10 @@ private:
     TreatmentPage* m_treatmentPage {nullptr};
     QToolButton* m_dashboardButton {nullptr};
     QToolButton* m_planningButton {nullptr};
+    QToolButton* m_planningPersonalizationButton {nullptr};
     QToolButton* m_treatmentButton {nullptr};
     QToolButton* m_dataButton {nullptr};
+    QMenu* m_planningPersonalizationMenu {nullptr};
     QLabel* m_statusLabel {nullptr};
     DataManagementPage* m_dataManagementPage {nullptr};
     QAction* m_dataPatientInfoAction {nullptr};

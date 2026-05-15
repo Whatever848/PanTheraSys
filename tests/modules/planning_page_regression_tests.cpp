@@ -1,5 +1,7 @@
 #include <QtTest/QtTest>
 
+#include <cmath>
+
 #include <QCoreApplication>
 #include <QApplication>
 #include <QComboBox>
@@ -7,12 +9,15 @@
 #include <QDialog>
 #include <QImage>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSettings>
 #include <QSlider>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
+#include <QWheelEvent>
 
 #include "core/application/application_context.h"
 #include "core/application/event_bus.h"
@@ -43,6 +48,33 @@ QVector<AnnotationStroke> buildSampleAnnotations()
         QPointF(0.30, 0.30)
     };
     return {stroke};
+}
+
+QVector<AnnotationStroke> buildSeparatedAnnotations()
+{
+    AnnotationStroke leftStroke;
+    leftStroke.color = QColor(163, 239, 76);
+    leftStroke.normalizedPoints = {
+        QPointF(0.14, 0.30),
+        QPointF(0.28, 0.28),
+        QPointF(0.34, 0.46),
+        QPointF(0.26, 0.62),
+        QPointF(0.12, 0.54),
+        QPointF(0.14, 0.30)
+    };
+
+    AnnotationStroke rightStroke;
+    rightStroke.color = QColor(255, 177, 75);
+    rightStroke.normalizedPoints = {
+        QPointF(0.62, 0.34),
+        QPointF(0.78, 0.32),
+        QPointF(0.84, 0.50),
+        QPointF(0.74, 0.68),
+        QPointF(0.60, 0.56),
+        QPointF(0.62, 0.34)
+    };
+
+    return {leftStroke, rightStroke};
 }
 
 TherapyPlan buildPreviewPlan(TreatmentPattern pattern)
@@ -138,7 +170,15 @@ private slots:
     void planningPageSectionsAreCollapsible();
     void activePlanChangesDoNotAutoLoadSeedHistory();
     void generateTargetsDoesNotAutoLoadSeedHistory();
-    void historyPreviewMaximizeButtonOpensDialog();
+    void historyPreviewWheelZoomStaysInlineAndResettable();
+    void annotationPreviewSupportsZoomWithoutBackgroundImage();
+    void annotationPreviewSupportsZoomAndPanWithBackgroundImage();
+    void currentPreviewMaximizeDialogKeepsAnnotationsVisible();
+    void currentPreviewMaximizeDialogSyncsAnnotationsOnWindowClose();
+    void personalizationProfilesRestoreCollapseStates();
+    void generateTargetsAppliesToAllAnnotatedSlices();
+    void approvingPlanKeepsCurrentSlicePreviewStable();
+    void multipleAnnotationsGenerateTargetsForAllRegions();
     void treatmentPageAcceptsGeneratedLinePlan();
     void treatmentPageSelectsSingleLayer();
 };
@@ -330,6 +370,61 @@ void PlanningPageRegressionTests::planningPageSectionsAreCollapsible()
     }
 }
 
+void PlanningPageRegressionTests::personalizationProfilesRestoreCollapseStates()
+{
+    EventBus eventBus;
+    AuditService auditService;
+    ApplicationContext context(&eventBus, &auditService);
+    SafetyKernel safetyKernel;
+    panthera::adapters::SimulationDeviceFacade simulationDevice;
+
+    const QString profileName = QStringLiteral("回归测试个性化方案");
+    const QString storageKey = QString::fromLatin1(profileName.toUtf8().toHex());
+    QSettings settings(QStringLiteral("PanTheraSys"), QStringLiteral("PanTheraConsole"));
+    settings.remove(QStringLiteral("ui/planningPersonalization/profiles/%1").arg(storageKey));
+    settings.remove(QStringLiteral("ui/planningPersonalization/activeProfileName"));
+
+    PlanningPage planningPage(&context, &safetyKernel, &auditService, nullptr, &simulationDevice);
+    planningPage.resize(1600, 900);
+    planningPage.show();
+    QCoreApplication::processEvents();
+
+    const auto collapseButtons = planningPage.findChildren<QToolButton*>(QStringLiteral("planningCollapseButton"));
+    QVERIFY(collapseButtons.size() >= 3);
+
+    planningPage.applyPersonalizationProfile(QStringLiteral("全折叠"));
+    QCoreApplication::processEvents();
+    for (QToolButton* button : collapseButtons) {
+        QVERIFY(!button->isChecked());
+    }
+
+    collapseButtons.at(0)->click();
+    collapseButtons.at(1)->click();
+    QCoreApplication::processEvents();
+    QVERIFY(collapseButtons.at(0)->isChecked());
+    QVERIFY(collapseButtons.at(1)->isChecked());
+    QVERIFY(!collapseButtons.at(2)->isChecked());
+
+    QVERIFY(planningPage.saveCurrentPersonalizationProfile(profileName));
+    QVERIFY(planningPage.personalizationProfileNames().contains(profileName));
+    QCOMPARE(planningPage.activePersonalizationProfileName(), profileName);
+
+    planningPage.applyPersonalizationProfile(QStringLiteral("全展开"));
+    QCoreApplication::processEvents();
+    for (QToolButton* button : collapseButtons) {
+        QVERIFY(button->isChecked());
+    }
+
+    planningPage.applyPersonalizationProfile(profileName);
+    QCoreApplication::processEvents();
+    QVERIFY(collapseButtons.at(0)->isChecked());
+    QVERIFY(collapseButtons.at(1)->isChecked());
+    QVERIFY(!collapseButtons.at(2)->isChecked());
+
+    settings.remove(QStringLiteral("ui/planningPersonalization/profiles/%1").arg(storageKey));
+    settings.remove(QStringLiteral("ui/planningPersonalization/activeProfileName"));
+}
+
 void PlanningPageRegressionTests::activePlanChangesDoNotAutoLoadSeedHistory()
 {
     EventBus eventBus;
@@ -390,7 +485,7 @@ void PlanningPageRegressionTests::generateTargetsDoesNotAutoLoadSeedHistory()
 
     QPushButton* generateTargetsButton = nullptr;
     for (QPushButton* button : planningPage.findChildren<QPushButton*>(QStringLiteral("planningActionButton"))) {
-        if (button->text() == QStringLiteral("\u751f\u6210\u9776\u70b9")) {
+        if (button->text().contains(QStringLiteral("\u751f\u6210\u9776\u70b9"))) {
             generateTargetsButton = button;
             break;
         }
@@ -418,7 +513,7 @@ void PlanningPageRegressionTests::generateTargetsDoesNotAutoLoadSeedHistory()
     QVERIFY(!maximizeButton->isEnabled());
 }
 
-void PlanningPageRegressionTests::historyPreviewMaximizeButtonOpensDialog()
+void PlanningPageRegressionTests::historyPreviewWheelZoomStaysInlineAndResettable()
 {
     EventBus eventBus;
     AuditService auditService;
@@ -464,18 +559,438 @@ void PlanningPageRegressionTests::historyPreviewMaximizeButtonOpensDialog()
 
     auto* maximizeButton = planningPage.findChild<QToolButton*>(QStringLiteral("planningMaximizeButton"));
     QVERIFY(maximizeButton != nullptr);
+    QVERIFY(!maximizeButton->isEnabled());
+
+    MockUltrasoundView* historyPreview = nullptr;
+    for (MockUltrasoundView* preview : planningPage.findChildren<MockUltrasoundView*>(QStringLiteral("planningPreviewWidget"))) {
+        if (preview->isImageZoomEnabled()) {
+            historyPreview = preview;
+            break;
+        }
+    }
+    QVERIFY(historyPreview != nullptr);
+    QVERIFY(qFuzzyCompare(historyPreview->imageZoomFactor(), 1.0));
+
+    const QPointF localPosition = historyPreview->rect().center();
+    const QPointF globalPosition = historyPreview->mapToGlobal(localPosition.toPoint());
+    QWheelEvent wheelEvent(
+        localPosition,
+        globalPosition,
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt::NoButton,
+        Qt::NoModifier,
+        Qt::ScrollUpdate,
+        false);
+    QApplication::sendEvent(historyPreview, &wheelEvent);
+    QCoreApplication::processEvents();
+
+    QVERIFY(historyPreview->imageZoomFactor() > 1.0);
     QVERIFY(maximizeButton->isEnabled());
 
-    QTimer::singleShot(100, []() {
-        for (QWidget* widget : QApplication::topLevelWidgets()) {
-            auto* dialog = qobject_cast<QDialog*>(widget);
-            if (dialog != nullptr && dialog->objectName() == QStringLiteral("planningHistoryPreviewDialog")) {
-                dialog->accept();
-            }
-        }
-    });
     maximizeButton->click();
     QCoreApplication::processEvents();
+
+    QVERIFY(std::abs(historyPreview->imageZoomFactor() - 1.0) < 0.001);
+    QVERIFY(!maximizeButton->isEnabled());
+
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+        auto* dialog = qobject_cast<QDialog*>(widget);
+        if (dialog != nullptr && dialog->objectName() == QStringLiteral("planningHistoryPreviewDialog")) {
+            QFAIL("history preview should no longer open a separate maximized dialog");
+        }
+    }
+}
+
+void PlanningPageRegressionTests::annotationPreviewSupportsZoomWithoutBackgroundImage()
+{
+    MockUltrasoundView preview;
+    preview.resize(960, 720);
+    preview.setImageZoomEnabled(true);
+    preview.setAnnotationEnabled(true);
+    preview.setAnnotationStrokes(buildSampleAnnotations());
+    preview.show();
+    QCoreApplication::processEvents();
+
+    QVERIFY(qFuzzyCompare(preview.imageZoomFactor(), 1.0));
+
+    const QPointF localPosition = preview.rect().center();
+    const QPointF globalPosition = preview.mapToGlobal(localPosition.toPoint());
+    QWheelEvent wheelEvent(
+        localPosition,
+        globalPosition,
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt::NoButton,
+        Qt::NoModifier,
+        Qt::ScrollUpdate,
+        false);
+    QApplication::sendEvent(&preview, &wheelEvent);
+    QCoreApplication::processEvents();
+
+    QVERIFY(preview.imageZoomFactor() > 1.0);
+}
+
+void PlanningPageRegressionTests::annotationPreviewSupportsZoomAndPanWithBackgroundImage()
+{
+    MockUltrasoundView preview;
+    preview.resize(960, 720);
+    preview.setImageZoomEnabled(true);
+    preview.setAnnotationEnabled(true);
+    preview.setAnnotationStrokes(buildSampleAnnotations());
+
+    QImage background(320, 240, QImage::Format_RGB32);
+    for (int y = 0; y < background.height(); ++y) {
+        for (int x = 0; x < background.width(); ++x) {
+            background.setPixelColor(x, y, QColor((x * 255) / background.width(), 40, (y * 255) / background.height()));
+        }
+    }
+    preview.setBackgroundImage(QPixmap::fromImage(background));
+    preview.show();
+    QCoreApplication::processEvents();
+
+    QPixmap beforeZoom(preview.size());
+    beforeZoom.fill(Qt::transparent);
+    preview.render(&beforeZoom);
+
+    const QPointF localPosition = preview.rect().center();
+    const QPointF globalPosition = preview.mapToGlobal(localPosition.toPoint());
+    QWheelEvent wheelEvent(
+        localPosition,
+        globalPosition,
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt::NoButton,
+        Qt::NoModifier,
+        Qt::ScrollUpdate,
+        false);
+    QApplication::sendEvent(&preview, &wheelEvent);
+    QCoreApplication::processEvents();
+
+    QVERIFY(preview.imageZoomFactor() > 1.0);
+
+    const QPointF centerBeforePan = preview.imageZoomCenterNormalized();
+    QMouseEvent pressEvent(
+        QEvent::MouseButtonPress,
+        localPosition,
+        globalPosition,
+        Qt::RightButton,
+        Qt::RightButton,
+        Qt::NoModifier);
+    QApplication::sendEvent(&preview, &pressEvent);
+
+    const QPointF movedPosition = localPosition + QPointF(80.0, 0.0);
+    const QPointF movedGlobalPosition = preview.mapToGlobal(movedPosition.toPoint());
+    QMouseEvent moveEvent(
+        QEvent::MouseMove,
+        movedPosition,
+        movedGlobalPosition,
+        Qt::NoButton,
+        Qt::RightButton,
+        Qt::NoModifier);
+    QApplication::sendEvent(&preview, &moveEvent);
+
+    QMouseEvent releaseEvent(
+        QEvent::MouseButtonRelease,
+        movedPosition,
+        movedGlobalPosition,
+        Qt::RightButton,
+        Qt::NoButton,
+        Qt::NoModifier);
+    QApplication::sendEvent(&preview, &releaseEvent);
+    QCoreApplication::processEvents();
+
+    const QPointF centerAfterPan = preview.imageZoomCenterNormalized();
+    QVERIFY(std::abs(centerAfterPan.x() - centerBeforePan.x()) > 0.0001);
+
+    QPixmap afterPan(preview.size());
+    afterPan.fill(Qt::transparent);
+    preview.render(&afterPan);
+
+    QVERIFY(beforeZoom.toImage() != afterPan.toImage());
+    QVERIFY(!preview.annotationStrokes().isEmpty());
+}
+
+void PlanningPageRegressionTests::currentPreviewMaximizeDialogKeepsAnnotationsVisible()
+{
+    EventBus eventBus;
+    AuditService auditService;
+    ApplicationContext context(&eventBus, &auditService);
+    SafetyKernel safetyKernel;
+    panthera::adapters::SimulationDeviceFacade simulationDevice;
+
+    PlanningPage planningPage(&context, &safetyKernel, &auditService, nullptr, &simulationDevice);
+    planningPage.resize(1600, 900);
+    planningPage.show();
+    QCoreApplication::processEvents();
+
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "addPathItem", Qt::DirectConnection));
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "simulateImageAcquisition", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+
+    MockUltrasoundView* editablePreview = nullptr;
+    const auto previews = planningPage.findChildren<MockUltrasoundView*>(QStringLiteral("planningPreviewWidget"));
+    for (MockUltrasoundView* preview : previews) {
+        if (preview->isImageZoomEnabled() && preview->isVisible()) {
+            editablePreview = preview;
+        }
+    }
+    QVERIFY(editablePreview != nullptr);
+    editablePreview->setAnnotationStrokes(buildSampleAnnotations());
+
+    QToolButton* currentMaximizeButton = nullptr;
+    for (QToolButton* button : planningPage.findChildren<QToolButton*>(QStringLiteral("planningMaximizeButton"))) {
+        if (button->toolTip().contains(QStringLiteral("\u53f3\u4fa7"))) {
+            currentMaximizeButton = button;
+            break;
+        }
+    }
+    QVERIFY(currentMaximizeButton != nullptr);
+
+    QTimer::singleShot(100, [&]() {
+        for (QWidget* widget : QApplication::topLevelWidgets()) {
+            auto* dialog = qobject_cast<QDialog*>(widget);
+            if (dialog == nullptr || dialog->objectName() != QStringLiteral("planningCurrentPreviewDialog")) {
+                continue;
+            }
+
+            auto dialogPreviews = dialog->findChildren<MockUltrasoundView*>(QStringLiteral("planningPreviewWidget"));
+            QVERIFY(!dialogPreviews.isEmpty());
+            QVERIFY(!dialogPreviews.constFirst()->annotationStrokes().isEmpty());
+            dialog->accept();
+        }
+    });
+
+    currentMaximizeButton->click();
+    QCoreApplication::processEvents();
+}
+
+void PlanningPageRegressionTests::currentPreviewMaximizeDialogSyncsAnnotationsOnWindowClose()
+{
+    EventBus eventBus;
+    AuditService auditService;
+    ApplicationContext context(&eventBus, &auditService);
+    SafetyKernel safetyKernel;
+    panthera::adapters::SimulationDeviceFacade simulationDevice;
+
+    PlanningPage planningPage(&context, &safetyKernel, &auditService, nullptr, &simulationDevice);
+    planningPage.resize(1600, 900);
+    planningPage.show();
+    QCoreApplication::processEvents();
+
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "addPathItem", Qt::DirectConnection));
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "simulateImageAcquisition", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+
+    MockUltrasoundView* editablePreview = nullptr;
+    const auto previews = planningPage.findChildren<MockUltrasoundView*>(QStringLiteral("planningPreviewWidget"));
+    for (MockUltrasoundView* preview : previews) {
+        if (preview->isImageZoomEnabled() && preview->isVisible()) {
+            editablePreview = preview;
+        }
+    }
+    QVERIFY(editablePreview != nullptr);
+    editablePreview->setAnnotationStrokes(buildSampleAnnotations());
+
+    QToolButton* currentMaximizeButton = nullptr;
+    for (QToolButton* button : planningPage.findChildren<QToolButton*>(QStringLiteral("planningMaximizeButton"))) {
+        if (button->toolTip().contains(QStringLiteral("\u53f3\u4fa7"))) {
+            currentMaximizeButton = button;
+            break;
+        }
+    }
+    QVERIFY(currentMaximizeButton != nullptr);
+
+    QTimer::singleShot(100, [&]() {
+        for (QWidget* widget : QApplication::topLevelWidgets()) {
+            auto* dialog = qobject_cast<QDialog*>(widget);
+            if (dialog == nullptr || dialog->objectName() != QStringLiteral("planningCurrentPreviewDialog")) {
+                continue;
+            }
+
+            auto dialogPreviews = dialog->findChildren<MockUltrasoundView*>(QStringLiteral("planningPreviewWidget"));
+            QVERIFY(!dialogPreviews.isEmpty());
+            QVector<AnnotationStroke> expandedAnnotations = buildSampleAnnotations();
+            AnnotationStroke extraStroke;
+            extraStroke.color = QColor(255, 177, 75);
+            extraStroke.normalizedPoints = {
+                QPointF(0.20, 0.20),
+                QPointF(0.24, 0.26),
+                QPointF(0.28, 0.32)
+            };
+            expandedAnnotations.push_back(extraStroke);
+            dialogPreviews.constFirst()->setAnnotationStrokes(expandedAnnotations);
+            dialog->close();
+        }
+    });
+
+    currentMaximizeButton->click();
+    QCoreApplication::processEvents();
+
+    QVERIFY(editablePreview->annotationStrokes().size() >= 2);
+}
+
+void PlanningPageRegressionTests::generateTargetsAppliesToAllAnnotatedSlices()
+{
+    EventBus eventBus;
+    AuditService auditService;
+    ApplicationContext context(&eventBus, &auditService);
+    SafetyKernel safetyKernel;
+    panthera::adapters::SimulationDeviceFacade simulationDevice;
+
+    PlanningPage planningPage(&context, &safetyKernel, &auditService, nullptr, &simulationDevice);
+    planningPage.resize(1600, 900);
+    planningPage.show();
+    QCoreApplication::processEvents();
+
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "addPathItem", Qt::DirectConnection));
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "simulateImageAcquisition", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+
+    MockUltrasoundView* preview = nullptr;
+    for (MockUltrasoundView* candidate : planningPage.findChildren<MockUltrasoundView*>(QStringLiteral("planningPreviewWidget"))) {
+        if (candidate->isImageZoomEnabled() && candidate->isVisible()) {
+            preview = candidate;
+        }
+    }
+    QVERIFY(preview != nullptr);
+    QListWidget* modelList = nullptr;
+    for (QListWidget* list : planningPage.findChildren<QListWidget*>()) {
+        if (list->count() >= 2) {
+            modelList = list;
+            break;
+        }
+    }
+    QVERIFY(modelList != nullptr);
+
+    modelList->setCurrentRow(0);
+    QCoreApplication::processEvents();
+    preview->setAnnotationStrokes(buildSampleAnnotations());
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "onPreviewAnnotationsChanged", Qt::DirectConnection));
+
+    QVector<AnnotationStroke> secondSliceAnnotations = buildSampleAnnotations();
+    secondSliceAnnotations.first().normalizedPoints = {
+        QPointF(0.18, 0.24),
+        QPointF(0.52, 0.22),
+        QPointF(0.70, 0.48),
+        QPointF(0.50, 0.76),
+        QPointF(0.24, 0.62),
+        QPointF(0.18, 0.24)
+    };
+    modelList->setCurrentRow(1);
+    QCoreApplication::processEvents();
+    preview->setAnnotationStrokes(secondSliceAnnotations);
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "onPreviewAnnotationsChanged", Qt::DirectConnection));
+
+    auto radioButtons = planningPage.findChildren<QRadioButton*>();
+    QRadioButton* lineRadio = nullptr;
+    for (QRadioButton* button : radioButtons) {
+        if (button->text() == QStringLiteral("\u7ebf\u6cbb\u7597")) {
+            lineRadio = button;
+            break;
+        }
+    }
+    QVERIFY(lineRadio != nullptr);
+    lineRadio->setChecked(true);
+
+    QPushButton* generateTargetsButton = nullptr;
+    for (QPushButton* button : planningPage.findChildren<QPushButton*>(QStringLiteral("planningActionButton"))) {
+        if (button->text().contains(QStringLiteral("\u751f\u6210\u9776\u70b9"))) {
+            generateTargetsButton = button;
+            break;
+        }
+    }
+    QVERIFY(generateTargetsButton != nullptr);
+    generateTargetsButton->click();
+    QCoreApplication::processEvents();
+
+    QVERIFY(context.hasActivePlan());
+    QCOMPARE(context.activePlan().segments.size(), 2);
+    QCOMPARE(context.activePlan().pattern, TreatmentPattern::Line);
+    QVERIFY(!context.activePlan().segments.at(0).points.isEmpty());
+    QVERIFY(!context.activePlan().segments.at(1).points.isEmpty());
+}
+
+void PlanningPageRegressionTests::approvingPlanKeepsCurrentSlicePreviewStable()
+{
+    EventBus eventBus;
+    AuditService auditService;
+    ApplicationContext context(&eventBus, &auditService);
+    SafetyKernel safetyKernel;
+    panthera::adapters::SimulationDeviceFacade simulationDevice;
+
+    PlanningPage planningPage(&context, &safetyKernel, &auditService, nullptr, &simulationDevice);
+    planningPage.resize(1600, 900);
+    planningPage.show();
+    QCoreApplication::processEvents();
+
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "addPathItem", Qt::DirectConnection));
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "simulateImageAcquisition", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+
+    MockUltrasoundView* preview = nullptr;
+    for (MockUltrasoundView* candidate : planningPage.findChildren<MockUltrasoundView*>(QStringLiteral("planningPreviewWidget"))) {
+        if (candidate->isImageZoomEnabled() && candidate->isVisible()) {
+            preview = candidate;
+        }
+    }
+    QVERIFY(preview != nullptr);
+
+    preview->setAnnotationStrokes(buildSampleAnnotations());
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "onPreviewAnnotationsChanged", Qt::DirectConnection));
+
+    QPushButton* generateTargetsButton = nullptr;
+    for (QPushButton* button : planningPage.findChildren<QPushButton*>(QStringLiteral("planningActionButton"))) {
+        if (button->text().contains(QStringLiteral("\u751f\u6210\u9776\u70b9"))) {
+            generateTargetsButton = button;
+            break;
+        }
+    }
+    QVERIFY(generateTargetsButton != nullptr);
+    generateTargetsButton->click();
+    QCoreApplication::processEvents();
+
+    QVERIFY(context.hasActivePlan());
+    QCOMPARE(context.activePlan().segments.size(), 1);
+    const int targetCountBeforeApprove = context.activePlan().segments.constFirst().points.size();
+    QVERIFY(targetCountBeforeApprove > 0);
+
+    auto* approvalButton = planningPage.findChild<QToolButton*>(QStringLiteral("planningApprovalButton"));
+    QVERIFY(approvalButton != nullptr);
+    approvalButton->click();
+    QCoreApplication::processEvents();
+
+    QVERIFY(context.hasActivePlan());
+    QCOMPARE(context.activePlan().approvalState, ApprovalState::Approved);
+    QCOMPARE(context.activePlan().segments.size(), 1);
+    QCOMPARE(context.activePlan().segments.constFirst().points.size(), targetCountBeforeApprove);
+}
+
+void PlanningPageRegressionTests::multipleAnnotationsGenerateTargetsForAllRegions()
+{
+    const QVector<AnnotationStroke> annotations = buildSeparatedAnnotations();
+    const QVector<TherapyPoint> targets = generateTherapyTargetsFromAnnotations(
+        annotations,
+        TreatmentPattern::Point,
+        3.0,
+        0.3,
+        400.0);
+
+    QVERIFY(!targets.isEmpty());
+
+    bool hasLeftRegionTarget = false;
+    bool hasRightRegionTarget = false;
+    for (const TherapyPoint& point : targets) {
+        if (point.positionMm.x() < 0.0) {
+            hasLeftRegionTarget = true;
+        }
+        if (point.positionMm.x() > 0.0) {
+            hasRightRegionTarget = true;
+        }
+    }
+
+    QVERIFY(hasLeftRegionTarget);
+    QVERIFY(hasRightRegionTarget);
 }
 
 void PlanningPageRegressionTests::treatmentPageAcceptsGeneratedLinePlan()

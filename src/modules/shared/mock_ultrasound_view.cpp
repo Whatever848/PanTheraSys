@@ -9,6 +9,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
+#include <QWheelEvent>
 
 #include "modules/shared/therapy_imaging_algorithms.h"
 
@@ -358,6 +359,7 @@ void MockUltrasoundView::setCaption(const QString& caption)
 void MockUltrasoundView::setBackgroundImage(const QPixmap& image)
 {
     m_backgroundImage = image;
+    resetImageZoom();
     update();
 }
 
@@ -368,7 +370,40 @@ void MockUltrasoundView::clearBackgroundImage()
     }
 
     m_backgroundImage = QPixmap {};
+    resetImageZoom();
     update();
+}
+
+void MockUltrasoundView::setImageZoomEnabled(bool enabled)
+{
+    if (m_imageZoomEnabled == enabled) {
+        return;
+    }
+
+    m_imageZoomEnabled = enabled;
+    if (!m_imageZoomEnabled) {
+        resetImageZoom();
+    }
+}
+
+bool MockUltrasoundView::isImageZoomEnabled() const
+{
+    return m_imageZoomEnabled;
+}
+
+void MockUltrasoundView::resetImageZoom()
+{
+    setImageZoomState(1.0, QPointF(0.5, 0.5));
+}
+
+qreal MockUltrasoundView::imageZoomFactor() const
+{
+    return m_imageZoomFactor;
+}
+
+QPointF MockUltrasoundView::imageZoomCenterNormalized() const
+{
+    return m_imageZoomCenterNormalized;
 }
 
 void MockUltrasoundView::setSliceContext(int sliceIndex, int totalSliceCount)
@@ -391,7 +426,9 @@ void MockUltrasoundView::setAnnotationEnabled(bool enabled)
         m_isDrawing = false;
         m_activeStroke = AnnotationStroke {};
     }
-    setCursor(enabled ? Qt::CrossCursor : Qt::ArrowCursor);
+    if (!m_isPanningImage) {
+        setCursor(enabled ? Qt::CrossCursor : Qt::ArrowCursor);
+    }
     update();
 }
 
@@ -451,13 +488,9 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
     const qreal ratio = sliceRatio();
 
     if (!m_backgroundImage.isNull()) {
-        const QPixmap scaled = m_backgroundImage.scaled(canvas.size().toSize(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        const QRectF imageRect(
-            canvas.center().x() - scaled.width() / 2.0,
-            canvas.center().y() - scaled.height() / 2.0,
-            scaled.width(),
-            scaled.height());
-        painter.drawPixmap(imageRect.topLeft(), scaled);
+        const QRectF imageRect = backgroundImageDisplayRect();
+        const QRectF sourceRect = backgroundImageSourceRect();
+        painter.drawPixmap(imageRect, m_backgroundImage, sourceRect);
         painter.setPen(QPen(QColor(42, 58, 82), 1.0));
         painter.drawRect(canvas.adjusted(0, 0, -1, -1));
     } else {
@@ -574,6 +607,14 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
 
 void MockUltrasoundView::mousePressEvent(QMouseEvent* event)
 {
+    if (canStartImagePan(event->button(), event->position())) {
+        m_isPanningImage = true;
+        m_lastPanPosition = event->position();
+        setCursor(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
+
     if (event->button() != Qt::LeftButton || !m_annotationEnabled || !isDrawablePoint(event->position())) {
         QWidget::mousePressEvent(event);
         return;
@@ -589,6 +630,13 @@ void MockUltrasoundView::mousePressEvent(QMouseEvent* event)
 
 void MockUltrasoundView::mouseMoveEvent(QMouseEvent* event)
 {
+    if (m_isPanningImage) {
+        panImageBy(event->position() - m_lastPanPosition);
+        m_lastPanPosition = event->position();
+        event->accept();
+        return;
+    }
+
     if (!m_isDrawing || !m_annotationEnabled) {
         QWidget::mouseMoveEvent(event);
         return;
@@ -615,6 +663,14 @@ void MockUltrasoundView::mouseMoveEvent(QMouseEvent* event)
 
 void MockUltrasoundView::mouseReleaseEvent(QMouseEvent* event)
 {
+    if (m_isPanningImage
+        && (event->button() == Qt::LeftButton || event->button() == Qt::RightButton || event->button() == Qt::MiddleButton)) {
+        m_isPanningImage = false;
+        setCursor(m_annotationEnabled ? Qt::CrossCursor : Qt::ArrowCursor);
+        event->accept();
+        return;
+    }
+
     if (!m_isDrawing || event->button() != Qt::LeftButton) {
         QWidget::mouseReleaseEvent(event);
         return;
@@ -637,6 +693,51 @@ void MockUltrasoundView::mouseReleaseEvent(QMouseEvent* event)
     event->accept();
 }
 
+void MockUltrasoundView::wheelEvent(QWheelEvent* event)
+{
+    if (!m_imageZoomEnabled) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+
+    const QRectF viewportRect = contentViewportRect();
+    if (!viewportRect.contains(event->position())) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+
+    const QPoint numDegrees = event->angleDelta();
+    if (numDegrees.y() == 0) {
+        event->accept();
+        return;
+    }
+
+    const qreal previousZoom = m_imageZoomFactor;
+    const qreal step = numDegrees.y() > 0 ? 1.15 : (1.0 / 1.15);
+    const qreal nextZoom = std::clamp(previousZoom * step, 1.0, 8.0);
+    if (qFuzzyCompare(previousZoom, nextZoom)) {
+        event->accept();
+        return;
+    }
+
+    const QRectF previousViewport = zoomViewportNormalizedRect();
+    const qreal cursorRatioX = qBound(0.0, (event->position().x() - viewportRect.left()) / viewportRect.width(), 1.0);
+    const qreal cursorRatioY = qBound(0.0, (event->position().y() - viewportRect.top()) / viewportRect.height(), 1.0);
+    const qreal focusX = previousViewport.left() + previousViewport.width() * cursorRatioX;
+    const qreal focusY = previousViewport.top() + previousViewport.height() * cursorRatioY;
+
+    const qreal nextViewportWidth = 1.0 / nextZoom;
+    const qreal nextViewportHeight = 1.0 / nextZoom;
+    const qreal nextLeft = qBound(0.0, focusX - nextViewportWidth * cursorRatioX, 1.0 - nextViewportWidth);
+    const qreal nextTop = qBound(0.0, focusY - nextViewportHeight * cursorRatioY, 1.0 - nextViewportHeight);
+    const QPointF nextCenterNormalized(
+        nextLeft + nextViewportWidth * 0.5,
+        nextTop + nextViewportHeight * 0.5);
+
+    setImageZoomState(nextZoom, nextCenterNormalized);
+    event->accept();
+}
+
 int MockUltrasoundView::totalPointCount() const
 {
     int total = 0;
@@ -648,10 +749,9 @@ int MockUltrasoundView::totalPointCount() const
 
 QPointF MockUltrasoundView::mapPointToWidget(const QPointF& logicalPoint) const
 {
-    const QRectF canvas = annotationCanvasRect();
     const qreal normalizedX = (logicalPoint.x() + 30.0) / 60.0;
     const qreal normalizedY = (logicalPoint.y() + 30.0) / 60.0;
-    return QPointF(canvas.left() + canvas.width() * normalizedX, canvas.top() + canvas.height() * normalizedY);
+    return denormalizePoint(QPointF(normalizedX, normalizedY));
 }
 
 QRectF MockUltrasoundView::annotationCanvasRect() const
@@ -664,23 +764,139 @@ QPainterPath MockUltrasoundView::drawingPath() const
     return buildFanPath(rect().adjusted(16, 8, -16, -24));
 }
 
+QRectF MockUltrasoundView::backgroundImageDisplayRect() const
+{
+    const QRectF canvas = rect().adjusted(16, 8, -16, -24);
+    if (m_backgroundImage.isNull()) {
+        return canvas;
+    }
+
+    const QSize scaledSize = m_backgroundImage.size().scaled(canvas.size().toSize(), Qt::KeepAspectRatio);
+    return QRectF(
+        canvas.center().x() - scaledSize.width() / 2.0,
+        canvas.center().y() - scaledSize.height() / 2.0,
+        scaledSize.width(),
+        scaledSize.height());
+}
+
+QRectF MockUltrasoundView::backgroundImageSourceRect() const
+{
+    if (m_backgroundImage.isNull()) {
+        return {};
+    }
+
+    const qreal imageWidth = m_backgroundImage.width();
+    const qreal imageHeight = m_backgroundImage.height();
+    const QRectF viewport = zoomViewportNormalizedRect();
+    const qreal sourceWidth = imageWidth * viewport.width();
+    const qreal sourceHeight = imageHeight * viewport.height();
+    const qreal centerX = viewport.center().x() * imageWidth;
+    const qreal centerY = viewport.center().y() * imageHeight;
+    const qreal left = qBound(0.0, centerX - sourceWidth * 0.5, imageWidth - sourceWidth);
+    const qreal top = qBound(0.0, centerY - sourceHeight * 0.5, imageHeight - sourceHeight);
+    return QRectF(left, top, sourceWidth, sourceHeight);
+}
+
+QRectF MockUltrasoundView::contentViewportRect() const
+{
+    if (!m_backgroundImage.isNull()) {
+        return backgroundImageDisplayRect();
+    }
+    return annotationCanvasRect();
+}
+
+QRectF MockUltrasoundView::zoomViewportNormalizedRect() const
+{
+    const qreal viewportWidth = 1.0 / m_imageZoomFactor;
+    const qreal viewportHeight = 1.0 / m_imageZoomFactor;
+    const qreal left = qBound(0.0, m_imageZoomCenterNormalized.x() - viewportWidth * 0.5, 1.0 - viewportWidth);
+    const qreal top = qBound(0.0, m_imageZoomCenterNormalized.y() - viewportHeight * 0.5, 1.0 - viewportHeight);
+    return QRectF(left, top, viewportWidth, viewportHeight);
+}
+
+void MockUltrasoundView::setImageZoomState(qreal zoomFactor, const QPointF& zoomCenterNormalized)
+{
+    const qreal normalizedZoom = std::clamp(zoomFactor, 1.0, 8.0);
+    const QPointF normalizedCenter(
+        qBound(0.0, zoomCenterNormalized.x(), 1.0),
+        qBound(0.0, zoomCenterNormalized.y(), 1.0));
+    if (qFuzzyCompare(m_imageZoomFactor, normalizedZoom)
+        && qFuzzyCompare(m_imageZoomCenterNormalized.x(), normalizedCenter.x())
+        && qFuzzyCompare(m_imageZoomCenterNormalized.y(), normalizedCenter.y())) {
+        return;
+    }
+
+    m_imageZoomFactor = normalizedZoom;
+    m_imageZoomCenterNormalized = normalizedCenter;
+    emit imageZoomChanged(m_imageZoomFactor);
+    update();
+}
+
+void MockUltrasoundView::panImageBy(const QPointF& widgetDelta)
+{
+    if (m_imageZoomFactor <= 1.0) {
+        return;
+    }
+
+    const QRectF viewportRect = contentViewportRect();
+    if (viewportRect.width() <= 0.0 || viewportRect.height() <= 0.0) {
+        return;
+    }
+
+    const QRectF visibleViewport = zoomViewportNormalizedRect();
+    const QPointF center(
+        m_imageZoomCenterNormalized.x() - (widgetDelta.x() / viewportRect.width()) * visibleViewport.width(),
+        m_imageZoomCenterNormalized.y() - (widgetDelta.y() / viewportRect.height()) * visibleViewport.height());
+    setImageZoomState(m_imageZoomFactor, center);
+}
+
 QPointF MockUltrasoundView::normalizePoint(const QPointF& widgetPoint) const
 {
-    const QRectF canvas = annotationCanvasRect();
-    const qreal x = qBound(0.0, (widgetPoint.x() - canvas.left()) / canvas.width(), 1.0);
-    const qreal y = qBound(0.0, (widgetPoint.y() - canvas.top()) / canvas.height(), 1.0);
+    const QRectF viewportRect = contentViewportRect();
+    const QRectF visibleViewport = zoomViewportNormalizedRect();
+    const qreal viewportX = qBound(0.0, (widgetPoint.x() - viewportRect.left()) / viewportRect.width(), 1.0);
+    const qreal viewportY = qBound(0.0, (widgetPoint.y() - viewportRect.top()) / viewportRect.height(), 1.0);
+    const qreal x = qBound(0.0, visibleViewport.left() + viewportX * visibleViewport.width(), 1.0);
+    const qreal y = qBound(0.0, visibleViewport.top() + viewportY * visibleViewport.height(), 1.0);
     return QPointF(x, y);
 }
 
 QPointF MockUltrasoundView::denormalizePoint(const QPointF& normalizedPoint) const
 {
-    const QRectF canvas = annotationCanvasRect();
-    return QPointF(canvas.left() + canvas.width() * normalizedPoint.x(), canvas.top() + canvas.height() * normalizedPoint.y());
+    const QRectF viewportRect = contentViewportRect();
+    const QRectF visibleViewport = zoomViewportNormalizedRect();
+    const qreal xRatio = visibleViewport.width() > 0.0
+        ? (normalizedPoint.x() - visibleViewport.left()) / visibleViewport.width()
+        : 0.0;
+    const qreal yRatio = visibleViewport.height() > 0.0
+        ? (normalizedPoint.y() - visibleViewport.top()) / visibleViewport.height()
+        : 0.0;
+    return QPointF(
+        viewportRect.left() + viewportRect.width() * xRatio,
+        viewportRect.top() + viewportRect.height() * yRatio);
+}
+
+bool MockUltrasoundView::canStartImagePan(Qt::MouseButton button, const QPointF& widgetPoint) const
+{
+    if (!m_imageZoomEnabled || m_imageZoomFactor <= 1.0) {
+        return false;
+    }
+    if (!contentViewportRect().contains(widgetPoint)) {
+        return false;
+    }
+
+    if (button == Qt::MiddleButton) {
+        return true;
+    }
+    if (!m_annotationEnabled && button == Qt::LeftButton) {
+        return true;
+    }
+    return m_annotationEnabled && button == Qt::RightButton;
 }
 
 bool MockUltrasoundView::isDrawablePoint(const QPointF& widgetPoint) const
 {
-    return annotationCanvasRect().contains(widgetPoint) && drawingPath().contains(widgetPoint);
+    return contentViewportRect().contains(widgetPoint) && drawingPath().contains(widgetPoint);
 }
 
 qreal MockUltrasoundView::sliceRatio() const

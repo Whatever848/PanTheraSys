@@ -350,26 +350,33 @@ TreatmentPage::TreatmentPage(
     , m_simulationDevice(simulationDevice)
 {
     auto* rootLayout = new QHBoxLayout(this);
-    rootLayout->setContentsMargins(18, 18, 18, 18);
-    rootLayout->setSpacing(16);
+    rootLayout->setContentsMargins(16, 16, 16, 16);
+    rootLayout->setSpacing(12);
 
     auto* imageCard = new QGroupBox(QStringLiteral("\u6cbb\u7597\u6267\u884c\u89c6\u56fe"));
     auto* imageLayout = new QVBoxLayout(imageCard);
     m_preview = new MockUltrasoundView();
     m_preview->setCaption(QStringLiteral("\u6cbb\u7597\u6267\u884c\u76d1\u89c6 / \u7126\u70b9\u8986\u76d6\u793a\u610f"));
     imageLayout->addWidget(m_preview);
-    rootLayout->addWidget(imageCard, 2);
+    rootLayout->addWidget(imageCard, 3);
 
     auto* controlCard = new QGroupBox(QStringLiteral("\u6cbb\u7597\u63a7\u5236"));
+    controlCard->setMinimumWidth(400);
+    controlCard->setMaximumWidth(440);
     auto* controlLayout = new QVBoxLayout(controlCard);
+    controlLayout->setContentsMargins(12, 12, 12, 12);
+    controlLayout->setSpacing(8);
     m_patientLabel = new QLabel(QStringLiteral("\u60a3\u8005\uff1a\u672a\u9009\u62e9"));
+    m_patientLabel->setParent(controlCard);
+    m_patientLabel->setVisible(false);
     m_planCombo = new QComboBox();
-    m_planCombo->setMinimumWidth(220);
-    m_planSummaryLabel = new QLabel(QStringLiteral("\u5f53\u524d\u65b9\u6848\u6982\u51b5\n\u672a\u9009\u62e9\u6cbb\u7597\u65b9\u6848"));
-    m_planSummaryLabel->setObjectName(QStringLiteral("treatmentPlanSummaryLabel"));
+    m_planCombo->setMinimumWidth(0);
+    m_planSummaryLabel = new QLabel(QStringLiteral("\u6267\u884c\u4fe1\u606f\uff1a\u672a\u9009\u62e9\u6cbb\u7597\u65b9\u6848"));
+    m_planSummaryLabel->setObjectName(QStringLiteral("treatmentExecutionSummaryLabel"));
     m_planSummaryLabel->setWordWrap(true);
     m_planSummaryLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    m_planSummaryLabel->setMinimumHeight(140);
+    m_planSummaryLabel->setMinimumHeight(58);
+    m_planSummaryLabel->setMaximumHeight(72);
     m_layerLabel = new QLabel(QStringLiteral("\u6cbb\u7597\u5c42\uff1a\u672a\u9009\u62e9"));
     m_layerLabel->setObjectName(QStringLiteral("treatmentLayerLabel"));
     m_layerLabel->setWordWrap(true);
@@ -380,17 +387,50 @@ TreatmentPage::TreatmentPage(
     m_layerSlider->setPageStep(1);
     m_layerSlider->setEnabled(false);
     m_modeLabel = new QLabel(QStringLiteral("\u6a21\u5f0f\uff1a%1").arg(toDisplayString(m_safetyKernel->mode())));
+    m_modeLabel->setParent(controlCard);
+    m_modeLabel->setVisible(false);
     m_safetyLabel = new QLabel(QStringLiteral("\u5b89\u5168\u72b6\u6001\uff1a%1").arg(m_safetyKernel->snapshot().message));
+    m_safetyLabel->setParent(controlCard);
+    m_safetyLabel->setVisible(false);
     m_progressLabel = new QLabel(QStringLiteral("\u6cbb\u7597\u8fdb\u5ea6\uff1a0 / 0"));
     m_progressLabel->setObjectName(QStringLiteral("treatmentProgressLabel"));
     m_timeSummaryLabel = new QLabel(QStringLiteral("\u65f6\u95f4\uff1a\u672c\u5c42\u5269\u4f59 -- | \u672c\u5c42\u603b\u65f6\u957f -- | \u6cbb\u7597\u603b\u65f6\u957f --"));
     m_timeSummaryLabel->setObjectName(QStringLiteral("treatmentTimeSummaryLabel"));
     m_timeSummaryLabel->setWordWrap(true);
+    m_timeSummaryLabel->setParent(controlCard);
+    m_timeSummaryLabel->setVisible(false);
+    auto createTimeMetricCard = [](const QString& title, QLabel** valueLabel) {
+        auto* card = new QFrame();
+        card->setObjectName(QStringLiteral("treatmentTimeMetricCard"));
+        auto* layout = new QVBoxLayout(card);
+        layout->setContentsMargins(10, 8, 10, 8);
+        layout->setSpacing(4);
+        auto* titleLabel = new QLabel(title);
+        titleLabel->setObjectName(QStringLiteral("treatmentTimeMetricTitleLabel"));
+        auto* value = new QLabel(QStringLiteral("--"));
+        value->setObjectName(QStringLiteral("treatmentTimeMetricValueLabel"));
+        value->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        layout->addWidget(titleLabel);
+        layout->addWidget(value);
+        *valueLabel = value;
+        return card;
+    };
+    auto* timeMetricsGrid = new QGridLayout();
+    timeMetricsGrid->setContentsMargins(0, 0, 0, 0);
+    timeMetricsGrid->setHorizontalSpacing(8);
+    timeMetricsGrid->setVerticalSpacing(8);
+    timeMetricsGrid->addWidget(createTimeMetricCard(QStringLiteral("\u672c\u5c42\u5269\u4f59"), &m_layerRemainingValueLabel), 0, 0);
+    timeMetricsGrid->addWidget(createTimeMetricCard(QStringLiteral("\u672c\u5c42\u603b\u65f6\u95f4"), &m_layerTotalValueLabel), 0, 1);
+    timeMetricsGrid->addWidget(createTimeMetricCard(QStringLiteral("\u5168\u90e8\u5269\u4f59"), &m_planRemainingValueLabel), 1, 0);
+    timeMetricsGrid->addWidget(createTimeMetricCard(QStringLiteral("\u5168\u90e8\u65f6\u95f4"), &m_planTotalValueLabel), 1, 1);
     m_progressBar = new QProgressBar();
     m_progressBar->setRange(0, 100);
     m_logView = new QPlainTextEdit();
+    m_logView->setObjectName(QStringLiteral("treatmentLogView"));
     m_logView->setReadOnly(true);
-    m_logView->setMinimumHeight(220);
+    m_logView->setMinimumHeight(84);
+    m_logView->setMaximumHeight(100);
+    m_logView->document()->setMaximumBlockCount(120);
 
     m_startButton = new QPushButton(QStringLiteral("\u5f00\u59cb\u6cbb\u7597"));
     m_pauseButton = new QPushButton(QStringLiteral("\u6682\u505c"));
@@ -405,24 +445,25 @@ TreatmentPage::TreatmentPage(
     m_generate3dButton->setEnabled(false);
 
     auto* buttonRow = new QHBoxLayout();
-    buttonRow->setSpacing(8);
+    buttonRow->setSpacing(6);
     buttonRow->addWidget(m_startButton);
     buttonRow->addWidget(m_pauseButton);
     buttonRow->addWidget(m_resumeButton);
     buttonRow->addWidget(m_stopButton);
 
-    controlLayout->addWidget(m_patientLabel);
+    auto* logTitle = new QLabel(QStringLiteral("\u6267\u884c\u65e5\u5fd7"));
+    logTitle->setObjectName(QStringLiteral("treatmentLogTitleLabel"));
+
     controlLayout->addWidget(m_planCombo);
     controlLayout->addWidget(m_planSummaryLabel);
     controlLayout->addWidget(m_layerLabel);
     controlLayout->addWidget(m_layerSlider);
-    controlLayout->addWidget(m_modeLabel);
-    controlLayout->addWidget(m_safetyLabel);
     controlLayout->addWidget(m_progressLabel);
-    controlLayout->addWidget(m_timeSummaryLabel);
+    controlLayout->addLayout(timeMetricsGrid);
     controlLayout->addWidget(m_progressBar);
     controlLayout->addWidget(m_generate3dButton);
     controlLayout->addLayout(buttonRow);
+    controlLayout->addWidget(logTitle);
     controlLayout->addWidget(m_logView);
     rootLayout->addWidget(controlCard, 1);
 
@@ -1072,6 +1113,19 @@ double TreatmentPage::layerElapsedDurationSeconds(const TherapySegment& segment,
     return std::min(elapsedSeconds, layerPlannedDurationSeconds(segment, plan));
 }
 
+double TreatmentPage::planElapsedDurationSeconds(const TherapyPlan& plan) const
+{
+    double elapsedSeconds = 0.0;
+    for (int layerIndex = 0; layerIndex < plan.segments.size(); ++layerIndex) {
+        const TherapySegment& segment = plan.segments.at(layerIndex);
+        const int completedPointCount = completedPointCountForLayer(layerIndex, plan);
+        for (int pointIndex = 0; pointIndex < completedPointCount; ++pointIndex) {
+            elapsedSeconds += pointDwellSeconds(segment.points.at(pointIndex), plan);
+        }
+    }
+    return std::min(elapsedSeconds, planPlannedDurationSeconds(plan));
+}
+
 double TreatmentPage::planPlannedDurationSeconds(const TherapyPlan& plan) const
 {
     double durationSeconds = 0.0;
@@ -1106,7 +1160,10 @@ void TreatmentPage::updatePlanSummary(const TherapyPlan* plan)
 
     if (plan == nullptr) {
         m_planSummaryLabel->setText(
-            QStringLiteral("\u5f53\u524d\u65b9\u6848\u6982\u51b5\n\u672a\u9009\u62e9\u6cbb\u7597\u65b9\u6848\n\u5f00\u59cb\u6cbb\u7597\u524d\uff0c\u8bf7\u5148\u5728\u4e0a\u65b9\u4e0b\u62c9\u5217\u8868\u91cc\u9009\u62e9\u4e00\u4e2a\u6cbb\u7597\u65b9\u6848\u3002"));
+            QStringLiteral(
+                "\u6267\u884c\u4fe1\u606f\n"
+                "\u672a\u9009\u62e9\u6cbb\u7597\u65b9\u6848\n"
+                "\u8bf7\u5148\u5728\u4e0a\u65b9\u9009\u62e9\u4e00\u4e2a\u5df2\u5ba1\u6838\u65b9\u6848\u3002"));
         return;
     }
 
@@ -1133,41 +1190,26 @@ void TreatmentPage::updatePlanSummary(const TherapyPlan* plan)
                 ? QStringLiteral("\u7b2c%1\u5c42").arg(selectedIndex + 1)
                 : selectedSegment->label.trimmed());
 
-    const QString approvedAtText = plan->approvedAt.isValid()
-        ? plan->approvedAt.toString(QStringLiteral("yyyy-MM-dd hh:mm"))
-        : QStringLiteral("\u672a\u8bb0\u5f55");
     const QString deliveryText = plan->deliveryMode.trimmed().isEmpty() ? QStringLiteral("\u672a\u8bbe\u7f6e") : plan->deliveryMode;
     m_planSummaryLabel->setText(
         QStringLiteral(
-            "\u5f53\u524d\u65b9\u6848\u6982\u51b5\n"
-            "\u540d\u79f0\uff1a%1\n"
-            "\u5ba1\u6838\u72b6\u6001\uff1a%2\n"
-            "\u6cbb\u7597\u65b9\u5f0f\uff1a%3 / %4\n"
-            "\u6cbb\u7597\u53c2\u6570\uff1a%5 W | \u884c\u8ddd %6 mm | \u70b9\u7597 %7 s\n"
-            "\u6cbb\u7597\u5750\u6807\uff1aX %8  Y %9  Z %10  \u6df1\u5ea6 %11 mm\n"
-            "\u6cbb\u7597\u6bb5/\u9776\u70b9\uff1a%12 \u6bb5 / %13 \u70b9 | \u9884\u8ba1 %14 min\n"
-            "\u5f53\u524d\u6cbb\u7597\u5c42\uff1a%15 / %16  %17 | %18 \u70b9 | \u9884\u8ba1 %19 min\n"
-            "\u5ba1\u6279\u65f6\u95f4\uff1a%20")
-            .arg(plan->name)
+            "\u6267\u884c\u4fe1\u606f\n"
+            "%1 | %2 | %3 / %4\n"
+            "%5 W | \u884c\u8ddd %6 mm | \u70b9\u7597 %7 s | \u603b\u9776\u70b9 %8\n"
+            "\u5f53\u524d\u5c42\uff1a%9 / %10  %11 | %12 \u70b9 | \u9884\u8ba1 %13 min")
+            .arg(plan->name.trimmed().isEmpty() ? QStringLiteral("\u672a\u547d\u540d\u65b9\u6848") : plan->name)
             .arg(toDisplayString(plan->approvalState))
             .arg(deliveryText)
             .arg(toDisplayString(plan->pattern))
             .arg(plan->plannedPowerWatts, 0, 'f', 0)
             .arg(plan->spacingMm, 0, 'f', 1)
             .arg(plan->dwellSeconds, 0, 'f', 1)
-            .arg(plan->coordinateX, 0, 'f', 2)
-            .arg(plan->coordinateY, 0, 'f', 2)
-            .arg(plan->coordinateZ, 0, 'f', 2)
-            .arg(plan->depthMm, 0, 'f', 2)
-            .arg(static_cast<int>(plan->segments.size()))
             .arg(pointCount)
-            .arg(durationSeconds / 60.0, 0, 'f', 2)
             .arg(layers > 0 ? selectedIndex + 1 : 0)
             .arg(layers)
             .arg(selectedLayerText)
             .arg(selectedPointCount)
-            .arg(selectedDurationSeconds / 60.0, 0, 'f', 2)
-            .arg(approvedAtText));
+            .arg(selectedDurationSeconds / 60.0, 0, 'f', 2));
 }
 
 void TreatmentPage::configureLayerSelector(const TherapyPlan* plan)
@@ -1249,6 +1291,18 @@ void TreatmentPage::updateProgressText()
     if (!m_context->hasActivePlan() || m_deferStartupPlanSelection) {
         m_progressLabel->setText(QStringLiteral("\u6cbb\u7597\u8fdb\u5ea6\uff1a0 / 0"));
         m_timeSummaryLabel->setText(QStringLiteral("\u65f6\u95f4\uff1a\u672c\u5c42\u5269\u4f59 -- | \u672c\u5c42\u603b\u65f6\u957f -- | \u6cbb\u7597\u603b\u65f6\u957f --"));
+        if (m_layerRemainingValueLabel != nullptr) {
+            m_layerRemainingValueLabel->setText(QStringLiteral("--"));
+        }
+        if (m_layerTotalValueLabel != nullptr) {
+            m_layerTotalValueLabel->setText(QStringLiteral("--"));
+        }
+        if (m_planRemainingValueLabel != nullptr) {
+            m_planRemainingValueLabel->setText(QStringLiteral("--"));
+        }
+        if (m_planTotalValueLabel != nullptr) {
+            m_planTotalValueLabel->setText(QStringLiteral("--"));
+        }
         m_progressBar->setValue(0);
         return;
     }
@@ -1264,6 +1318,18 @@ void TreatmentPage::updateProgressText()
     if (layers <= 0) {
         m_progressLabel->setText(QStringLiteral("\u6cbb\u7597\u8fdb\u5ea6\uff1a0 / 0"));
         m_timeSummaryLabel->setText(QStringLiteral("\u65f6\u95f4\uff1a\u672c\u5c42\u5269\u4f59 -- | \u672c\u5c42\u603b\u65f6\u957f -- | \u6cbb\u7597\u603b\u65f6\u957f --"));
+        if (m_layerRemainingValueLabel != nullptr) {
+            m_layerRemainingValueLabel->setText(QStringLiteral("--"));
+        }
+        if (m_layerTotalValueLabel != nullptr) {
+            m_layerTotalValueLabel->setText(QStringLiteral("--"));
+        }
+        if (m_planRemainingValueLabel != nullptr) {
+            m_planRemainingValueLabel->setText(QStringLiteral("--"));
+        }
+        if (m_planTotalValueLabel != nullptr) {
+            m_planTotalValueLabel->setText(QStringLiteral("--"));
+        }
         return;
     }
 
@@ -1272,6 +1338,8 @@ void TreatmentPage::updateProgressText()
     const double layerElapsedSeconds = segment != nullptr ? layerElapsedDurationSeconds(*segment, plan) : 0.0;
     const double layerRemainingSeconds = std::max(0.0, layerTotalSeconds - layerElapsedSeconds);
     const double totalTreatmentSeconds = planPlannedDurationSeconds(plan);
+    const double totalElapsedSeconds = planElapsedDurationSeconds(plan);
+    const double totalRemainingSeconds = std::max(0.0, totalTreatmentSeconds - totalElapsedSeconds);
 
     m_progressLabel->setText(
         QStringLiteral("\u7b2c%1/%2\u5c42\u6cbb\u7597\u8fdb\u5ea6\uff1a%3 / %4\uff0c\u7d2f\u8ba1\u80fd\u91cf %5 J")
@@ -1286,6 +1354,18 @@ void TreatmentPage::updateProgressText()
                 formatTreatmentDuration(layerTotalSeconds),
                 formatTreatmentDuration(totalTreatmentSeconds),
                 formatTreatmentDuration(layerElapsedSeconds)));
+    if (m_layerRemainingValueLabel != nullptr) {
+        m_layerRemainingValueLabel->setText(formatTreatmentDuration(layerRemainingSeconds));
+    }
+    if (m_layerTotalValueLabel != nullptr) {
+        m_layerTotalValueLabel->setText(formatTreatmentDuration(layerTotalSeconds));
+    }
+    if (m_planRemainingValueLabel != nullptr) {
+        m_planRemainingValueLabel->setText(formatTreatmentDuration(totalRemainingSeconds));
+    }
+    if (m_planTotalValueLabel != nullptr) {
+        m_planTotalValueLabel->setText(formatTreatmentDuration(totalTreatmentSeconds));
+    }
 }
 
 void TreatmentPage::appendLog(const QString& line)
