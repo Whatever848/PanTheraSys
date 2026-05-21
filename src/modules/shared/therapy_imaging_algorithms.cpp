@@ -569,6 +569,49 @@ QPointF fallbackPointInsidePath(const QPainterPath& path, const QRectF& bounds, 
     return bestPoint;
 }
 
+void appendContourBoundaryPointTargets(
+    QVector<TherapyPoint>* targets,
+    const QVector<QVector<QPointF>>& contours,
+    double spacingMm,
+    double dwellSeconds,
+    double powerWatts)
+{
+    if (targets == nullptr || contours.isEmpty()) {
+        return;
+    }
+
+    const double clampedSpacing = std::max(0.5, spacingMm);
+    for (const QVector<QPointF>& contour : contours) {
+        const int vertexCount = contourVertexCount(contour);
+        if (vertexCount < 3) {
+            continue;
+        }
+
+        for (int index = 0; index < vertexCount; ++index) {
+            const QPointF& start = contour.at(index);
+            const QPointF& end = contour.at((index + 1) % vertexCount);
+            const QLineF edge(start, end);
+            const double edgeLengthMm = edge.length();
+            if (edgeLengthMm <= 1e-6) {
+                continue;
+            }
+
+            for (double distanceMm = 0.0; distanceMm < edgeLengthMm - 1e-6; distanceMm += clampedSpacing) {
+                const double ratio = std::clamp(distanceMm / edgeLengthMm, 0.0, 1.0);
+                const QPointF candidate(
+                    start.x() + ((end.x() - start.x()) * ratio),
+                    start.y() + ((end.y() - start.y()) * ratio));
+
+                TherapyPoint point;
+                point.positionMm = candidate;
+                point.dwellSeconds = dwellSeconds;
+                point.powerWatts = powerWatts;
+                targets->push_back(point);
+            }
+        }
+    }
+}
+
 QVector<TherapyPoint> generateTherapyTargetsInRegionPath(
     const QPainterPath& regionPath,
     TreatmentPattern pattern,
@@ -591,8 +634,14 @@ QVector<TherapyPoint> generateTherapyTargetsInRegionPath(
         const QVector<qreal> rows = distributedPositions(bounds.top(), bounds.bottom(), rowSpacingMm);
 
         int lineGroupIndex = 0;
-        for (const qreal y : rows) {
-            const QVector<HorizontalSpan> spans = horizontalSpansForRow(contours, y, minimumLineSpanMm);
+        for (int rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+            const qreal y = rows.at(rowIndex);
+            const bool reverseRowDirection = rowIndex % 2 == 1;
+            QVector<HorizontalSpan> spans = horizontalSpansForRow(contours, y, minimumLineSpanMm);
+            if (reverseRowDirection) {
+                std::reverse(spans.begin(), spans.end());
+            }
+
             for (const HorizontalSpan& span : spans) {
                 qreal startX = span.startX + endpointInsetMm;
                 qreal endX = span.endX - endpointInsetMm;
@@ -604,6 +653,9 @@ QVector<TherapyPoint> generateTherapyTargetsInRegionPath(
                 QVector<qreal> lineSamplePositions = samplePositionsForContinuousLineSpan(startX, endX, clampedSpacing);
                 if (lineSamplePositions.size() < 2) {
                     continue;
+                }
+                if (reverseRowDirection) {
+                    std::reverse(lineSamplePositions.begin(), lineSamplePositions.end());
                 }
 
                 for (int sampleIndex = 0; sampleIndex < lineSamplePositions.size(); ++sampleIndex) {
@@ -621,28 +673,29 @@ QVector<TherapyPoint> generateTherapyTargetsInRegionPath(
             }
         }
     } else {
-        const double circleRadiusMm = std::clamp(clampedSpacing * 0.68, 0.45, 4.5);
+        const double pointInsetMm = std::clamp(clampedSpacing * 0.35, 0.25, 3.0);
+        const double fitRadiusMm = std::max(0.15, pointInsetMm * 0.9);
         const double rowSpacingMm = std::max(0.5, clampedSpacing * 0.8660254037844386);
-        const QRectF centerBounds = bounds.adjusted(circleRadiusMm, circleRadiusMm, -circleRadiusMm, -circleRadiusMm);
+        const QRectF centerBounds = bounds.adjusted(pointInsetMm, pointInsetMm, -pointInsetMm, -pointInsetMm);
         const QVector<qreal> rows = centerBounds.isValid()
             ? distributedPositions(centerBounds.top(), centerBounds.bottom(), rowSpacingMm)
             : QVector<qreal> {bounds.center().y()};
 
         for (int rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
             const qreal y = rows.at(rowIndex);
-            const QVector<HorizontalSpan> spans = horizontalSpansForRow(contours, y, circleRadiusMm * 1.5);
+            const QVector<HorizontalSpan> spans = horizontalSpansForRow(contours, y, fitRadiusMm * 1.2);
             for (const HorizontalSpan& span : spans) {
-                const qreal startX = span.startX + circleRadiusMm;
-                const qreal endX = span.endX - circleRadiusMm;
+                const qreal startX = span.startX + pointInsetMm;
+                const qreal endX = span.endX - pointInsetMm;
                 const QVector<qreal> columns = pointCircleCenterPositionsForSpan(
                     startX,
                     endX,
-                    bounds.left() + circleRadiusMm,
+                    bounds.left() + pointInsetMm,
                     clampedSpacing,
                     rowIndex % 2 == 1);
                 for (const qreal x : columns) {
                     const QPointF center(x, y);
-                    if (!circleFitsInsidePath(regionPath, center, circleRadiusMm * 0.92)) {
+                    if (!circleFitsInsidePath(regionPath, center, fitRadiusMm)) {
                         continue;
                     }
 
@@ -654,6 +707,8 @@ QVector<TherapyPoint> generateTherapyTargetsInRegionPath(
                 }
             }
         }
+
+        appendContourBoundaryPointTargets(&targets, contours, clampedSpacing, dwellSeconds, powerWatts);
     }
 
     if (targets.isEmpty()) {

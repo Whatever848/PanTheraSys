@@ -396,6 +396,11 @@ void MockUltrasoundView::resetImageZoom()
     setImageZoomState(1.0, QPointF(0.5, 0.5));
 }
 
+void MockUltrasoundView::setImageZoom(qreal zoomFactor, const QPointF& zoomCenterNormalized)
+{
+    setImageZoomState(zoomFactor, zoomCenterNormalized);
+}
+
 qreal MockUltrasoundView::imageZoomFactor() const
 {
     return m_imageZoomFactor;
@@ -404,6 +409,45 @@ qreal MockUltrasoundView::imageZoomFactor() const
 QPointF MockUltrasoundView::imageZoomCenterNormalized() const
 {
     return m_imageZoomCenterNormalized;
+}
+
+void MockUltrasoundView::beginComparisonCalibrationPointCapture(int pointIndex)
+{
+    if (pointIndex != 0 && pointIndex != 1) {
+        m_pendingComparisonPointIndex = -1;
+        updateInteractionCursor();
+        return;
+    }
+
+    m_pendingComparisonPointIndex = pointIndex;
+    setCursor(Qt::CrossCursor);
+}
+
+void MockUltrasoundView::setComparisonCalibrationPoint(int pointIndex, const QPointF& normalizedPoint)
+{
+    const QPointF clampedPoint(
+        qBound(0.0, normalizedPoint.x(), 1.0),
+        qBound(0.0, normalizedPoint.y(), 1.0));
+
+    if (pointIndex == 0) {
+        m_comparisonStartPointNormalized = clampedPoint;
+        m_hasComparisonStartPoint = true;
+    } else if (pointIndex == 1) {
+        m_comparisonEndPointNormalized = clampedPoint;
+        m_hasComparisonEndPoint = true;
+    } else {
+        return;
+    }
+    update();
+}
+
+void MockUltrasoundView::clearComparisonCalibrationPoints()
+{
+    m_pendingComparisonPointIndex = -1;
+    m_hasComparisonStartPoint = false;
+    m_hasComparisonEndPoint = false;
+    updateInteractionCursor();
+    update();
 }
 
 void MockUltrasoundView::setSliceContext(int sliceIndex, int totalSliceCount)
@@ -427,7 +471,7 @@ void MockUltrasoundView::setAnnotationEnabled(bool enabled)
         m_activeStroke = AnnotationStroke {};
     }
     if (!m_isPanningImage) {
-        setCursor(enabled ? Qt::CrossCursor : Qt::ArrowCursor);
+        updateInteractionCursor();
     }
     update();
 }
@@ -599,6 +643,8 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
     }
     painter.restore();
 
+    drawComparisonCalibration(&painter);
+
     painter.setPen(Qt::white);
     painter.setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 11, QFont::Bold));
     painter.drawText(canvas.adjusted(8, 8, -8, -8), Qt::AlignTop | Qt::AlignLeft,
@@ -607,6 +653,21 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
 
 void MockUltrasoundView::mousePressEvent(QMouseEvent* event)
 {
+    if (m_pendingComparisonPointIndex >= 0 && event->button() == Qt::LeftButton) {
+        if (contentViewportRect().contains(event->position())) {
+            const int capturedIndex = m_pendingComparisonPointIndex;
+            const QPointF normalizedPoint = normalizePoint(event->position());
+            setComparisonCalibrationPoint(capturedIndex, normalizedPoint);
+            m_pendingComparisonPointIndex = -1;
+            updateInteractionCursor();
+            emit comparisonCalibrationPointCaptured(capturedIndex, normalizedPoint);
+            event->accept();
+            return;
+        }
+        event->accept();
+        return;
+    }
+
     if (canStartImagePan(event->button(), event->position())) {
         m_isPanningImage = true;
         m_lastPanPosition = event->position();
@@ -666,7 +727,7 @@ void MockUltrasoundView::mouseReleaseEvent(QMouseEvent* event)
     if (m_isPanningImage
         && (event->button() == Qt::LeftButton || event->button() == Qt::RightButton || event->button() == Qt::MiddleButton)) {
         m_isPanningImage = false;
-        setCursor(m_annotationEnabled ? Qt::CrossCursor : Qt::ArrowCursor);
+        updateInteractionCursor();
         event->accept();
         return;
     }
@@ -829,6 +890,7 @@ void MockUltrasoundView::setImageZoomState(qreal zoomFactor, const QPointF& zoom
     m_imageZoomFactor = normalizedZoom;
     m_imageZoomCenterNormalized = normalizedCenter;
     emit imageZoomChanged(m_imageZoomFactor);
+    emit imageViewportChanged(m_imageZoomFactor, m_imageZoomCenterNormalized);
     update();
 }
 
@@ -874,6 +936,58 @@ QPointF MockUltrasoundView::denormalizePoint(const QPointF& normalizedPoint) con
     return QPointF(
         viewportRect.left() + viewportRect.width() * xRatio,
         viewportRect.top() + viewportRect.height() * yRatio);
+}
+
+void MockUltrasoundView::drawComparisonCalibration(QPainter* painter)
+{
+    if (painter == nullptr || (!m_hasComparisonStartPoint && !m_hasComparisonEndPoint)) {
+        return;
+    }
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+
+    auto drawPoint = [this, painter](const QPointF& normalizedPoint, const QString& label, const QColor& color) {
+        const QPointF widgetPoint = denormalizePoint(normalizedPoint);
+        painter->setPen(QPen(color, 2.0));
+        painter->setBrush(QColor(color.red(), color.green(), color.blue(), 70));
+        painter->drawEllipse(widgetPoint, 8.0, 8.0);
+
+        QRectF labelRect(widgetPoint.x() + 10.0, widgetPoint.y() - 18.0, 32.0, 18.0);
+        if (labelRect.right() > rect().right() - 4.0) {
+            labelRect.moveRight(widgetPoint.x() - 10.0);
+        }
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(14, 31, 52, 220));
+        painter->drawRoundedRect(labelRect, 6.0, 6.0);
+        painter->setPen(QPen(QColor(238, 247, 255), 1.0));
+        painter->setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 8, QFont::Bold));
+        painter->drawText(labelRect, Qt::AlignCenter, label);
+    };
+
+    if (m_hasComparisonStartPoint && m_hasComparisonEndPoint) {
+        painter->setPen(QPen(QColor(75, 210, 255, 210), 2.0, Qt::DashLine, Qt::RoundCap));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawLine(denormalizePoint(m_comparisonStartPointNormalized), denormalizePoint(m_comparisonEndPointNormalized));
+    }
+
+    if (m_hasComparisonStartPoint) {
+        drawPoint(m_comparisonStartPointNormalized, QStringLiteral("起"), QColor(50, 211, 127));
+    }
+    if (m_hasComparisonEndPoint) {
+        drawPoint(m_comparisonEndPointNormalized, QStringLiteral("止"), QColor(255, 177, 75));
+    }
+
+    painter->restore();
+}
+
+void MockUltrasoundView::updateInteractionCursor()
+{
+    if (m_pendingComparisonPointIndex >= 0) {
+        setCursor(Qt::CrossCursor);
+        return;
+    }
+    setCursor(m_annotationEnabled ? Qt::CrossCursor : Qt::ArrowCursor);
 }
 
 bool MockUltrasoundView::canStartImagePan(Qt::MouseButton button, const QPointF& widgetPoint) const

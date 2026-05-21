@@ -7,6 +7,7 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QTimer>
+#include <QToolButton>
 #include <QVector>
 #include <QWidget>
 
@@ -69,6 +70,7 @@ private:
     void syncPlanComboEntry(const panthera::core::TherapyPlan& plan);
     void updatePlanSummary(const panthera::core::TherapyPlan* plan);
     void configureLayerSelector(const panthera::core::TherapyPlan* plan);
+    void updateLayerNavigationButtons();
     void updateLayerPreview();
     void updateProgressText();
     void appendLog(const QString& line);
@@ -98,9 +100,10 @@ private:
     QPlainTextEdit* m_logView {nullptr};
     QComboBox* m_planCombo {nullptr};
     QSlider* m_layerSlider {nullptr};
+    QToolButton* m_previousLayerButton {nullptr};
+    QToolButton* m_nextLayerButton {nullptr};
     QPushButton* m_startButton {nullptr};
     QPushButton* m_pauseButton {nullptr};
-    QPushButton* m_resumeButton {nullptr};
     QPushButton* m_stopButton {nullptr};
     QPushButton* m_generate3dButton {nullptr};
     QTimer m_progressTimer;

@@ -9,6 +9,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QPlainTextEdit>
+#include <QPointF>
 #include <QPixmap>
 #include <QProgressBar>
 #include <QPushButton>
@@ -77,6 +78,13 @@ private slots:
     void loadStoredImages();
     void showHistoryPreviewMaximized();
     void showCurrentPreviewMaximized();
+    void markComparisonSyncAnchor(bool historySide, bool startPoint);
+    void resetComparisonSyncCalibration();
+    void updateComparisonSyncState();
+    bool hasComparisonSyncCalibration() const;
+    void applyComparisonSyncSliderValue(int value);
+    int comparisonSyncRange() const;
+    int mappedComparisonSliceIndex(int syncValue, int startIndex, int endIndex) const;
 
 private:
     struct StagedSliceState {
@@ -147,6 +155,7 @@ private:
     void loadHistoricalSlice(int row, bool announce = false);
     void clearHistoricalComparison(const QString& overlayText);
     void updateHistoryMaximizeButtonState();
+    void updateSliceNavigationButtons();
     void persistCurrentSliceAnnotations();
     void loadStagedSlice(int row);
     QPixmap renderCurrentSlicePixmap(int row, const QSize& size) const;
@@ -186,9 +195,13 @@ private:
     MockUltrasoundView* m_preview {nullptr};
     QLabel* m_historyPreviewOverlayLabel {nullptr};
     QLabel* m_previewOverlayLabel {nullptr};
+    QToolButton* m_historyPrevSliceButton {nullptr};
     QSlider* m_historySliceSlider {nullptr};
+    QToolButton* m_historyNextSliceButton {nullptr};
     QLabel* m_historySliceSummaryLabel {nullptr};
+    QToolButton* m_currentPrevSliceButton {nullptr};
     QSlider* m_currentSliceSlider {nullptr};
+    QToolButton* m_currentNextSliceButton {nullptr};
     QLabel* m_currentSliceSummaryLabel {nullptr};
     QSpinBox* m_layerCountSpin {nullptr};
     QSpinBox* m_stepSpin {nullptr};
@@ -201,6 +214,7 @@ private:
     QRadioButton* m_segmentedTreatmentRadio {nullptr};
     QRadioButton* m_pointTreatmentRadio {nullptr};
     QRadioButton* m_lineTreatmentRadio {nullptr};
+    QLabel* m_totalLengthValueLabel {nullptr};
     QLabel* m_totalDurationValueLabel {nullptr};
     QLabel* m_powerValueLabel {nullptr};
     QLabel* m_patientSummaryLabel {nullptr};
@@ -234,6 +248,13 @@ private:
     QToolButton* m_annotationUndoButton {nullptr};
     QToolButton* m_annotationClearButton {nullptr};
     QToolButton* m_annotationCollapseButton {nullptr};
+    QCheckBox* m_comparisonSyncCheck {nullptr};
+    QPushButton* m_historySyncStartButton {nullptr};
+    QPushButton* m_historySyncEndButton {nullptr};
+    QPushButton* m_currentSyncStartButton {nullptr};
+    QPushButton* m_currentSyncEndButton {nullptr};
+    QPushButton* m_resetComparisonSyncButton {nullptr};
+    QSlider* m_comparisonSyncSlider {nullptr};
 
     QVector<panthera::core::ImageSeriesRecord> m_historyImageSeries;
     QVector<QPixmap> m_historyPixmaps;
@@ -255,6 +276,15 @@ private:
     QHash<QString, QToolButton*> m_collapseButtonsByKey;
     QString m_activePersonalizationProfileName;
     bool m_applyingPersonalizationProfile {false};
+    bool m_hasHistorySyncStartPoint {false};
+    bool m_hasHistorySyncEndPoint {false};
+    bool m_hasCurrentSyncStartPoint {false};
+    bool m_hasCurrentSyncEndPoint {false};
+    int m_historySyncStartIndex {-1};
+    int m_historySyncEndIndex {-1};
+    int m_currentSyncStartIndex {-1};
+    int m_currentSyncEndIndex {-1};
+    bool m_applyingComparisonSync {false};
 };
 
 }  // namespace panthera::modules

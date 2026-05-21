@@ -670,6 +670,19 @@ QLabel#planningMetricValueLabel {
     font-size: 10.5pt;
 }
 
+QWidget#planningMetricUnitField {
+    background: transparent;
+}
+
+QLabel#planningMetricUnitLabel {
+    min-width: 26px;
+    color: #d7e8f7;
+    background: transparent;
+    font-size: 10.5pt;
+    font-weight: 700;
+    padding: 0 0 0 2px;
+}
+
 QLabel#planningFormLabel {
     color: #eff7ff;
     background-color: transparent;
@@ -689,6 +702,13 @@ QLabel#treatmentLogTitleLabel {
     font-weight: 700;
     background: transparent;
     font-size: 10.5pt;
+}
+
+QLabel#planningRespiratoryTitleLabel {
+    color: #eff7ff;
+    font-weight: 800;
+    background: transparent;
+    font-size: 12pt;
 }
 
 QFrame#treatmentTimeMetricCard {
@@ -721,6 +741,16 @@ QLabel#treatmentExecutionSummaryLabel {
     line-height: 1.25;
 }
 
+QLabel#treatmentProgressLabel {
+    color: #eff7ff;
+    background-color: #102238;
+    border: 1px solid #26496d;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 10.2pt;
+    font-weight: 700;
+}
+
 QPlainTextEdit#treatmentLogView {
     font-size: 8.8pt;
     padding: 4px 6px;
@@ -747,73 +777,196 @@ QSlider#planningPowerSlider::handle:horizontal {
     border-radius: 9px;
 }
 
-QSlider#planningSliceSlider::groove:horizontal {
-    height: 6px;
+QSlider#planningSliceSlider,
+QSlider#planningComparisonSyncSlider {
+    min-height: 36px;
+    max-height: 36px;
+}
+
+QSlider#planningSliceSlider::groove:horizontal,
+QSlider#planningComparisonSyncSlider::groove:horizontal {
+    height: 26px;
     background-color: #1b304b;
-    border-radius: 3px;
+    border: 1px solid #294766;
+    border-radius: 13px;
 }
 
-QSlider#planningSliceSlider::sub-page:horizontal {
+QSlider#planningSliceSlider::sub-page:horizontal,
+QSlider#planningComparisonSyncSlider::sub-page:horizontal {
     background-color: #2a79d7;
-    border-radius: 3px;
+    border: 1px solid #2a79d7;
+    border-radius: 13px;
 }
 
-QSlider#planningSliceSlider::handle:horizontal {
-    width: 16px;
-    margin: -5px 0;
+QSlider#planningSliceSlider::handle:horizontal,
+QSlider#planningComparisonSyncSlider::handle:horizontal {
+    width: 20px;
+    height: 20px;
+    margin: 3px 5px;
     background-color: #edf5ff;
     border: 1px solid #c9d7e9;
-    border-radius: 8px;
+    border-radius: 10px;
 }
 
-QSlider#planningSliceSlider:disabled::groove:horizontal {
+QSlider#planningSliceSlider:disabled::groove:horizontal,
+QSlider#planningComparisonSyncSlider:disabled::groove:horizontal {
     background-color: #142338;
+    border-color: #20334d;
+}
+
+QToolButton#planningSliceNavButton,
+QToolButton#treatmentLayerNavButton {
+    min-width: 34px;
+    min-height: 34px;
+    max-width: 34px;
+    max-height: 34px;
+    background-color: #20324e;
+    border: 1px solid #3a5577;
+    border-radius: 10px;
+    color: #eaf4ff;
+    font-size: 20pt;
+    font-weight: 800;
+    padding: 0 0 3px 0;
+}
+
+QToolButton#planningSliceNavButton:hover,
+QToolButton#treatmentLayerNavButton:hover {
+    background-color: #2a4163;
+    border-color: #4c75a4;
+}
+
+QToolButton#planningSliceNavButton:disabled,
+QToolButton#treatmentLayerNavButton:disabled {
+    color: #58708c;
+    background-color: #17263c;
+    border-color: #263a54;
+}
+
+QFrame#planningComparisonSyncPanel {
+    background-color: #101d31;
+    border: 1px solid #213450;
+    border-radius: 10px;
+}
+
+QCheckBox#planningComparisonSyncToggle {
+    color: #eaf4ff;
+    background: transparent;
+    font-size: 10.5pt;
+    font-weight: 800;
+    spacing: 8px;
+}
+
+QCheckBox#planningComparisonSyncToggle::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    border: 2px solid #5ab7ff;
+    background-color: transparent;
+}
+
+QCheckBox#planningComparisonSyncToggle::indicator:checked {
+    background-color: #34d27f;
+    border-color: #34d27f;
+}
+
+QCheckBox#planningComparisonSyncToggle:disabled {
+    color: #6f88a6;
+}
+
+QPushButton#planningComparisonSyncButton {
+    min-height: 28px;
+    padding: 5px 10px;
+    background-color: #20324e;
+    border: 1px solid #3a5577;
+    border-radius: 9px;
+    color: #eff7ff;
+    font-size: 10pt;
+    font-weight: 800;
+}
+
+QPushButton#planningComparisonSyncButton:hover {
+    background-color: #2a4163;
+    border-color: #4c75a4;
+}
+
+QPushButton#planningComparisonSyncButton:disabled {
+    color: #657d99;
+    background-color: #17263c;
+    border-color: #263a54;
+}
+
+QLabel#planningComparisonSyncStatusLabel {
+    color: #9db8d7;
+    background: transparent;
+    font-size: 9.2pt;
+    font-weight: 700;
+}
+
+QFrame#planningDialogSliceNavigationPanel {
+    background-color: rgba(12, 26, 43, 186);
+    border: 1px solid #294766;
+    border-radius: 10px;
+}
+
+QSlider#treatmentLayerSlider {
+    min-height: 36px;
+    max-height: 36px;
 }
 
 QSlider#treatmentLayerSlider::groove:horizontal {
-    height: 6px;
+    height: 26px;
     background-color: #1b304b;
-    border-radius: 3px;
+    border: 1px solid #294766;
+    border-radius: 13px;
 }
 
 QSlider#treatmentLayerSlider::sub-page:horizontal {
-    background-color: #22c7dd;
-    border-radius: 3px;
+    background-color: #2a79d7;
+    border: 1px solid #2a79d7;
+    border-radius: 13px;
 }
 
 QSlider#treatmentLayerSlider::handle:horizontal {
-    width: 16px;
-    margin: -5px 0;
+    width: 20px;
+    height: 20px;
+    margin: 3px 5px;
     background-color: #edf5ff;
     border: 1px solid #c9d7e9;
-    border-radius: 8px;
+    border-radius: 10px;
 }
 
 QSlider#treatmentLayerSlider:disabled::groove:horizontal {
     background-color: #142338;
+    border-color: #20334d;
 }
 
 QCheckBox#planningToggleCheck {
     spacing: 0;
     background: transparent;
+    min-width: 78px;
+    max-width: 78px;
+    min-height: 36px;
+    max-height: 36px;
 }
 
 QCheckBox#planningToggleCheck::indicator {
-    width: 46px;
-    height: 24px;
-    border-radius: 12px;
-    background-color: #17314a;
-    border: 1px solid #17314a;
+    subcontrol-origin: content;
+    subcontrol-position: right center;
+    width: 58px;
+    height: 30px;
+    border-radius: 15px;
+    background-color: transparent;
+    border: 2px solid #5fb4ff;
 }
 
 QCheckBox#planningToggleCheck::indicator:checked {
-    background-color: #163d39;
-    border-color: #163d39;
+    background-color: #35cc6d;
+    border-color: #35cc6d;
 }
 
 QCheckBox#planningToggleCheck::indicator:unchecked {
-    background-color: #17314a;
-    border-color: #17314a;
+    background-color: transparent;
+    border-color: #5fb4ff;
 }
 
 QRadioButton {

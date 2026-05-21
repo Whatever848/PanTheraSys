@@ -307,11 +307,12 @@ void MainWindow::replacePlaceholderPage(int index, QWidget* page)
     }
 
     QWidget* placeholder = m_stack->widget(index);
-    m_stack->insertWidget(index, page);
     if (placeholder != nullptr && placeholder != page) {
         m_stack->removeWidget(placeholder);
+        placeholder->setParent(nullptr);
         placeholder->deleteLater();
     }
+    m_stack->insertWidget(index, page);
 }
 
 void MainWindow::applyPlanningPersonalizationProfile(const QString& profileName)

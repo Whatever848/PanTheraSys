@@ -16,6 +16,8 @@
 #include <QPolygonF>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QStyle>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace panthera::modules {
@@ -332,6 +334,17 @@ QPixmap renderTreatmentVolumeProgressPreview(
     return preview;
 }
 
+QToolButton* createLayerNavButton(const QString& text, const QString& tooltip)
+{
+    auto* button = new QToolButton();
+    button->setObjectName(QStringLiteral("treatmentLayerNavButton"));
+    button->setText(text);
+    button->setToolTip(tooltip);
+    button->setCursor(Qt::PointingHandCursor);
+    button->setEnabled(false);
+    return button;
+}
+
 }  // namespace
 
 TreatmentPage::TreatmentPage(
@@ -386,6 +399,8 @@ TreatmentPage::TreatmentPage(
     m_layerSlider->setSingleStep(1);
     m_layerSlider->setPageStep(1);
     m_layerSlider->setEnabled(false);
+    m_previousLayerButton = createLayerNavButton(QStringLiteral("\u2039"), QStringLiteral("\u5207\u6362\u5230\u4e0a\u4e00\u5c42\u6cbb\u7597\u5f71\u50cf"));
+    m_nextLayerButton = createLayerNavButton(QStringLiteral("\u203a"), QStringLiteral("\u5207\u6362\u5230\u4e0b\u4e00\u5c42\u6cbb\u7597\u5f71\u50cf"));
     m_modeLabel = new QLabel(QStringLiteral("\u6a21\u5f0f\uff1a%1").arg(toDisplayString(m_safetyKernel->mode())));
     m_modeLabel->setParent(controlCard);
     m_modeLabel->setVisible(false);
@@ -432,13 +447,11 @@ TreatmentPage::TreatmentPage(
     m_logView->setMaximumHeight(100);
     m_logView->document()->setMaximumBlockCount(120);
 
-    m_startButton = new QPushButton(QStringLiteral("\u5f00\u59cb\u6cbb\u7597"));
+    m_startButton = new QPushButton(QStringLiteral("\u5f00\u59cb"));
     m_pauseButton = new QPushButton(QStringLiteral("\u6682\u505c"));
-    m_resumeButton = new QPushButton(QStringLiteral("\u7ee7\u7eed"));
     m_stopButton = new QPushButton(QStringLiteral("\u7ec8\u6b62"));
     m_startButton->setObjectName(QStringLiteral("treatmentControlButton"));
     m_pauseButton->setObjectName(QStringLiteral("treatmentControlButton"));
-    m_resumeButton->setObjectName(QStringLiteral("treatmentControlButton"));
     m_stopButton->setObjectName(QStringLiteral("treatmentControlButton"));
     m_generate3dButton = new QPushButton(QStringLiteral("\u4e09\u7ef4\u56fe\u5f62\u751f\u6210"));
     m_generate3dButton->setObjectName(QStringLiteral("treatmentVolumeButton"));
@@ -448,8 +461,14 @@ TreatmentPage::TreatmentPage(
     buttonRow->setSpacing(6);
     buttonRow->addWidget(m_startButton);
     buttonRow->addWidget(m_pauseButton);
-    buttonRow->addWidget(m_resumeButton);
     buttonRow->addWidget(m_stopButton);
+
+    auto* layerSliderRow = new QHBoxLayout();
+    layerSliderRow->setContentsMargins(0, 0, 0, 0);
+    layerSliderRow->setSpacing(6);
+    layerSliderRow->addWidget(m_previousLayerButton);
+    layerSliderRow->addWidget(m_layerSlider, 1);
+    layerSliderRow->addWidget(m_nextLayerButton);
 
     auto* logTitle = new QLabel(QStringLiteral("\u6267\u884c\u65e5\u5fd7"));
     logTitle->setObjectName(QStringLiteral("treatmentLogTitleLabel"));
@@ -457,7 +476,7 @@ TreatmentPage::TreatmentPage(
     controlLayout->addWidget(m_planCombo);
     controlLayout->addWidget(m_planSummaryLabel);
     controlLayout->addWidget(m_layerLabel);
-    controlLayout->addWidget(m_layerSlider);
+    controlLayout->addLayout(layerSliderRow);
     controlLayout->addWidget(m_progressLabel);
     controlLayout->addLayout(timeMetricsGrid);
     controlLayout->addWidget(m_progressBar);
@@ -470,8 +489,13 @@ TreatmentPage::TreatmentPage(
     m_progressTimer.setInterval(450);
 
     connect(m_startButton, &QPushButton::clicked, this, &TreatmentPage::startTreatment);
-    connect(m_pauseButton, &QPushButton::clicked, this, &TreatmentPage::pauseTreatment);
-    connect(m_resumeButton, &QPushButton::clicked, this, &TreatmentPage::resumeTreatment);
+    connect(m_pauseButton, &QPushButton::clicked, this, [this]() {
+        if (m_pauseButton->property("pauseResumeState").toString() == QStringLiteral("resume")) {
+            resumeTreatment();
+            return;
+        }
+        pauseTreatment();
+    });
     connect(m_stopButton, &QPushButton::clicked, this, &TreatmentPage::stopTreatment);
     connect(m_generate3dButton, &QPushButton::clicked, this, &TreatmentPage::generateThreeDimensionalImage);
     connect(&m_progressTimer, &QTimer::timeout, this, &TreatmentPage::advanceProgress);
@@ -480,6 +504,18 @@ TreatmentPage::TreatmentPage(
     connect(m_context, &ApplicationContext::selectedPatientChanged, this, &TreatmentPage::onPatientChanged);
     connect(m_planCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, &TreatmentPage::onPlanSelectionChanged);
     connect(m_layerSlider, &QSlider::valueChanged, this, &TreatmentPage::onLayerSelectionChanged);
+    connect(m_previousLayerButton, &QToolButton::clicked, this, [this]() {
+        if (m_layerSlider == nullptr || !m_layerSlider->isEnabled()) {
+            return;
+        }
+        m_layerSlider->setValue(std::max(m_layerSlider->minimum(), m_layerSlider->value() - 1));
+    });
+    connect(m_nextLayerButton, &QToolButton::clicked, this, [this]() {
+        if (m_layerSlider == nullptr || !m_layerSlider->isEnabled()) {
+            return;
+        }
+        m_layerSlider->setValue(std::min(m_layerSlider->maximum(), m_layerSlider->value() + 1));
+    });
     connect(m_safetyKernel, &SafetyKernel::safetySnapshotChanged, this, &TreatmentPage::onSafetyChanged);
     connect(m_safetyKernel, &SafetyKernel::systemModeChanged, this, [this](SystemMode mode) {
         m_modeLabel->setText(QStringLiteral("\u6a21\u5f0f\uff1a%1").arg(toDisplayString(mode)));
@@ -532,6 +568,7 @@ void TreatmentPage::startTreatment()
     m_progressTimer.start();
     m_planCombo->setEnabled(false);
     m_layerSlider->setEnabled(false);
+    updateLayerNavigationButtons();
     setButtonState(false, true, false, true);
     appendLog(
         QStringLiteral("\u5f00\u59cb\u7b2c%1/%2\u5c42\u6cbb\u7597\u6267\u884c")
@@ -553,6 +590,7 @@ void TreatmentPage::pauseTreatment()
     }
     m_planCombo->setEnabled(false);
     m_layerSlider->setEnabled(false);
+    updateLayerNavigationButtons();
     setButtonState(false, false, true, true);
     appendLog(QStringLiteral("\u6cbb\u7597\u5df2\u6682\u505c"));
 }
@@ -573,6 +611,7 @@ void TreatmentPage::resumeTreatment()
     m_progressTimer.start();
     m_planCombo->setEnabled(false);
     m_layerSlider->setEnabled(false);
+    updateLayerNavigationButtons();
     setButtonState(false, true, false, true);
     appendLog(QStringLiteral("\u6cbb\u7597\u7ee7\u7eed\u6267\u884c"));
 }
@@ -701,6 +740,7 @@ void TreatmentPage::onSafetyChanged(const SafetySnapshot& snapshot)
 
     if (m_safetyKernel->mode() == SystemMode::Paused) {
         m_layerSlider->setEnabled(false);
+        updateLayerNavigationButtons();
         setButtonState(false, false, snapshot.state != SafetyState::Red, true);
         return;
     }
@@ -785,6 +825,7 @@ void TreatmentPage::onLayerSelectionChanged(int index)
     m_deliveredEnergyJ = 0.0;
     updatePlanSummary(&plan);
     updateLayerPreview();
+    updateLayerNavigationButtons();
     setButtonState(m_safetyKernel->snapshot().canStartTreatment && canTreatSelectedLayer(), false, false, false);
 }
 
@@ -930,8 +971,11 @@ void TreatmentPage::generateThreeDimensionalImage()
 void TreatmentPage::setButtonState(bool canStart, bool canPause, bool canResume, bool canStop)
 {
     m_startButton->setEnabled(canStart);
-    m_pauseButton->setEnabled(canPause);
-    m_resumeButton->setEnabled(canResume);
+    m_pauseButton->setEnabled(canPause || canResume);
+    m_pauseButton->setText(canResume ? QStringLiteral("\u7ee7\u7eed") : QStringLiteral("\u6682\u505c"));
+    m_pauseButton->setProperty("pauseResumeState", canResume ? QStringLiteral("resume") : QStringLiteral("pause"));
+    m_pauseButton->style()->unpolish(m_pauseButton);
+    m_pauseButton->style()->polish(m_pauseButton);
     m_stopButton->setEnabled(canStop);
 }
 
@@ -1226,6 +1270,7 @@ void TreatmentPage::configureLayerSelector(const TherapyPlan* plan)
         m_layerSlider->setTickPosition(QSlider::NoTicks);
         m_layerSlider->setEnabled(false);
         m_layerLabel->setText(QStringLiteral("\u6cbb\u7597\u5c42\uff1a\u672a\u9009\u62e9"));
+        updateLayerNavigationButtons();
         return;
     }
 
@@ -1250,6 +1295,18 @@ void TreatmentPage::configureLayerSelector(const TherapyPlan* plan)
             .arg(layers)
             .arg(layerText)
             .arg(static_cast<int>(segment.points.size())));
+    updateLayerNavigationButtons();
+}
+
+void TreatmentPage::updateLayerNavigationButtons()
+{
+    if (m_layerSlider == nullptr || m_previousLayerButton == nullptr || m_nextLayerButton == nullptr) {
+        return;
+    }
+
+    const bool canNavigate = m_layerSlider->isEnabled() && m_layerSlider->minimum() < m_layerSlider->maximum();
+    m_previousLayerButton->setEnabled(canNavigate && m_layerSlider->value() > m_layerSlider->minimum());
+    m_nextLayerButton->setEnabled(canNavigate && m_layerSlider->value() < m_layerSlider->maximum());
 }
 
 void TreatmentPage::updateLayerPreview()

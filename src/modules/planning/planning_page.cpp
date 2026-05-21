@@ -14,11 +14,13 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QImageReader>
 #include <QLineEdit>
 #include <QListWidgetItem>
 #include <QScrollArea>
+#include <QScreen>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QStyle>
@@ -273,6 +275,34 @@ QLabel* createFormLabel(const QString& text)
     return label;
 }
 
+QLabel* createMetricValueLabel(const QString& text)
+{
+    auto* label = new QLabel(text);
+    label->setObjectName(QStringLiteral("planningMetricValueLabel"));
+    label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    label->setMinimumHeight(32);
+    label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    return label;
+}
+
+QWidget* createMetricUnitField(QWidget* valueWidget, const QString& unitText)
+{
+    auto* field = new QWidget();
+    field->setObjectName(QStringLiteral("planningMetricUnitField"));
+    auto* layout = new QHBoxLayout(field);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
+
+    valueWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    layout->addWidget(valueWidget, 1);
+
+    auto* unitLabel = new QLabel(unitText);
+    unitLabel->setObjectName(QStringLiteral("planningMetricUnitLabel"));
+    unitLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    layout->addWidget(unitLabel);
+    return field;
+}
+
 QToolButton* createCollapseButton(QWidget* content, bool expanded = true)
 {
     auto* button = new QToolButton();
@@ -292,6 +322,17 @@ QToolButton* createCollapseButton(QWidget* content, bool expanded = true)
     };
     updateButton(expanded);
     QObject::connect(button, &QToolButton::toggled, button, updateButton);
+    return button;
+}
+
+QToolButton* createSliceNavButton(const QString& text, const QString& tooltip)
+{
+    auto* button = new QToolButton();
+    button->setObjectName(QStringLiteral("planningSliceNavButton"));
+    button->setText(text);
+    button->setToolTip(tooltip);
+    button->setEnabled(false);
+    button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     return button;
 }
 
@@ -394,6 +435,7 @@ PlanningPage::PlanningPage(
     captureForm->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
     captureForm->setHorizontalSpacing(18);
     captureForm->setVerticalSpacing(12);
+    captureForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 
     m_patientCombo = new QComboBox();
     m_patientCombo->setVisible(false);
@@ -409,10 +451,11 @@ PlanningPage::PlanningPage(
     m_stepSpin->setValue(1);
     m_stepSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_stepSpin->setObjectName(QStringLiteral("planningMetricSpin"));
-    m_stepSpin->setSuffix(QStringLiteral(" mm"));
+    m_totalLengthValueLabel = createMetricValueLabel(QStringLiteral("20"));
 
     captureForm->addRow(createFormLabel(QStringLiteral("\u5c42\u6570")), m_layerCountSpin);
-    captureForm->addRow(createFormLabel(QStringLiteral("\u6b65\u957f")), m_stepSpin);
+    captureForm->addRow(createFormLabel(QStringLiteral("\u6b65\u957f")), createMetricUnitField(m_stepSpin, QStringLiteral("mm")));
+    captureForm->addRow(createFormLabel(QStringLiteral("\u603b\u957f")), createMetricUnitField(m_totalLengthValueLabel, QStringLiteral("mm")));
 
     m_acquireImageButton = new QPushButton(QStringLiteral("> \u56fe\u50cf\u91c7\u96c6"));
     m_acquireImageButton->setObjectName(QStringLiteral("planningActionButton"));
@@ -423,7 +466,7 @@ PlanningPage::PlanningPage(
     captureBodyLayout->setContentsMargins(0, 0, 0, 0);
     captureBodyLayout->setSpacing(10);
     captureBodyLayout->addLayout(captureForm);
-    captureBodyLayout->addWidget(m_acquireImageButton, 0, Qt::AlignLeft);
+    captureBodyLayout->addWidget(m_acquireImageButton, 0, Qt::AlignRight);
     auto* captureCollapseButton = createCollapseButton(captureBody, false);
     captureHeader->addWidget(captureCollapseButton);
     registerCollapseSection(QStringLiteral("imageCapture"), captureCollapseButton);
@@ -518,9 +561,10 @@ PlanningPage::PlanningPage(
 
     m_historyMaximizeButton = new QToolButton();
     m_historyMaximizeButton->setObjectName(QStringLiteral("planningMaximizeButton"));
-    m_historyMaximizeButton->setText(QStringLiteral("1:1"));
+    m_historyMaximizeButton->setText(QString());
     m_historyMaximizeButton->setToolTip(QStringLiteral("\u91cd\u7f6e\u5de6\u4fa7\u65e2\u5f80\u5f71\u50cf\u7f29\u653e"));
     m_historyMaximizeButton->setEnabled(false);
+    m_historyMaximizeButton->hide();
 
     historyStack->addWidget(m_historyPreview, 0, 0);
     historyStack->addWidget(m_historyPreviewOverlayLabel, 0, 0);
@@ -534,8 +578,16 @@ PlanningPage::PlanningPage(
     m_historySliceSlider->setObjectName(QStringLiteral("planningSliceSlider"));
     m_historySliceSlider->setRange(0, 0);
     m_historySliceSlider->setEnabled(false);
+    m_historyPrevSliceButton = createSliceNavButton(QStringLiteral("\u2039"), QStringLiteral("\u5207\u6362\u5230\u4e0a\u4e00\u5f20\u65e2\u5f80\u5f71\u50cf"));
+    m_historyNextSliceButton = createSliceNavButton(QStringLiteral("\u203a"), QStringLiteral("\u5207\u6362\u5230\u4e0b\u4e00\u5f20\u65e2\u5f80\u5f71\u50cf"));
+    auto* historySliderRow = new QHBoxLayout();
+    historySliderRow->setContentsMargins(0, 0, 0, 0);
+    historySliderRow->setSpacing(6);
+    historySliderRow->addWidget(m_historyPrevSliceButton);
+    historySliderRow->addWidget(m_historySliceSlider, 1);
+    historySliderRow->addWidget(m_historyNextSliceButton);
     historyLayout->addWidget(m_historySliceSummaryLabel);
-    historyLayout->addWidget(m_historySliceSlider);
+    historyLayout->addLayout(historySliderRow);
 
     auto* currentPane = new QFrame();
     currentPane->setObjectName(QStringLiteral("planningComparePane"));
@@ -637,8 +689,16 @@ PlanningPage::PlanningPage(
     m_currentSliceSlider->setObjectName(QStringLiteral("planningSliceSlider"));
     m_currentSliceSlider->setRange(0, 0);
     m_currentSliceSlider->setEnabled(false);
+    m_currentPrevSliceButton = createSliceNavButton(QStringLiteral("\u2039"), QStringLiteral("\u5207\u6362\u5230\u4e0a\u4e00\u5f20\u5f53\u524d\u6cbb\u7597\u5f71\u50cf"));
+    m_currentNextSliceButton = createSliceNavButton(QStringLiteral("\u203a"), QStringLiteral("\u5207\u6362\u5230\u4e0b\u4e00\u5f20\u5f53\u524d\u6cbb\u7597\u5f71\u50cf"));
+    auto* currentSliderRow = new QHBoxLayout();
+    currentSliderRow->setContentsMargins(0, 0, 0, 0);
+    currentSliderRow->setSpacing(6);
+    currentSliderRow->addWidget(m_currentPrevSliceButton);
+    currentSliderRow->addWidget(m_currentSliceSlider, 1);
+    currentSliderRow->addWidget(m_currentNextSliceButton);
     currentLayout->addWidget(m_currentSliceSummaryLabel);
-    currentLayout->addWidget(m_currentSliceSlider);
+    currentLayout->addLayout(currentSliderRow);
 
     compareLayout->addWidget(historyPane, 1);
     compareLayout->addWidget(currentPane, 1);
@@ -646,6 +706,51 @@ PlanningPage::PlanningPage(
     compareContent->setLayout(compareLayout);
 
     previewFrameLayout->addWidget(compareContent, 1);
+
+    auto* comparisonSyncPanel = new QFrame();
+    comparisonSyncPanel->setObjectName(QStringLiteral("planningComparisonSyncPanel"));
+    auto* comparisonSyncLayout = new QHBoxLayout(comparisonSyncPanel);
+    comparisonSyncLayout->setContentsMargins(10, 6, 10, 6);
+    comparisonSyncLayout->setSpacing(8);
+
+    m_comparisonSyncCheck = new QCheckBox(QStringLiteral("同步移动"));
+    m_comparisonSyncCheck->setObjectName(QStringLiteral("planningComparisonSyncToggle"));
+    m_comparisonSyncCheck->setChecked(false);
+    comparisonSyncLayout->addWidget(m_comparisonSyncCheck);
+
+    m_historySyncStartButton = new QPushButton(QStringLiteral("左起点"));
+    m_historySyncStartButton->setObjectName(QStringLiteral("planningComparisonSyncButton"));
+    m_historySyncStartButton->setToolTip(QStringLiteral("记录左侧既往影像当前切片为同步起点"));
+    comparisonSyncLayout->addWidget(m_historySyncStartButton);
+
+    m_historySyncEndButton = new QPushButton(QStringLiteral("左终点"));
+    m_historySyncEndButton->setObjectName(QStringLiteral("planningComparisonSyncButton"));
+    m_historySyncEndButton->setToolTip(QStringLiteral("记录左侧既往影像当前切片为同步终点"));
+    comparisonSyncLayout->addWidget(m_historySyncEndButton);
+
+    m_currentSyncStartButton = new QPushButton(QStringLiteral("右起点"));
+    m_currentSyncStartButton->setObjectName(QStringLiteral("planningComparisonSyncButton"));
+    m_currentSyncStartButton->setToolTip(QStringLiteral("记录右侧当前治疗影像当前切片为同步起点"));
+    comparisonSyncLayout->addWidget(m_currentSyncStartButton);
+
+    m_currentSyncEndButton = new QPushButton(QStringLiteral("右终点"));
+    m_currentSyncEndButton->setObjectName(QStringLiteral("planningComparisonSyncButton"));
+    m_currentSyncEndButton->setToolTip(QStringLiteral("记录右侧当前治疗影像当前切片为同步终点"));
+    comparisonSyncLayout->addWidget(m_currentSyncEndButton);
+
+    m_resetComparisonSyncButton = new QPushButton(QStringLiteral("重置"));
+    m_resetComparisonSyncButton->setObjectName(QStringLiteral("planningComparisonSyncButton"));
+    comparisonSyncLayout->addWidget(m_resetComparisonSyncButton);
+
+    m_comparisonSyncSlider = new QSlider(Qt::Horizontal);
+    m_comparisonSyncSlider->setObjectName(QStringLiteral("planningComparisonSyncSlider"));
+    m_comparisonSyncSlider->setRange(0, 0);
+    m_comparisonSyncSlider->setEnabled(false);
+    m_comparisonSyncSlider->setToolTip(QStringLiteral("设置四个切片锚点后，拖动此滑条同比切换左右影像"));
+    m_comparisonSyncSlider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    comparisonSyncLayout->addWidget(m_comparisonSyncSlider, 1);
+
+    previewFrameLayout->addWidget(comparisonSyncPanel);
     centerColumn->addWidget(previewFrame, 1);
 
     auto* bottomRow = new QHBoxLayout();
@@ -869,7 +974,6 @@ PlanningPage::PlanningPage(
     m_spacingSpin->setRange(0.5, 10.0);
     m_spacingSpin->setValue(3.0);
     m_spacingSpin->setDecimals(1);
-    m_spacingSpin->setSuffix(QStringLiteral(" mm"));
     m_spacingSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_spacingSpin->setObjectName(QStringLiteral("planningMetricSpin"));
     m_spacingSpin->setMinimumWidth(132);
@@ -878,20 +982,15 @@ PlanningPage::PlanningPage(
     m_dwellSpin->setRange(0.1, 10.0);
     m_dwellSpin->setValue(0.3);
     m_dwellSpin->setDecimals(1);
-    m_dwellSpin->setSuffix(QStringLiteral(" s"));
     m_dwellSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_dwellSpin->setObjectName(QStringLiteral("planningMetricSpin"));
     m_dwellSpin->setMinimumWidth(132);
 
-    m_totalDurationValueLabel = new QLabel(QStringLiteral("12.45 min"));
-    m_totalDurationValueLabel->setObjectName(QStringLiteral("planningMetricValueLabel"));
-    m_totalDurationValueLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    m_totalDurationValueLabel->setMinimumHeight(32);
-    m_totalDurationValueLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_totalDurationValueLabel = createMetricValueLabel(QStringLiteral("12.45"));
 
-    metricsForm->addRow(createFormLabel(QStringLiteral("\u6cbb\u7597\u884c\u8ddd")), m_spacingSpin);
-    metricsForm->addRow(createFormLabel(QStringLiteral("\u70b9\u7597\u65f6\u957f")), m_dwellSpin);
-    metricsForm->addRow(createFormLabel(QStringLiteral("\u6cbb\u7597\u603b\u65f6\u957f")), m_totalDurationValueLabel);
+    metricsForm->addRow(createFormLabel(QStringLiteral("\u6cbb\u7597\u884c\u8ddd")), createMetricUnitField(m_spacingSpin, QStringLiteral("mm")));
+    metricsForm->addRow(createFormLabel(QStringLiteral("\u70b9\u7597\u65f6\u957f")), createMetricUnitField(m_dwellSpin, QStringLiteral("s")));
+    metricsForm->addRow(createFormLabel(QStringLiteral("\u6cbb\u7597\u603b\u65f6\u957f")), createMetricUnitField(m_totalDurationValueLabel, QStringLiteral("min")));
     m_generateTargetsButton = new QPushButton(QStringLiteral("\u4e00\u952e\u751f\u6210\u9776\u70b9"));
     m_generateTargetsButton->setObjectName(QStringLiteral("planningActionButton"));
     m_generateTargetsButton->setMinimumHeight(34);
@@ -932,26 +1031,36 @@ PlanningPage::PlanningPage(
     m_powerSpin = new QDoubleSpinBox();
     m_powerSpin->setRange(20.0, 800.0);
     m_powerSpin->setValue(400.0);
-    m_powerSpin->setVisible(false);
+    m_powerSpin->setDecimals(0);
+    m_powerSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_powerSpin->setObjectName(QStringLiteral("planningMetricSpin"));
+    m_powerSpin->setMinimumWidth(132);
 
     m_powerSlider = new QSlider(Qt::Horizontal);
     m_powerSlider->setRange(20, 800);
     m_powerSlider->setValue(400);
     m_powerSlider->setObjectName(QStringLiteral("planningPowerSlider"));
+    m_powerSlider->setVisible(false);
 
     auto* respiratoryRow = new QHBoxLayout();
+    respiratoryRow->setContentsMargins(0, 0, 0, 0);
+    respiratoryRow->setSpacing(12);
     auto* respiratoryTitle = new QLabel(QStringLiteral("\u547c\u5438\u8ddf\u968f\u72b6\u6001"));
-    respiratoryTitle->setObjectName(QStringLiteral("planningSectionLabel"));
+    respiratoryTitle->setObjectName(QStringLiteral("planningRespiratoryTitleLabel"));
+    respiratoryTitle->setMinimumHeight(36);
     respiratoryRow->addWidget(respiratoryTitle);
     respiratoryRow->addStretch();
     m_respiratoryTrackingCheck = new QCheckBox();
     m_respiratoryTrackingCheck->setObjectName(QStringLiteral("planningToggleCheck"));
-    respiratoryRow->addWidget(m_respiratoryTrackingCheck);
+    m_respiratoryTrackingCheck->setMinimumSize(78, 36);
+    m_respiratoryTrackingCheck->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    respiratoryRow->addWidget(m_respiratoryTrackingCheck, 0, Qt::AlignRight | Qt::AlignVCenter);
 
     m_generateAssessmentButton = new QPushButton(QStringLiteral("\u751f\u6210\u65b9\u6848\u8bc4\u4f30"));
     m_generateAssessmentButton->setObjectName(QStringLiteral("planningActionButton"));
     m_generateAssessmentButton->setMinimumHeight(34);
 
+    powerBodyLayout->addWidget(createMetricUnitField(m_powerSpin, QStringLiteral("W")));
     powerBodyLayout->addWidget(m_powerSlider);
     powerBodyLayout->addLayout(respiratoryRow);
     powerBodyLayout->addWidget(m_generateAssessmentButton, 0, Qt::AlignLeft);
@@ -1112,6 +1221,19 @@ PlanningPage::PlanningPage(
     connect(m_historySliceSlider, &QSlider::valueChanged, this, [this](int value) {
         loadHistoricalSlice(value, true);
     });
+    connect(m_historySliceSlider, &QSlider::rangeChanged, this, [this](int, int) {
+        updateSliceNavigationButtons();
+    });
+    connect(m_historyPrevSliceButton, &QToolButton::clicked, this, [this]() {
+        if (m_historySliceSlider != nullptr && m_historySliceSlider->isEnabled()) {
+            m_historySliceSlider->setValue(std::max(m_historySliceSlider->minimum(), m_historySliceSlider->value() - 1));
+        }
+    });
+    connect(m_historyNextSliceButton, &QToolButton::clicked, this, [this]() {
+        if (m_historySliceSlider != nullptr && m_historySliceSlider->isEnabled()) {
+            m_historySliceSlider->setValue(std::min(m_historySliceSlider->maximum(), m_historySliceSlider->value() + 1));
+        }
+    });
     connect(m_historyMaximizeButton, &QToolButton::clicked, this, &PlanningPage::showHistoryPreviewMaximized);
     connect(m_historyPreview, &MockUltrasoundView::imageZoomChanged, this, [this](qreal) {
         updateHistoryMaximizeButtonState();
@@ -1124,8 +1246,50 @@ PlanningPage::PlanningPage(
         }
         loadStagedSlice(value);
     });
+    connect(m_currentSliceSlider, &QSlider::rangeChanged, this, [this](int, int) {
+        updateSliceNavigationButtons();
+    });
+    connect(m_currentPrevSliceButton, &QToolButton::clicked, this, [this]() {
+        if (m_currentSliceSlider != nullptr && m_currentSliceSlider->isEnabled()) {
+            m_currentSliceSlider->setValue(std::max(m_currentSliceSlider->minimum(), m_currentSliceSlider->value() - 1));
+        }
+    });
+    connect(m_currentNextSliceButton, &QToolButton::clicked, this, [this]() {
+        if (m_currentSliceSlider != nullptr && m_currentSliceSlider->isEnabled()) {
+            m_currentSliceSlider->setValue(std::min(m_currentSliceSlider->maximum(), m_currentSliceSlider->value() + 1));
+        }
+    });
     connect(m_modelList, &QListWidget::currentRowChanged, this, &PlanningPage::onStagedSliceSelectionChanged);
     connect(m_preview, &MockUltrasoundView::annotationStrokesChanged, this, &PlanningPage::onPreviewAnnotationsChanged);
+    connect(m_comparisonSyncCheck, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (enabled && !hasComparisonSyncCalibration()) {
+            const QSignalBlocker blocker(m_comparisonSyncCheck);
+            m_comparisonSyncCheck->setChecked(false);
+            enabled = false;
+        }
+        updateComparisonSyncState();
+        if (enabled && m_comparisonSyncSlider != nullptr) {
+            if (m_comparisonSyncSlider->value() != 0) {
+                m_comparisonSyncSlider->setValue(0);
+            } else {
+                applyComparisonSyncSliderValue(0);
+            }
+        }
+    });
+    connect(m_historySyncStartButton, &QPushButton::clicked, this, [this]() {
+        markComparisonSyncAnchor(true, true);
+    });
+    connect(m_historySyncEndButton, &QPushButton::clicked, this, [this]() {
+        markComparisonSyncAnchor(true, false);
+    });
+    connect(m_currentSyncStartButton, &QPushButton::clicked, this, [this]() {
+        markComparisonSyncAnchor(false, true);
+    });
+    connect(m_currentSyncEndButton, &QPushButton::clicked, this, [this]() {
+        markComparisonSyncAnchor(false, false);
+    });
+    connect(m_resetComparisonSyncButton, &QPushButton::clicked, this, &PlanningPage::resetComparisonSyncCalibration);
+    connect(m_comparisonSyncSlider, &QSlider::valueChanged, this, &PlanningPage::applyComparisonSyncSliderValue);
     connect(m_generateTargetsButton, &QPushButton::clicked, this, &PlanningPage::generateTargetsForCurrentSlice);
     connect(m_generateAssessmentButton, &QPushButton::clicked, this, &PlanningPage::generateAssessmentForCurrentPlan);
     connect(m_previewPlanButton, &QPushButton::clicked, this, &PlanningPage::previewCurrentPlan);
@@ -1173,6 +1337,7 @@ PlanningPage::PlanningPage(
     });
     connect(m_dwellSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [refreshMetrics](double) { refreshMetrics(); });
     connect(m_layerCountSpin, qOverload<int>(&QSpinBox::valueChanged), this, [refreshMetrics](int) { refreshMetrics(); });
+    connect(m_stepSpin, qOverload<int>(&QSpinBox::valueChanged), this, [refreshMetrics](int) { refreshMetrics(); });
     const auto onPatternModeToggled = [this, refreshMetrics](bool checked) {
         refreshMetrics();
         if (!checked || m_initializingUi) {
@@ -1241,6 +1406,7 @@ PlanningPage::PlanningPage(
     refreshImagingPaths(QString());
     refreshDerivedMetrics();
     clearStartupDisplay();
+    updateComparisonSyncState();
     m_activePathStateKey = pathStateKeyForRow(m_pathList != nullptr ? m_pathList->currentRow() : -1);
     restoreLastPersonalizationProfile();
     m_initializingUi = false;
@@ -1558,7 +1724,7 @@ void PlanningPage::generateTargetsForCurrentSlice()
         QStringLiteral("\u5168\u5c40\u884c\u8ddd\uff1a%1 mm | \u70b9\u7597\u65f6\u957f\uff1a%2 s | \u529f\u7387\uff1a%3 W")
             .arg(m_spacingSpin->value(), 0, 'f', 1)
             .arg(m_dwellSpin->value(), 0, 'f', 1)
-            .arg(m_powerSlider->value())
+            .arg(m_powerSpin->value(), 0, 'f', 0)
     };
     if (!generatedSliceLines.isEmpty()) {
         summaryLines << QString() << QStringLiteral("\u5df2\u751f\u6210\uff1a") << generatedSliceLines;
@@ -2145,6 +2311,7 @@ void PlanningPage::loadStagedSlice(int row)
             m_currentSliceSummaryLabel->setText(summaryText);
             m_currentSliceSummaryLabel->setToolTip(QString());
         }
+        updateSliceNavigationButtons();
         return;
     }
 
@@ -2177,6 +2344,7 @@ void PlanningPage::loadStagedSlice(int row)
                 : QStringLiteral("\u672a\u5f00\u542f"))
     };
     updateAcquisitionSummary(QStringLiteral("\u5207\u7247\u7f16\u8f91"), lines);
+    updateSliceNavigationButtons();
 }
 
 QPixmap PlanningPage::renderCurrentSlicePixmap(int row, const QSize& size) const
@@ -2307,7 +2475,7 @@ void PlanningPage::applyCurrentControlsToAllSlices()
         slice.pattern = selectedPattern;
         slice.spacingMm = m_spacingSpin->value();
         slice.dwellSeconds = m_dwellSpin->value();
-        slice.powerWatts = m_powerSlider->value();
+        slice.powerWatts = m_powerSpin->value();
         slice.respiratoryTrackingEnabled = m_respiratoryTrackingCheck->isChecked();
         slice.deliveryMode = deliveryMode;
     }
@@ -2358,7 +2526,7 @@ void PlanningPage::storeCurrentSliceControls()
     slice.pattern = m_lineTreatmentRadio->isChecked() ? TreatmentPattern::Line : TreatmentPattern::Point;
     slice.spacingMm = m_spacingSpin->value();
     slice.dwellSeconds = m_dwellSpin->value();
-    slice.powerWatts = m_powerSlider->value();
+    slice.powerWatts = m_powerSpin->value();
     slice.respiratoryTrackingEnabled = m_respiratoryTrackingCheck->isChecked();
     slice.deliveryMode = m_segmentedTreatmentRadio->isChecked() ? QStringLiteral("\u5206\u6bb5\u6267\u884c") : QStringLiteral("\u76f4\u63a5\u6cbb\u7597");
 }
@@ -2673,7 +2841,8 @@ void PlanningPage::applyPlanToUi(const TherapyPlan& plan)
 {
     const QSignalBlocker spacingBlocker(m_spacingSpin);
     const QSignalBlocker dwellBlocker(m_dwellSpin);
-    const QSignalBlocker powerBlocker(m_powerSlider);
+    const QSignalBlocker powerSliderBlocker(m_powerSlider);
+    const QSignalBlocker powerSpinBlocker(m_powerSpin);
     const QSignalBlocker respiratoryBlocker(m_respiratoryTrackingCheck);
     const QSignalBlocker directBlocker(m_directTreatmentRadio);
     const QSignalBlocker segmentedBlocker(m_segmentedTreatmentRadio);
@@ -2688,6 +2857,7 @@ void PlanningPage::applyPlanToUi(const TherapyPlan& plan)
     }
     if (plan.plannedPowerWatts > 0.0) {
         m_powerSlider->setValue(static_cast<int>(plan.plannedPowerWatts));
+        m_powerSpin->setValue(plan.plannedPowerWatts);
     }
     m_respiratoryTrackingCheck->setChecked(plan.respiratoryTrackingEnabled);
     m_directTreatmentRadio->setChecked(plan.deliveryMode != QStringLiteral("\u5206\u6bb5\u6267\u884c"));
@@ -2773,7 +2943,7 @@ void PlanningPage::refreshPowerCurve()
 
 double PlanningPage::currentRealtimeTransducerPowerWatts() const
 {
-    const double setPowerWatts = m_powerSlider != nullptr ? static_cast<double>(m_powerSlider->value()) : 0.0;
+    const double setPowerWatts = m_powerSpin != nullptr ? m_powerSpin->value() : 0.0;
     if (setPowerWatts <= 0.0) {
         return 0.0;
     }
@@ -2909,6 +3079,7 @@ void PlanningPage::resetActivePathWorkspace()
         m_currentSliceSlider->setValue(0);
         m_currentSliceSlider->setEnabled(false);
     }
+    updateSliceNavigationButtons();
 
     if (m_preview != nullptr) {
         m_preview->setAnnotationStrokes({});
@@ -2958,6 +3129,7 @@ void PlanningPage::resetActivePathWorkspace()
     updateAssessmentMetricsPanel(0.0, 0.0);
     updateAssessmentText(nullptr);
     updatePlanPreviewText(nullptr);
+    resetComparisonSyncCalibration();
     refreshDerivedMetrics();
     updatePathActionState();
 }
@@ -3046,6 +3218,179 @@ void PlanningPage::showHistoryPreviewMaximized()
     updateHistoryMaximizeButtonState();
 }
 
+void PlanningPage::markComparisonSyncAnchor(bool historySide, bool startPoint)
+{
+    QSlider* slider = historySide ? m_historySliceSlider : m_currentSliceSlider;
+    const bool hasSlices = historySide ? !m_historyImageSeries.isEmpty() : !m_stagedSlices.isEmpty();
+    if (slider == nullptr || !hasSlices || slider->maximum() < slider->minimum()) {
+        return;
+    }
+
+    const int index = qBound(slider->minimum(), slider->value(), slider->maximum());
+    if (historySide) {
+        if (startPoint) {
+            m_historySyncStartIndex = index;
+            m_hasHistorySyncStartPoint = true;
+        } else {
+            m_historySyncEndIndex = index;
+            m_hasHistorySyncEndPoint = true;
+        }
+    } else {
+        if (startPoint) {
+            m_currentSyncStartIndex = index;
+            m_hasCurrentSyncStartPoint = true;
+        } else {
+            m_currentSyncEndIndex = index;
+            m_hasCurrentSyncEndPoint = true;
+        }
+    }
+
+    updateComparisonSyncState();
+}
+
+void PlanningPage::resetComparisonSyncCalibration()
+{
+    m_hasHistorySyncStartPoint = false;
+    m_hasHistorySyncEndPoint = false;
+    m_hasCurrentSyncStartPoint = false;
+    m_hasCurrentSyncEndPoint = false;
+    m_historySyncStartIndex = -1;
+    m_historySyncEndIndex = -1;
+    m_currentSyncStartIndex = -1;
+    m_currentSyncEndIndex = -1;
+
+    if (m_historyPreview != nullptr) {
+        m_historyPreview->clearComparisonCalibrationPoints();
+    }
+    if (m_preview != nullptr) {
+        m_preview->clearComparisonCalibrationPoints();
+    }
+    if (m_comparisonSyncCheck != nullptr) {
+        const QSignalBlocker blocker(m_comparisonSyncCheck);
+        m_comparisonSyncCheck->setChecked(false);
+    }
+    if (m_comparisonSyncSlider != nullptr) {
+        const QSignalBlocker blocker(m_comparisonSyncSlider);
+        m_comparisonSyncSlider->setRange(0, 0);
+        m_comparisonSyncSlider->setValue(0);
+        m_comparisonSyncSlider->setEnabled(false);
+    }
+    updateComparisonSyncState();
+}
+
+bool PlanningPage::hasComparisonSyncCalibration() const
+{
+    if (!m_hasHistorySyncStartPoint || !m_hasHistorySyncEndPoint
+        || !m_hasCurrentSyncStartPoint || !m_hasCurrentSyncEndPoint) {
+        return false;
+    }
+
+    const auto inRange = [](const QSlider* slider, int index) {
+        return slider != nullptr && index >= slider->minimum() && index <= slider->maximum();
+    };
+
+    return inRange(m_historySliceSlider, m_historySyncStartIndex)
+        && inRange(m_historySliceSlider, m_historySyncEndIndex)
+        && inRange(m_currentSliceSlider, m_currentSyncStartIndex)
+        && inRange(m_currentSliceSlider, m_currentSyncEndIndex)
+        && m_historySyncStartIndex != m_historySyncEndIndex
+        && m_currentSyncStartIndex != m_currentSyncEndIndex;
+}
+
+int PlanningPage::comparisonSyncRange() const
+{
+    if (!hasComparisonSyncCalibration()) {
+        return 0;
+    }
+
+    return std::max(
+        std::abs(m_historySyncEndIndex - m_historySyncStartIndex),
+        std::abs(m_currentSyncEndIndex - m_currentSyncStartIndex));
+}
+
+int PlanningPage::mappedComparisonSliceIndex(int syncValue, int startIndex, int endIndex) const
+{
+    const int syncRange = comparisonSyncRange();
+    if (syncRange <= 0) {
+        return startIndex;
+    }
+
+    const double ratio = qBound(0.0, static_cast<double>(syncValue) / static_cast<double>(syncRange), 1.0);
+    return qRound(static_cast<double>(startIndex) + static_cast<double>(endIndex - startIndex) * ratio);
+}
+
+void PlanningPage::updateComparisonSyncState()
+{
+    const bool hasAnyPoint = m_hasHistorySyncStartPoint || m_hasHistorySyncEndPoint
+        || m_hasCurrentSyncStartPoint || m_hasCurrentSyncEndPoint;
+    const bool ready = hasComparisonSyncCalibration();
+    const bool enabled = ready && m_comparisonSyncCheck != nullptr && m_comparisonSyncCheck->isChecked();
+
+    const auto updateAnchorButtonText = [](QPushButton* button, const QString& baseText, bool hasAnchor, int index) {
+        if (button == nullptr) {
+            return;
+        }
+        button->setText(hasAnchor ? QStringLiteral("%1 %2").arg(baseText).arg(index + 1) : baseText);
+    };
+
+    updateAnchorButtonText(m_historySyncStartButton, QStringLiteral("左起点"), m_hasHistorySyncStartPoint, m_historySyncStartIndex);
+    updateAnchorButtonText(m_historySyncEndButton, QStringLiteral("左终点"), m_hasHistorySyncEndPoint, m_historySyncEndIndex);
+    updateAnchorButtonText(m_currentSyncStartButton, QStringLiteral("右起点"), m_hasCurrentSyncStartPoint, m_currentSyncStartIndex);
+    updateAnchorButtonText(m_currentSyncEndButton, QStringLiteral("右终点"), m_hasCurrentSyncEndPoint, m_currentSyncEndIndex);
+
+    if (m_comparisonSyncCheck != nullptr) {
+        m_comparisonSyncCheck->setEnabled(ready);
+        if (!ready && m_comparisonSyncCheck->isChecked()) {
+            const QSignalBlocker blocker(m_comparisonSyncCheck);
+            m_comparisonSyncCheck->setChecked(false);
+        }
+    }
+    if (m_resetComparisonSyncButton != nullptr) {
+        m_resetComparisonSyncButton->setEnabled(hasAnyPoint);
+    }
+    if (m_comparisonSyncSlider != nullptr) {
+        const int range = ready ? comparisonSyncRange() : 0;
+        const QSignalBlocker blocker(m_comparisonSyncSlider);
+        m_comparisonSyncSlider->setRange(0, range);
+        m_comparisonSyncSlider->setEnabled(enabled);
+        if (!ready || m_comparisonSyncSlider->value() > range) {
+            m_comparisonSyncSlider->setValue(0);
+        }
+    }
+
+    if (enabled && m_comparisonSyncSlider != nullptr) {
+        applyComparisonSyncSliderValue(m_comparisonSyncSlider->value());
+    }
+}
+
+void PlanningPage::applyComparisonSyncSliderValue(int value)
+{
+    if (m_applyingComparisonSync
+        || m_comparisonSyncCheck == nullptr
+        || !m_comparisonSyncCheck->isChecked()
+        || !hasComparisonSyncCalibration()) {
+        return;
+    }
+
+    const int historyIndex = qBound(
+        m_historySliceSlider->minimum(),
+        mappedComparisonSliceIndex(value, m_historySyncStartIndex, m_historySyncEndIndex),
+        m_historySliceSlider->maximum());
+    const int currentIndex = qBound(
+        m_currentSliceSlider->minimum(),
+        mappedComparisonSliceIndex(value, m_currentSyncStartIndex, m_currentSyncEndIndex),
+        m_currentSliceSlider->maximum());
+
+    m_applyingComparisonSync = true;
+    if (m_historySliceSlider != nullptr && m_historySliceSlider->value() != historyIndex) {
+        m_historySliceSlider->setValue(historyIndex);
+    }
+    if (m_currentSliceSlider != nullptr && m_currentSliceSlider->value() != currentIndex) {
+        m_currentSliceSlider->setValue(currentIndex);
+    }
+    m_applyingComparisonSync = false;
+}
+
 void PlanningPage::showCurrentPreviewMaximized()
 {
     if (m_preview == nullptr) {
@@ -3131,10 +3476,26 @@ void PlanningPage::showCurrentPreviewMaximized()
     const QSize basePreviewSize = m_preview != nullptr && m_preview->size().isValid()
         ? m_preview->size()
         : QSize(720, 540);
-    const QSize expandedPreviewSize = basePreviewSize.scaled(QSize(1400, 1000), Qt::KeepAspectRatio);
-    dialog.resize(expandedPreviewSize.width() + 60, expandedPreviewSize.height() + 120);
+    const QRect availableGeometry = QGuiApplication::primaryScreen() != nullptr
+        ? QGuiApplication::primaryScreen()->availableGeometry()
+        : QRect(0, 0, 1440, 900);
+    const QSize previewLimit(
+        std::max(640, availableGeometry.width() - 180),
+        std::max(420, availableGeometry.height() - 300));
+    const QSize expandedPreviewSize = basePreviewSize.scaled(previewLimit, Qt::KeepAspectRatio);
+    dialog.resize(
+        std::min(expandedPreviewSize.width() + 60, availableGeometry.width() - 40),
+        std::min(expandedPreviewSize.height() + 220, availableGeometry.height() - 40));
 
-    auto* previewStack = new QGridLayout();
+    auto* previewArea = new QWidget();
+    previewArea->setObjectName(QStringLiteral("planningDialogPreviewArea"));
+    auto* previewAreaLayout = new QVBoxLayout(previewArea);
+    previewAreaLayout->setContentsMargins(0, 0, 0, 0);
+    previewAreaLayout->setSpacing(6);
+
+    auto* previewStackHost = new QWidget();
+    previewStackHost->setObjectName(QStringLiteral("planningDialogPreviewStack"));
+    auto* previewStack = new QGridLayout(previewStackHost);
     previewStack->setContentsMargins(0, 0, 0, 0);
     previewStack->setSpacing(0);
     auto* dialogPreview = new MockUltrasoundView();
@@ -3144,7 +3505,11 @@ void PlanningPage::showCurrentPreviewMaximized()
     dialogPreview->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     dialogPreview->setImageZoomEnabled(true);
     dialogPreview->setAnnotationEnabled(true);
-    configureCurrentPreviewView(dialogPreview, m_currentStagedSliceIndex, true);
+    const int dialogSliceCount = m_stagedSlices.size();
+    int dialogSliceIndex = m_currentStagedSliceIndex >= 0 && m_currentStagedSliceIndex < dialogSliceCount
+        ? m_currentStagedSliceIndex
+        : 0;
+    configureCurrentPreviewView(dialogPreview, dialogSliceIndex, true);
 
     auto* overlayLabel = new QLabel();
     overlayLabel->setObjectName(QStringLiteral("planningPreviewOverlayLabel"));
@@ -3154,9 +3519,36 @@ void PlanningPage::showCurrentPreviewMaximized()
     overlayLabel->setText(showOverlay && m_previewOverlayLabel != nullptr ? m_previewOverlayLabel->text() : QString());
     overlayLabel->setVisible(showOverlay);
 
+    auto* dialogPreviousSliceButton = createSliceNavButton(
+        QStringLiteral("\u2039"),
+        QStringLiteral("\u5207\u6362\u5230\u4e0a\u4e00\u5f20\u5f53\u524d\u6cbb\u7597\u5f71\u50cf"));
+    auto* dialogNextSliceButton = createSliceNavButton(
+        QStringLiteral("\u203a"),
+        QStringLiteral("\u5207\u6362\u5230\u4e0b\u4e00\u5f20\u5f53\u524d\u6cbb\u7597\u5f71\u50cf"));
+    auto* dialogSliceSlider = new QSlider(Qt::Horizontal);
+    dialogSliceSlider->setObjectName(QStringLiteral("planningSliceSlider"));
+    dialogSliceSlider->setRange(0, std::max(0, dialogSliceCount - 1));
+    dialogSliceSlider->setEnabled(dialogSliceCount > 1);
+    dialogSliceSlider->setValue(dialogSliceIndex);
+
+    auto* dialogSliceNavigationPanel = new QFrame();
+    dialogSliceNavigationPanel->setObjectName(QStringLiteral("planningDialogSliceNavigationPanel"));
+    dialogSliceNavigationPanel->setMinimumWidth(expandedPreviewSize.width());
+    dialogSliceNavigationPanel->setMaximumWidth(expandedPreviewSize.width());
+    dialogSliceNavigationPanel->setMinimumHeight(52);
+    dialogSliceNavigationPanel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    auto* dialogSliceNavigationRow = new QHBoxLayout(dialogSliceNavigationPanel);
+    dialogSliceNavigationRow->setContentsMargins(10, 6, 10, 6);
+    dialogSliceNavigationRow->setSpacing(8);
+    dialogSliceNavigationRow->addWidget(dialogPreviousSliceButton);
+    dialogSliceNavigationRow->addWidget(dialogSliceSlider, 1);
+    dialogSliceNavigationRow->addWidget(dialogNextSliceButton);
+
     previewStack->addWidget(dialogPreview, 0, 0, Qt::AlignCenter);
     previewStack->addWidget(overlayLabel, 0, 0);
-    layout->addLayout(previewStack, 1);
+    previewAreaLayout->addWidget(previewStackHost, 1, Qt::AlignHCenter);
+    previewAreaLayout->addWidget(dialogSliceNavigationPanel, 0, Qt::AlignHCenter);
+    layout->addWidget(previewArea, 1);
 
     auto* hintLabel = new QLabel(QStringLiteral("\u5168\u5c4f\u9884\u89c8\u53ef\u7528\u6eda\u8f6e\u7f29\u653e\uff0c\u5de6\u952e\u7ee7\u7eed\u753b\u7b14\u8ff9\uff0c\u53f3\u952e\u62d6\u52a8\u5e73\u79fb\uff0c\u7b14\u8ff9\u4f1a\u968f\u56fe\u50cf\u540c\u6b65\u663e\u793a\u3002"));
     hintLabel->setObjectName(QStringLiteral("planningSliceInfoLabel"));
@@ -3175,13 +3567,66 @@ void PlanningPage::showCurrentPreviewMaximized()
     connect(dialogClearButton, &QToolButton::clicked, dialogPreview, &MockUltrasoundView::clearAnnotations);
     connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
 
+    const auto updateDialogSliceNavigation = [&]() {
+        const bool canNavigate = dialogSliceSlider->isEnabled() && dialogSliceSlider->maximum() > dialogSliceSlider->minimum();
+        dialogPreviousSliceButton->setEnabled(canNavigate && dialogSliceSlider->value() > dialogSliceSlider->minimum());
+        dialogNextSliceButton->setEnabled(canNavigate && dialogSliceSlider->value() < dialogSliceSlider->maximum());
+    };
+    const auto saveDialogSliceAnnotations = [&]() {
+        if (dialogSliceIndex < 0 || dialogSliceIndex >= m_stagedSlices.size()) {
+            return;
+        }
+
+        const QVector<AnnotationStroke> rawAnnotations = dialogPreview->annotationStrokes();
+        const QVector<AnnotationStroke> normalizedAnnotations = normalizeClosedAnnotations(rawAnnotations);
+        if (!annotationStrokesEqual(rawAnnotations, normalizedAnnotations)) {
+            const QSignalBlocker blocker(dialogPreview);
+            dialogPreview->setAnnotationStrokes(normalizedAnnotations);
+        }
+
+        StagedSliceState& slice = m_stagedSlices[dialogSliceIndex];
+        slice.annotations = normalizedAnnotations;
+        slice.edited = !slice.annotations.isEmpty();
+    };
+    const auto loadDialogSlice = [&](int row) {
+        if (m_stagedSlices.isEmpty()) {
+            updateDialogSliceNavigation();
+            return;
+        }
+
+        saveDialogSliceAnnotations();
+        dialogSliceIndex = qBound(0, row, m_stagedSlices.size() - 1);
+        recalculateRespiratoryTrackingForSlice(dialogSliceIndex);
+        dialogPreview->resetImageZoom();
+        configureCurrentPreviewView(dialogPreview, dialogSliceIndex, false);
+        overlayLabel->setVisible(false);
+        updateDialogSliceNavigation();
+    };
+    connect(dialogSliceSlider, &QSlider::valueChanged, this, loadDialogSlice);
+    connect(dialogPreviousSliceButton, &QToolButton::clicked, this, [dialogSliceSlider]() {
+        if (dialogSliceSlider->isEnabled()) {
+            dialogSliceSlider->setValue(std::max(dialogSliceSlider->minimum(), dialogSliceSlider->value() - 1));
+        }
+    });
+    connect(dialogNextSliceButton, &QToolButton::clicked, this, [dialogSliceSlider]() {
+        if (dialogSliceSlider->isEnabled()) {
+            dialogSliceSlider->setValue(std::min(dialogSliceSlider->maximum(), dialogSliceSlider->value() + 1));
+        }
+    });
+    updateDialogSliceNavigation();
+
     dialog.show();
     dialog.exec();
     if (m_preview != nullptr) {
-        m_preview->setAnnotationStrokes(dialogPreview->annotationStrokes());
-        if (m_currentStagedSliceIndex >= 0 && m_currentStagedSliceIndex < m_stagedSlices.size()) {
-            persistCurrentSliceAnnotations();
-            refreshCurrentSliceVisualization();
+        saveDialogSliceAnnotations();
+        if (dialogSliceIndex >= 0 && dialogSliceIndex < m_stagedSlices.size()) {
+            if (m_modelList != nullptr && m_modelList->currentRow() != dialogSliceIndex) {
+                m_modelList->setCurrentRow(dialogSliceIndex);
+            } else {
+                loadStagedSlice(dialogSliceIndex);
+            }
+        } else {
+            m_preview->setAnnotationStrokes(dialogPreview->annotationStrokes());
         }
     }
 }
@@ -3332,6 +3777,7 @@ void PlanningPage::loadHistoricalSlice(int row, bool announce)
         m_historySliceSummaryLabel->setToolTip(pathText);
     }
     updateHistoryMaximizeButtonState();
+    updateSliceNavigationButtons();
 
     if (announce) {
         updateAcquisitionSummary(
@@ -3374,7 +3820,9 @@ void PlanningPage::clearHistoricalComparison(const QString& overlayText)
         m_historySliceSummaryLabel->setText(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf\uff1a\u6682\u65e0\u6570\u636e"));
         m_historySliceSummaryLabel->setToolTip(QString());
     }
+    resetComparisonSyncCalibration();
     updateHistoryMaximizeButtonState();
+    updateSliceNavigationButtons();
 }
 
 void PlanningPage::updateHistoryMaximizeButtonState()
@@ -3388,6 +3836,23 @@ void PlanningPage::updateHistoryMaximizeButtonState()
         && m_historyPreview != nullptr
         && m_historyPreview->imageZoomFactor() > 1.001;
     m_historyMaximizeButton->setEnabled(canResetZoom);
+}
+
+void PlanningPage::updateSliceNavigationButtons()
+{
+    const auto updateButtons = [](QSlider* slider, QToolButton* previousButton, QToolButton* nextButton) {
+        const bool canNavigate = slider != nullptr && slider->isEnabled() && slider->maximum() > slider->minimum();
+        if (previousButton != nullptr) {
+            previousButton->setEnabled(canNavigate && slider->value() > slider->minimum());
+        }
+        if (nextButton != nullptr) {
+            nextButton->setEnabled(canNavigate && slider->value() < slider->maximum());
+        }
+    };
+
+    updateButtons(m_historySliceSlider, m_historyPrevSliceButton, m_historyNextSliceButton);
+    updateButtons(m_currentSliceSlider, m_currentPrevSliceButton, m_currentNextSliceButton);
+    updateComparisonSyncState();
 }
 
 void PlanningPage::addPathItem()
@@ -3489,7 +3954,7 @@ void PlanningPage::simulateImageAcquisition()
         stagedState.pattern = m_lineTreatmentRadio->isChecked() ? TreatmentPattern::Line : TreatmentPattern::Point;
         stagedState.spacingMm = m_spacingSpin->value();
         stagedState.dwellSeconds = m_dwellSpin->value();
-        stagedState.powerWatts = m_powerSlider->value();
+        stagedState.powerWatts = m_powerSpin->value();
         stagedState.respiratoryTrackingEnabled = m_respiratoryTrackingCheck->isChecked();
         stagedState.deliveryMode = m_segmentedTreatmentRadio->isChecked() ? QStringLiteral("\u5206\u6bb5\u6267\u884c") : QStringLiteral("\u76f4\u63a5\u6cbb\u7597");
         m_stagedSlices.push_back(stagedState);
@@ -3750,8 +4215,11 @@ void PlanningPage::refreshDerivedMetrics()
     }
     const double totalMinutes = (pointCount * m_dwellSpin->value()) / 60.0;
 
-    m_totalDurationValueLabel->setText(QStringLiteral("%1 min").arg(totalMinutes, 0, 'f', 2));
-    m_powerValueLabel->setText(QStringLiteral("%1W").arg(m_powerSlider->value()));
+    if (m_totalLengthValueLabel != nullptr) {
+        m_totalLengthValueLabel->setText(QString::number(m_layerCountSpin->value() * m_stepSpin->value()));
+    }
+    m_totalDurationValueLabel->setText(QStringLiteral("%1").arg(totalMinutes, 0, 'f', 2));
+    m_powerValueLabel->setText(QStringLiteral("%1W").arg(m_powerSpin->value(), 0, 'f', 0));
     refreshPowerCurve();
 }
 

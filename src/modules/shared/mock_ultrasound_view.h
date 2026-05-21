@@ -30,8 +30,12 @@ public:
     void setImageZoomEnabled(bool enabled);
     bool isImageZoomEnabled() const;
     void resetImageZoom();
+    void setImageZoom(qreal zoomFactor, const QPointF& zoomCenterNormalized);
     qreal imageZoomFactor() const;
     QPointF imageZoomCenterNormalized() const;
+    void beginComparisonCalibrationPointCapture(int pointIndex);
+    void setComparisonCalibrationPoint(int pointIndex, const QPointF& normalizedPoint);
+    void clearComparisonCalibrationPoints();
     void setSliceContext(int sliceIndex, int totalSliceCount);
     void setAnnotationEnabled(bool enabled);
     void setCurrentAnnotationColor(const QColor& color);
@@ -43,6 +47,8 @@ public:
 signals:
     void annotationStrokesChanged();
     void imageZoomChanged(qreal zoomFactor);
+    void imageViewportChanged(qreal zoomFactor, QPointF zoomCenterNormalized);
+    void comparisonCalibrationPointCaptured(int pointIndex, QPointF normalizedPoint);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -64,6 +70,8 @@ private:
     void panImageBy(const QPointF& widgetDelta);
     QPointF normalizePoint(const QPointF& widgetPoint) const;
     QPointF denormalizePoint(const QPointF& normalizedPoint) const;
+    void drawComparisonCalibration(QPainter* painter);
+    void updateInteractionCursor();
     bool canStartImagePan(Qt::MouseButton button, const QPointF& widgetPoint) const;
     bool isDrawablePoint(const QPointF& widgetPoint) const;
     qreal sliceRatio() const;
@@ -82,6 +90,11 @@ private:
     bool m_isDrawing {false};
     bool m_isPanningImage {false};
     QPointF m_lastPanPosition;
+    int m_pendingComparisonPointIndex {-1};
+    bool m_hasComparisonStartPoint {false};
+    bool m_hasComparisonEndPoint {false};
+    QPointF m_comparisonStartPointNormalized {0.5, 0.5};
+    QPointF m_comparisonEndPointNormalized {0.5, 0.5};
     QColor m_currentAnnotationColor {QColor(201, 71, 51)};
     QVector<AnnotationStroke> m_annotationStrokes;
     AnnotationStroke m_activeStroke;

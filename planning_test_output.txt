@@ -1,0 +1,34 @@
+********* Start testing of PlanningPageRegressionTests *********
+Config: Using QtTest library 6.2.0, Qt 6.2.0 (x86_64-little_endian-llp64 shared (dynamic) debug build; by MSVC 2019), windows 10
+PASS   : PlanningPageRegressionTests::initTestCase()
+PASS   : PlanningPageRegressionTests::linePreviewRenderDoesNotCrash()
+PASS   : PlanningPageRegressionTests::pointPreviewRenderDoesNotCrash()
+PASS   : PlanningPageRegressionTests::approvalButtonApprovesDraftPlan()
+PASS   : PlanningPageRegressionTests::planningPageSectionsAreCollapsible()
+FAIL!  : PlanningPageRegressionTests::activePlanChangesDoNotAutoLoadSeedHistory() 'historySummaryLabel != nullptr' returned FALSE. ()
+D:\PanTheraSys\tests\modules\planning_page_regression_tests.cpp(531) : failure location
+PASS   : PlanningPageRegressionTests::generateTargetsDoesNotAutoLoadSeedHistory()
+PASS   : PlanningPageRegressionTests::historyPreviewWheelZoomStaysInlineAndResettable()
+FAIL!  : PlanningPageRegressionTests::comparisonSyncSliderLinksSlicePositions() Compared values are not the same
+   Actual   (historySlider->maximum()): 0
+   Expected (9)                       : 9
+D:\PanTheraSys\tests\modules\planning_page_regression_tests.cpp(781) : failure location
+PASS   : PlanningPageRegressionTests::annotationPreviewSupportsZoomWithoutBackgroundImage()
+PASS   : PlanningPageRegressionTests::annotationPreviewSupportsZoomAndPanWithBackgroundImage()
+QWARN  : PlanningPageRegressionTests::currentPreviewMaximizeDialogKeepsAnnotationsVisible() QWindowsWindow::setGeometry: Unable to set geometry 432x640+428+80 (frame: 448x679+420+49) on QWidgetWindow/"planningCurrentPreviewDialogWindow" on "\\.\DISPLAY1". Resulting geometry: 432x642+428+80 (frame: 448x681+420+49) margins: 8, 31, 8, 8 minimum size: 408x626 MINMAXINFO maxSize=0,0 maxpos=0,0 mintrack=424,665 maxtrack=0,0)
+QWARN  : PlanningPageRegressionTests::currentPreviewMaximizeDialogKeepsAnnotationsVisible() QWindowsWindow::setGeometry: Unable to set geometry 432x640+428+80 (frame: 448x679+420+49) on QWidgetWindow/"planningCurrentPreviewDialogWindow" on "\\.\DISPLAY1". Resulting geometry: 432x642+428+80 (frame: 448x681+420+49) margins: 8, 31, 8, 8 minimum size: 408x626 MINMAXINFO maxSize=0,0 maxpos=0,0 mintrack=424,665 maxtrack=0,0)
+PASS   : PlanningPageRegressionTests::currentPreviewMaximizeDialogKeepsAnnotationsVisible()
+QWARN  : PlanningPageRegressionTests::currentPreviewMaximizeDialogSyncsAnnotationsOnWindowClose() QWindowsWindow::setGeometry: Unable to set geometry 432x640+428+80 (frame: 448x679+420+49) on QWidgetWindow/"planningCurrentPreviewDialogWindow" on "\\.\DISPLAY1". Resulting geometry: 432x642+428+80 (frame: 448x681+420+49) margins: 8, 31, 8, 8 minimum size: 408x626 MINMAXINFO maxSize=0,0 maxpos=0,0 mintrack=424,665 maxtrack=0,0)
+QWARN  : PlanningPageRegressionTests::currentPreviewMaximizeDialogSyncsAnnotationsOnWindowClose() QWindowsWindow::setGeometry: Unable to set geometry 432x640+428+80 (frame: 448x679+420+49) on QWidgetWindow/"planningCurrentPreviewDialogWindow" on "\\.\DISPLAY1". Resulting geometry: 432x642+428+80 (frame: 448x681+420+49) margins: 8, 31, 8, 8 minimum size: 408x626 MINMAXINFO maxSize=0,0 maxpos=0,0 mintrack=424,665 maxtrack=0,0)
+PASS   : PlanningPageRegressionTests::currentPreviewMaximizeDialogSyncsAnnotationsOnWindowClose()
+PASS   : PlanningPageRegressionTests::personalizationProfilesRestoreCollapseStates()
+PASS   : PlanningPageRegressionTests::generateTargetsAppliesToAllAnnotatedSlices()
+PASS   : PlanningPageRegressionTests::approvingPlanKeepsCurrentSlicePreviewStable()
+PASS   : PlanningPageRegressionTests::multipleAnnotationsGenerateTargetsForAllRegions()
+PASS   : PlanningPageRegressionTests::treatmentPageAcceptsGeneratedLinePlan()
+PASS   : PlanningPageRegressionTests::treatmentPageSelectsSingleLayer()
+PASS   : PlanningPageRegressionTests::mainWindowSwitchesFromDashboardToPlanningWithoutCrash()
+PASS   : PlanningPageRegressionTests::mainWindowSwitchesFromTreatmentToPlanningWithoutCrash()
+PASS   : PlanningPageRegressionTests::cleanupTestCase()
+Totals: 20 passed, 2 failed, 0 skipped, 0 blacklisted, 3998ms
+********* Finished testing of PlanningPageRegressionTests *********

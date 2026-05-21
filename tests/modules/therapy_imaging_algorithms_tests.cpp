@@ -17,8 +17,11 @@ private slots:
     void extractContourFromAnnotationsUsesLargestStroke();
     void generateTherapyTargetsWithinContourStaysInsideContour();
     void generatePointTargetsPackAcrossContourRows();
+    void generatePointTargetsIncludeContourBoundary();
+    void generatePointTargetsCoverNearContourEdgeBands();
     void generatePointTargetsClearLineTreatmentMetadata();
     void generateLineTargetsCreateContinuousHorizontalSegments();
+    void generateLineTargetsUseSerpentineOrder();
     void generateTherapyTargetsFromAnnotationsCreatesHorizontalLineTracks();
 };
 
@@ -196,6 +199,69 @@ void TherapyImagingAlgorithmsTests::generatePointTargetsPackAcrossContourRows()
     QVERIFY(rowKeys.size() >= 3);
 }
 
+void TherapyImagingAlgorithmsTests::generatePointTargetsIncludeContourBoundary()
+{
+    const QVector<QPointF> contour {
+        QPointF(0.0, 0.0),
+        QPointF(14.0, 0.0),
+        QPointF(14.0, 10.0),
+        QPointF(0.0, 10.0),
+        QPointF(0.0, 0.0)
+    };
+
+    const QVector<TherapyPoint> targets = generateTherapyTargetsWithinContour(
+        contour,
+        TreatmentPattern::Point,
+        3.0,
+        0.3,
+        400.0);
+
+    bool hasInteriorTarget = false;
+    bool hasBoundaryTarget = false;
+    for (const TherapyPoint& point : targets) {
+        QVERIFY(contourContainsPointMm(contour, point.positionMm, 0.2));
+        hasInteriorTarget = hasInteriorTarget
+            || (point.positionMm.x() > 1.0 && point.positionMm.x() < 13.0
+                && point.positionMm.y() > 1.0 && point.positionMm.y() < 9.0);
+        hasBoundaryTarget = hasBoundaryTarget
+            || std::abs(point.positionMm.x()) <= 0.2
+            || std::abs(point.positionMm.x() - 14.0) <= 0.2
+            || std::abs(point.positionMm.y()) <= 0.2
+            || std::abs(point.positionMm.y() - 10.0) <= 0.2;
+    }
+
+    QVERIFY(hasInteriorTarget);
+    QVERIFY(hasBoundaryTarget);
+}
+
+void TherapyImagingAlgorithmsTests::generatePointTargetsCoverNearContourEdgeBands()
+{
+    const QVector<QPointF> contour {
+        QPointF(0.0, 0.0),
+        QPointF(10.0, 0.0),
+        QPointF(10.0, 6.0),
+        QPointF(0.0, 6.0),
+        QPointF(0.0, 0.0)
+    };
+
+    const QVector<TherapyPoint> targets = generateTherapyTargetsWithinContour(
+        contour,
+        TreatmentPattern::Point,
+        3.0,
+        0.3,
+        400.0);
+
+    bool hasInteriorTargetNearBoundary = false;
+    for (const TherapyPoint& point : targets) {
+        QVERIFY(contourContainsPointMm(contour, point.positionMm, 0.2));
+        hasInteriorTargetNearBoundary = hasInteriorTargetNearBoundary
+            || (point.positionMm.x() > 0.4 && point.positionMm.x() < 1.5
+                && point.positionMm.y() > 0.4 && point.positionMm.y() < 5.6);
+    }
+
+    QVERIFY(hasInteriorTargetNearBoundary);
+}
+
 void TherapyImagingAlgorithmsTests::generatePointTargetsClearLineTreatmentMetadata()
 {
     AnnotationStroke stroke;
@@ -279,6 +345,52 @@ void TherapyImagingAlgorithmsTests::generateLineTargetsCreateContinuousHorizonta
 
     verifyActiveGroup();
     QVERIFY(hasWideHorizontalSegment);
+}
+
+void TherapyImagingAlgorithmsTests::generateLineTargetsUseSerpentineOrder()
+{
+    const QVector<QPointF> contour {
+        QPointF(0.0, 0.0),
+        QPointF(18.0, 0.0),
+        QPointF(18.0, 12.0),
+        QPointF(0.0, 12.0),
+        QPointF(0.0, 0.0)
+    };
+
+    const QVector<TherapyPoint> lineTargets = generateTherapyTargetsWithinContour(
+        contour,
+        TreatmentPattern::Line,
+        3.0,
+        0.3,
+        400.0);
+
+    QVector<QVector<TherapyPoint>> groups;
+    for (const TherapyPoint& point : lineTargets) {
+        if (groups.isEmpty() || groups.last().first().lineGroupIndex != point.lineGroupIndex) {
+            groups.push_back({});
+        }
+        groups.last().push_back(point);
+    }
+
+    QVERIFY(groups.size() >= 3);
+    for (int groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+        const QVector<TherapyPoint>& group = groups.at(groupIndex);
+        QVERIFY(group.size() >= 2);
+        if (groupIndex > 0) {
+            QVERIFY(group.first().positionMm.y() >= groups.at(groupIndex - 1).first().positionMm.y() - 0.001);
+        }
+
+        const bool shouldMoveLeftToRight = groupIndex % 2 == 0;
+        QVERIFY(shouldMoveLeftToRight
+            ? group.first().positionMm.x() < group.last().positionMm.x()
+            : group.first().positionMm.x() > group.last().positionMm.x());
+
+        for (int sampleIndex = 0; sampleIndex < group.size(); ++sampleIndex) {
+            QCOMPARE(group.at(sampleIndex).lineSampleIndex, sampleIndex);
+            QCOMPARE(group.at(sampleIndex).lineStart, sampleIndex == 0);
+            QCOMPARE(group.at(sampleIndex).lineEnd, sampleIndex == group.size() - 1);
+        }
+    }
 }
 
 void TherapyImagingAlgorithmsTests::generateTherapyTargetsFromAnnotationsCreatesHorizontalLineTracks()
