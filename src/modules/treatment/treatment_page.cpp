@@ -565,6 +565,7 @@ void TreatmentPage::startTreatment()
         m_layerCompletedPointCounts[m_selectedLayerIndex] = 0;
     }
     updateLayerPreview();
+    m_context->requestTreatmentLayerVisualization(plan.id, visualizationSliceIndexForSelectedLayer(plan), true);
     m_progressTimer.start();
     m_planCombo->setEnabled(false);
     m_layerSlider->setEnabled(false);
@@ -588,6 +589,10 @@ void TreatmentPage::pauseTreatment()
     if (m_simulationDevice != nullptr) {
         m_simulationDevice->setTreatmentOutputEnabled(false);
     }
+    if (m_context->hasActivePlan()) {
+        const TherapyPlan& plan = m_context->activePlan();
+        m_context->requestTreatmentLayerVisualization(plan.id, visualizationSliceIndexForSelectedLayer(plan), true);
+    }
     m_planCombo->setEnabled(false);
     m_layerSlider->setEnabled(false);
     updateLayerNavigationButtons();
@@ -609,6 +614,10 @@ void TreatmentPage::resumeTreatment()
     }
 
     m_progressTimer.start();
+    if (m_context->hasActivePlan()) {
+        const TherapyPlan& plan = m_context->activePlan();
+        m_context->requestTreatmentLayerVisualization(plan.id, visualizationSliceIndexForSelectedLayer(plan), true);
+    }
     m_planCombo->setEnabled(false);
     m_layerSlider->setEnabled(false);
     updateLayerNavigationButtons();
@@ -1072,6 +1081,17 @@ int TreatmentPage::normalizedLayerIndex(const TherapyPlan& plan) const
     return std::clamp(m_selectedLayerIndex, 0, static_cast<int>(plan.segments.size()) - 1);
 }
 
+int TreatmentPage::visualizationSliceIndexForSelectedLayer(const TherapyPlan& plan) const
+{
+    const int selectedIndex = normalizedLayerIndex(plan);
+    if (selectedIndex < 0 || selectedIndex >= plan.segments.size()) {
+        return 0;
+    }
+
+    const int sourceSliceIndex = plan.segments.at(selectedIndex).orderIndex;
+    return sourceSliceIndex >= 0 ? sourceSliceIndex : selectedIndex;
+}
+
 const TherapySegment* TreatmentPage::selectedLayerSegment() const
 {
     if (!m_context->hasActivePlan() || m_context->activePlan().segments.isEmpty()) {
@@ -1437,6 +1457,8 @@ void TreatmentPage::appendLog(const QString& line)
 
 void TreatmentPage::finalizeTreatment(const QString& status)
 {
+    const QString activePlanId = m_context->hasActivePlan() ? m_context->activePlan().id : QString();
+    const int activeLayerIndex = m_context->hasActivePlan() ? visualizationSliceIndexForSelectedLayer(m_context->activePlan()) : m_selectedLayerIndex;
     m_progressTimer.stop();
     if (m_simulationDevice != nullptr) {
         m_simulationDevice->setTreatmentOutputEnabled(false);
@@ -1452,6 +1474,7 @@ void TreatmentPage::finalizeTreatment(const QString& status)
         configureLayerSelector(nullptr);
     }
     updateProgressText();
+    m_context->requestTreatmentLayerVisualization(activePlanId, activeLayerIndex, false);
     setButtonState(m_safetyKernel->snapshot().canStartTreatment && canTreatSelectedLayer(), false, false, false);
     appendLog(QStringLiteral("\u6cbb\u7597\u6d41\u7a0b\u7ed3\u675f\uff0c\u72b6\u6001\uff1a%1").arg(status));
 }

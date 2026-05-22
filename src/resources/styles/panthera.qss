@@ -814,7 +814,38 @@ QSlider#planningComparisonSyncSlider:disabled::groove:horizontal {
     border-color: #20334d;
 }
 
+QSlider#planningSliceSlider:disabled::sub-page:horizontal,
+QSlider#planningComparisonSyncSlider:disabled::sub-page:horizontal {
+    background-color: #2b3b52;
+    border-color: #2b3b52;
+}
+
+QSlider#planningSliceSlider:disabled::handle:horizontal,
+QSlider#planningComparisonSyncSlider:disabled::handle:horizontal {
+    background-color: #768397;
+    border-color: #5d6a7c;
+}
+
+QSlider#planningSliceSlider[syncLocked="true"]::groove:horizontal,
+QSlider#planningComparisonSyncSlider[syncInactive="true"]::groove:horizontal {
+    background-color: #171d27;
+    border-color: #303846;
+}
+
+QSlider#planningSliceSlider[syncLocked="true"]::sub-page:horizontal,
+QSlider#planningComparisonSyncSlider[syncInactive="true"]::sub-page:horizontal {
+    background-color: #3a414d;
+    border-color: #3a414d;
+}
+
+QSlider#planningSliceSlider[syncLocked="true"]::handle:horizontal,
+QSlider#planningComparisonSyncSlider[syncInactive="true"]::handle:horizontal {
+    background-color: #7c8490;
+    border-color: #626b76;
+}
+
 QToolButton#planningSliceNavButton,
+QToolButton#planningComparisonSyncNavButton,
 QToolButton#treatmentLayerNavButton {
     min-width: 34px;
     min-height: 34px;
@@ -830,12 +861,14 @@ QToolButton#treatmentLayerNavButton {
 }
 
 QToolButton#planningSliceNavButton:hover,
+QToolButton#planningComparisonSyncNavButton:hover,
 QToolButton#treatmentLayerNavButton:hover {
     background-color: #2a4163;
     border-color: #4c75a4;
 }
 
 QToolButton#planningSliceNavButton:disabled,
+QToolButton#planningComparisonSyncNavButton:disabled,
 QToolButton#treatmentLayerNavButton:disabled {
     color: #58708c;
     background-color: #17263c;
@@ -969,7 +1002,8 @@ QCheckBox#planningToggleCheck::indicator:unchecked {
     border-color: #5fb4ff;
 }
 
-QRadioButton {
+QRadioButton,
+QCheckBox#planningModeOption {
     color: #eaf4ff;
     background: transparent;
     spacing: 8px;
@@ -977,7 +1011,8 @@ QRadioButton {
     font-size: 10.5pt;
 }
 
-QRadioButton::indicator {
+QRadioButton::indicator,
+QCheckBox#planningModeOption::indicator {
     width: 14px;
     height: 14px;
     border-radius: 7px;
@@ -985,7 +1020,8 @@ QRadioButton::indicator {
     background-color: transparent;
 }
 
-QRadioButton::indicator:checked {
+QRadioButton::indicator:checked,
+QCheckBox#planningModeOption::indicator:checked {
     background-color: #18d16b;
     border-color: #18d16b;
 }
@@ -1200,6 +1236,10 @@ QToolButton#planningAnnotationColorButton {
     border-radius: 10px;
     border: 2px solid #c9d6e7;
     background: #2c4365;
+}
+
+QToolButton#planningAnnotationColorButton:checked {
+    border: 4px solid #ffffff;
 }
 
 QToolButton#planningAnnotationColorButton[swatchColor="red"] {

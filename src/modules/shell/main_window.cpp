@@ -153,6 +153,18 @@ MainWindow::MainWindow(
     connect(m_dataTreatmentDataAction, &QAction::triggered, this, [this]() {
         showDataManagementSection(DataManagementPage::Section::TreatmentData);
     });
+    connect(m_context, &ApplicationContext::treatmentLayerVisualizationRequested, this, [this](const QString& planId, int layerIndex, bool treatmentActive) {
+        if (!treatmentActive) {
+            return;
+        }
+
+        const bool planningPageAlreadyCreated = m_planningPage != nullptr;
+        ensurePlanningPage();
+        if (!planningPageAlreadyCreated && m_planningPage != nullptr) {
+            m_planningPage->showTreatmentComparisonLayer(planId, layerIndex, true);
+        }
+        setActivePage(1, m_planningButton);
+    });
     connect(m_safetyKernel, &SafetyKernel::safetySnapshotChanged, this, &MainWindow::updateStatusBarSummary);
     connect(m_safetyKernel, &SafetyKernel::systemModeChanged, this, &MainWindow::updateStatusBarSummary);
 

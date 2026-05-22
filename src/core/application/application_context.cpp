@@ -99,4 +99,9 @@ void ApplicationContext::setCurrentRole(RoleType role)
     emit currentRoleChanged(role);
 }
 
+void ApplicationContext::requestTreatmentLayerVisualization(const QString& planId, int layerIndex, bool treatmentActive)
+{
+    emit treatmentLayerVisualizationRequested(planId, layerIndex, treatmentActive);
+}
+
 }  // panthera::core 命名空间

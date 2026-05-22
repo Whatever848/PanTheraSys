@@ -19,6 +19,7 @@ private slots:
     void generatePointTargetsPackAcrossContourRows();
     void generatePointTargetsIncludeContourBoundary();
     void generatePointTargetsCoverNearContourEdgeBands();
+    void generatePointTargetsDoNotOversampleDenseContourBoundary();
     void generatePointTargetsClearLineTreatmentMetadata();
     void generateLineTargetsCreateContinuousHorizontalSegments();
     void generateLineTargetsUseSerpentineOrder();
@@ -262,6 +263,37 @@ void TherapyImagingAlgorithmsTests::generatePointTargetsCoverNearContourEdgeBand
     QVERIFY(hasInteriorTargetNearBoundary);
 }
 
+void TherapyImagingAlgorithmsTests::generatePointTargetsDoNotOversampleDenseContourBoundary()
+{
+    QVector<QPointF> denseContour;
+    for (int index = 0; index <= 40; ++index) {
+        denseContour.push_back(QPointF(index * 0.25, 0.0));
+    }
+    for (int index = 1; index <= 40; ++index) {
+        denseContour.push_back(QPointF(10.0, index * 0.25));
+    }
+    for (int index = 1; index <= 40; ++index) {
+        denseContour.push_back(QPointF(10.0 - index * 0.25, 10.0));
+    }
+    for (int index = 1; index <= 40; ++index) {
+        denseContour.push_back(QPointF(0.0, 10.0 - index * 0.25));
+    }
+    denseContour.push_back(denseContour.first());
+
+    const QVector<TherapyPoint> targets = generateTherapyTargetsWithinContour(
+        denseContour,
+        TreatmentPattern::Point,
+        3.0,
+        0.3,
+        400.0);
+
+    QVERIFY(!targets.isEmpty());
+    QVERIFY(targets.size() < 40);
+    for (const TherapyPoint& point : targets) {
+        QVERIFY(contourContainsPointMm(denseContour, point.positionMm, 0.2));
+    }
+}
+
 void TherapyImagingAlgorithmsTests::generatePointTargetsClearLineTreatmentMetadata()
 {
     AnnotationStroke stroke;
@@ -389,6 +421,12 @@ void TherapyImagingAlgorithmsTests::generateLineTargetsUseSerpentineOrder()
             QCOMPARE(group.at(sampleIndex).lineSampleIndex, sampleIndex);
             QCOMPARE(group.at(sampleIndex).lineStart, sampleIndex == 0);
             QCOMPARE(group.at(sampleIndex).lineEnd, sampleIndex == group.size() - 1);
+            if (sampleIndex > 0) {
+                const qreal neighborDistance = QLineF(
+                    group.at(sampleIndex - 1).positionMm,
+                    group.at(sampleIndex).positionMm).length();
+                QVERIFY(neighborDistance >= 2.8);
+            }
         }
     }
 }

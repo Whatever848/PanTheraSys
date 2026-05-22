@@ -31,12 +31,15 @@ public:
     RoleType currentRole() const;
     void setCurrentRole(RoleType role);
 
+    void requestTreatmentLayerVisualization(const QString& planId, int layerIndex, bool treatmentActive);
+
 signals:
     void selectedPatientChanged(const panthera::core::PatientRecord& patient);
     void selectedPatientCleared();
     void activePlanChanged(const panthera::core::TherapyPlan& plan);
     void activePlanCleared();
     void currentRoleChanged(panthera::core::RoleType role);
+    void treatmentLayerVisualizationRequested(const QString& planId, int layerIndex, bool treatmentActive);
 
 private:
     EventBus* m_eventBus {nullptr};

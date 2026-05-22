@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QCheckBox>
+#include <QColor>
 #include <QComboBox>
 #include <QDateTime>
 #include <QDoubleSpinBox>
@@ -34,6 +35,8 @@
 #include "modules/shared/mock_ultrasound_view.h"
 #include "modules/shared/therapy_imaging_algorithms.h"
 
+class QHBoxLayout;
+
 namespace panthera::modules {
 
 class PlanningPage final : public QWidget {
@@ -52,6 +55,9 @@ public:
     [[nodiscard]] QString activePersonalizationProfileName() const;
     void applyPersonalizationProfile(const QString& profileName);
     bool saveCurrentPersonalizationProfile(const QString& profileName);
+
+public slots:
+    void showTreatmentComparisonLayer(const QString& planId, int layerIndex, bool treatmentActive);
 
 private slots:
     void loadDemoPatient(bool refreshHistoricalImages = true);
@@ -82,6 +88,7 @@ private slots:
     void resetComparisonSyncCalibration();
     void updateComparisonSyncState();
     bool hasComparisonSyncCalibration() const;
+    bool isComparisonSyncActive() const;
     void applyComparisonSyncSliderValue(int value);
     int comparisonSyncRange() const;
     int mappedComparisonSliceIndex(int syncValue, int startIndex, int endIndex) const;
@@ -180,6 +187,10 @@ private:
     void setActivePersonalizationProfileName(const QString& profileName);
     void clearActivePersonalizationProfileName();
     void restoreLastPersonalizationProfile();
+    void updateAnnotationColorButtonSelection(const QColor& color);
+    void setTreatmentComparisonFocusMode(bool enabled);
+    void configureTreatmentComparisonSyncForLayer(int layerIndex);
+    int syncValueForCurrentSliceIndex(int currentIndex) const;
 
     panthera::core::ApplicationContext* m_context {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
@@ -254,7 +265,14 @@ private:
     QPushButton* m_currentSyncStartButton {nullptr};
     QPushButton* m_currentSyncEndButton {nullptr};
     QPushButton* m_resetComparisonSyncButton {nullptr};
+    QToolButton* m_comparisonSyncPrevButton {nullptr};
+    QToolButton* m_comparisonSyncNextButton {nullptr};
     QSlider* m_comparisonSyncSlider {nullptr};
+    QHBoxLayout* m_rootLayout {nullptr};
+    QWidget* m_leftColumnHost {nullptr};
+    QWidget* m_centerColumnHost {nullptr};
+    QWidget* m_rightColumnHost {nullptr};
+    QFrame* m_previewFrame {nullptr};
 
     QVector<panthera::core::ImageSeriesRecord> m_historyImageSeries;
     QVector<QPixmap> m_historyPixmaps;
@@ -285,6 +303,8 @@ private:
     int m_currentSyncStartIndex {-1};
     int m_currentSyncEndIndex {-1};
     bool m_applyingComparisonSync {false};
+    bool m_treatmentComparisonFocusMode {false};
+    QColor m_activeAnnotationColor {QColor(201, 71, 51)};
 };
 
 }  // namespace panthera::modules

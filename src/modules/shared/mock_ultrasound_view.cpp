@@ -34,6 +34,35 @@ bool pointsNearlyEqual(const QPointF& left, const QPointF& right, qreal epsilon 
     return std::abs(left.x() - right.x()) <= epsilon && std::abs(left.y() - right.y()) <= epsilon;
 }
 
+qreal niceRulerStepMm(qreal roughStep)
+{
+    if (roughStep <= 0.0) {
+        return 5.0;
+    }
+
+    const qreal exponent = std::floor(std::log10(roughStep));
+    const qreal magnitude = std::pow(10.0, exponent);
+    const qreal normalized = roughStep / magnitude;
+    qreal niceNormalized = 10.0;
+    if (normalized <= 1.0) {
+        niceNormalized = 1.0;
+    } else if (normalized <= 2.0) {
+        niceNormalized = 2.0;
+    } else if (normalized <= 5.0) {
+        niceNormalized = 5.0;
+    }
+    return niceNormalized * magnitude;
+}
+
+QString formatRulerLabel(qreal valueMm)
+{
+    const qreal rounded = std::round(valueMm);
+    if (std::abs(valueMm - rounded) < 0.05) {
+        return QString::number(static_cast<int>(rounded));
+    }
+    return QString::number(valueMm, 'f', 1);
+}
+
 QVector<QPointF> uniqueStrokePoints(const QVector<QPointF>& points)
 {
     if (points.size() >= 2 && pointsNearlyEqual(points.first(), points.last())) {
@@ -269,7 +298,12 @@ QVector<LineRenderTrack> buildLineRenderTracks(
     return tracks;
 }
 
-void drawLineTreatmentTrack(QPainter* painter, const LineRenderTrack& track)
+qreal treatmentVisualZoomScale(qreal zoomFactor)
+{
+    return std::clamp<qreal>(zoomFactor, 1.0, 8.0);
+}
+
+void drawLineTreatmentTrack(QPainter* painter, const LineRenderTrack& track, qreal zoomScale)
 {
     if (painter == nullptr || track.widgetPoints.isEmpty()) {
         return;
@@ -278,12 +312,12 @@ void drawLineTreatmentTrack(QPainter* painter, const LineRenderTrack& track)
     QPointF lineStartPoint = track.widgetPoints.first();
     QPointF lineEndPoint = track.widgetPoints.last();
     if (track.widgetPoints.size() == 1) {
-        lineStartPoint.rx() -= 4.0;
-        lineEndPoint.rx() += 4.0;
+        lineStartPoint.rx() -= 4.0 * zoomScale;
+        lineEndPoint.rx() += 4.0 * zoomScale;
     }
 
     painter->setBrush(Qt::NoBrush);
-    painter->setPen(QPen(QColor(0, 183, 225, 215), 2.4, Qt::SolidLine, Qt::RoundCap));
+    painter->setPen(QPen(QColor(0, 183, 225, 215), 2.4 * zoomScale, Qt::SolidLine, Qt::RoundCap));
     painter->drawLine(lineStartPoint, lineEndPoint);
 
     if (track.completedSampleCount <= 0) {
@@ -297,17 +331,18 @@ void drawLineTreatmentTrack(QPainter* painter, const LineRenderTrack& track)
         completedEndPoint = lineEndPoint;
     }
 
-    painter->setPen(QPen(QColor(255, 226, 80, 235), 3.2, Qt::SolidLine, Qt::RoundCap));
+    painter->setPen(QPen(QColor(255, 226, 80, 235), 3.2 * zoomScale, Qt::SolidLine, Qt::RoundCap));
     painter->drawLine(lineStartPoint, completedEndPoint);
 }
 
-qreal pointTreatmentRadiusPx(double spacingMm, const QRectF& canvas)
+qreal pointTreatmentRadiusPx(double spacingMm, const QRectF& canvas, qreal zoomScale)
 {
     const qreal mmToPx = std::min(canvas.width(), canvas.height()) / 60.0;
-    return std::clamp<qreal>(std::max(0.8, spacingMm) * mmToPx * 0.68, 5.5, 16.0);
+    const qreal baseRadius = std::clamp<qreal>(std::max(0.8, spacingMm) * mmToPx * 0.68, 5.5, 16.0);
+    return baseRadius * zoomScale;
 }
 
-void drawPointTreatmentMarker(QPainter* painter, const QPointF& mappedPoint, qreal radiusPx, bool completed)
+void drawPointTreatmentMarker(QPainter* painter, const QPointF& mappedPoint, qreal radiusPx, qreal zoomScale, bool completed)
 {
     if (painter == nullptr) {
         return;
@@ -316,7 +351,7 @@ void drawPointTreatmentMarker(QPainter* painter, const QPointF& mappedPoint, qre
     const QColor strokeColor = completed ? QColor(255, 226, 80, 230) : QColor(0, 201, 215, 210);
     const QColor fillColor = completed ? QColor(255, 226, 80, 55) : QColor(0, 201, 215, 22);
 
-    painter->setPen(QPen(strokeColor, completed ? 2.0 : 1.6));
+    painter->setPen(QPen(strokeColor, (completed ? 2.0 : 1.6) * zoomScale));
     painter->setBrush(fillColor);
     painter->drawEllipse(mappedPoint, radiusPx, radiusPx);
 }
@@ -356,6 +391,21 @@ void MockUltrasoundView::setCaption(const QString& caption)
     update();
 }
 
+void MockUltrasoundView::setSyntheticImageEnabled(bool enabled)
+{
+    if (m_syntheticImageEnabled == enabled) {
+        return;
+    }
+
+    m_syntheticImageEnabled = enabled;
+    update();
+}
+
+bool MockUltrasoundView::isSyntheticImageEnabled() const
+{
+    return m_syntheticImageEnabled;
+}
+
 void MockUltrasoundView::setBackgroundImage(const QPixmap& image)
 {
     m_backgroundImage = image;
@@ -372,6 +422,21 @@ void MockUltrasoundView::clearBackgroundImage()
     m_backgroundImage = QPixmap {};
     resetImageZoom();
     update();
+}
+
+void MockUltrasoundView::setBackgroundImageStretchToFill(bool enabled)
+{
+    if (m_backgroundImageStretchToFill == enabled) {
+        return;
+    }
+
+    m_backgroundImageStretchToFill = enabled;
+    update();
+}
+
+bool MockUltrasoundView::isBackgroundImageStretchToFill() const
+{
+    return m_backgroundImageStretchToFill;
 }
 
 void MockUltrasoundView::setImageZoomEnabled(bool enabled)
@@ -409,6 +474,36 @@ qreal MockUltrasoundView::imageZoomFactor() const
 QPointF MockUltrasoundView::imageZoomCenterNormalized() const
 {
     return m_imageZoomCenterNormalized;
+}
+
+void MockUltrasoundView::setScaleRulerEnabled(bool enabled)
+{
+    if (m_scaleRulerEnabled == enabled) {
+        return;
+    }
+
+    m_scaleRulerEnabled = enabled;
+    update();
+}
+
+bool MockUltrasoundView::isScaleRulerEnabled() const
+{
+    return m_scaleRulerEnabled;
+}
+
+void MockUltrasoundView::setScaleRulerExpanded(bool expanded)
+{
+    if (m_scaleRulerExpanded == expanded) {
+        return;
+    }
+
+    m_scaleRulerExpanded = expanded;
+    update();
+}
+
+bool MockUltrasoundView::isScaleRulerExpanded() const
+{
+    return m_scaleRulerExpanded;
 }
 
 void MockUltrasoundView::beginComparisonCalibrationPointCapture(int pointIndex)
@@ -537,7 +632,7 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
         painter.drawPixmap(imageRect, m_backgroundImage, sourceRect);
         painter.setPen(QPen(QColor(42, 58, 82), 1.0));
         painter.drawRect(canvas.adjusted(0, 0, -1, -1));
-    } else {
+    } else if (m_syntheticImageEnabled) {
         QLinearGradient gradient(canvas.topLeft(), canvas.bottomLeft());
         gradient.setColorAt(0.0, QColor(18, 39 + static_cast<int>(ratio * 10.0), 66 + static_cast<int>(ratio * 8.0)));
         gradient.setColorAt(0.55, QColor(44 + static_cast<int>(ratio * 12.0), 83 + static_cast<int>(ratio * 14.0), 118 + static_cast<int>(ratio * 16.0)));
@@ -594,11 +689,16 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
         painter.setPen(Qt::NoPen);
         painter.setBrush(focusGradient);
         painter.drawEllipse(focusCenter, 28.0, 28.0);
+    } else {
+        painter.setPen(QPen(QColor(42, 58, 82), 1.0));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(canvas.adjusted(0, 0, -1, -1));
     }
 
     if (m_hasPlan) {
         int currentIndex = 0;
-        const qreal pointRadiusPx = pointTreatmentRadiusPx(m_plan.spacingMm, annotationCanvasRect());
+        const qreal zoomScale = treatmentVisualZoomScale(m_imageZoomFactor);
+        const qreal pointRadiusPx = pointTreatmentRadiusPx(m_plan.spacingMm, annotationCanvasRect(), zoomScale);
         for (const TherapySegment& segment : m_plan.segments) {
             if (hasLineTreatmentTracks(segment, m_plan.pattern)) {
                 const QVector<LineRenderTrack> tracks = buildLineRenderTracks(
@@ -607,7 +707,7 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
                     &currentIndex,
                     [this](const QPointF& point) { return mapPointToWidget(point); });
                 for (const LineRenderTrack& track : tracks) {
-                    drawLineTreatmentTrack(&painter, track);
+                    drawLineTreatmentTrack(&painter, track, zoomScale);
                 }
                 continue;
             }
@@ -617,13 +717,13 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
                 const QPointF mapped = mapPointToWidget(point.positionMm);
                 linePath << mapped;
                 const bool done = currentIndex < m_completedPointCount;
-                drawPointTreatmentMarker(&painter, mapped, pointRadiusPx, done);
+                drawPointTreatmentMarker(&painter, mapped, pointRadiusPx, zoomScale, done);
                 ++currentIndex;
             }
 
             if (m_plan.pattern != TreatmentPattern::Point) {
                 painter.setBrush(Qt::NoBrush);
-                painter.setPen(QPen(QColor(91, 152, 255, 160), 2.0));
+                painter.setPen(QPen(QColor(91, 152, 255, 160), 2.0 * zoomScale));
                 painter.drawPolyline(linePath);
             }
         }
@@ -644,15 +744,36 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
     painter.restore();
 
     drawComparisonCalibration(&painter);
+    drawScaleRuler(&painter);
 
-    painter.setPen(Qt::white);
-    painter.setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 11, QFont::Bold));
-    painter.drawText(canvas.adjusted(8, 8, -8, -8), Qt::AlignTop | Qt::AlignLeft,
-        m_caption.isEmpty() ? QStringLiteral("B \u8d85\u6a21\u62df\u89c6\u56fe") : m_caption);
+    qreal captionLeftInset = 8.0;
+    if (m_scaleRulerEnabled) {
+        const QRectF toggleRect = scaleRulerToggleRect();
+        const QRectF rulerRect = scaleRulerRect();
+        captionLeftInset = std::max(captionLeftInset, toggleRect.right() + 8.0);
+        if (rulerRect.isValid()) {
+            captionLeftInset = std::max(captionLeftInset, rulerRect.right() + 8.0);
+        }
+    }
+
+    const QString captionText = m_caption.isEmpty() && m_syntheticImageEnabled
+        ? QStringLiteral("B \u8d85\u6a21\u62df\u89c6\u56fe")
+        : m_caption;
+    if (!captionText.isEmpty()) {
+        painter.setPen(Qt::white);
+        painter.setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 11, QFont::Bold));
+        painter.drawText(canvas.adjusted(static_cast<int>(captionLeftInset), 8, -8, -8), Qt::AlignTop | Qt::AlignLeft, captionText);
+    }
 }
 
 void MockUltrasoundView::mousePressEvent(QMouseEvent* event)
 {
+    if (m_scaleRulerEnabled && event->button() == Qt::LeftButton && scaleRulerToggleRect().contains(event->position())) {
+        setScaleRulerExpanded(!m_scaleRulerExpanded);
+        event->accept();
+        return;
+    }
+
     if (m_pendingComparisonPointIndex >= 0 && event->button() == Qt::LeftButton) {
         if (contentViewportRect().contains(event->position())) {
             const int capturedIndex = m_pendingComparisonPointIndex;
@@ -828,7 +949,7 @@ QPainterPath MockUltrasoundView::drawingPath() const
 QRectF MockUltrasoundView::backgroundImageDisplayRect() const
 {
     const QRectF canvas = rect().adjusted(16, 8, -16, -24);
-    if (m_backgroundImage.isNull()) {
+    if (m_backgroundImage.isNull() || m_backgroundImageStretchToFill) {
         return canvas;
     }
 
@@ -873,6 +994,42 @@ QRectF MockUltrasoundView::zoomViewportNormalizedRect() const
     const qreal left = qBound(0.0, m_imageZoomCenterNormalized.x() - viewportWidth * 0.5, 1.0 - viewportWidth);
     const qreal top = qBound(0.0, m_imageZoomCenterNormalized.y() - viewportHeight * 0.5, 1.0 - viewportHeight);
     return QRectF(left, top, viewportWidth, viewportHeight);
+}
+
+QRectF MockUltrasoundView::scaleRulerToggleRect() const
+{
+    if (!m_scaleRulerEnabled) {
+        return {};
+    }
+
+    const QRectF widgetBounds = rect().adjusted(2, 6, -2, -6);
+    if (!widgetBounds.isValid()) {
+        return {};
+    }
+
+    const qreal width = m_scaleRulerExpanded ? 48.0 : 18.0;
+    return QRectF(widgetBounds.left(), widgetBounds.top(), width, 20.0);
+}
+
+QRectF MockUltrasoundView::scaleRulerRect() const
+{
+    if (!m_scaleRulerEnabled || !m_scaleRulerExpanded) {
+        return {};
+    }
+
+    const QRectF widgetBounds = rect().adjusted(2, 6, -2, -6);
+    if (widgetBounds.width() < 120.0 || widgetBounds.height() < 120.0) {
+        return {};
+    }
+
+    const QRectF toggleRect = scaleRulerToggleRect();
+    const qreal top = toggleRect.bottom() + 6.0;
+    const qreal bottom = widgetBounds.bottom() - 6.0;
+    if (bottom - top < 48.0) {
+        return {};
+    }
+
+    return QRectF(widgetBounds.left(), top, 48.0, bottom - top);
 }
 
 void MockUltrasoundView::setImageZoomState(qreal zoomFactor, const QPointF& zoomCenterNormalized)
@@ -978,6 +1135,69 @@ void MockUltrasoundView::drawComparisonCalibration(QPainter* painter)
         drawPoint(m_comparisonEndPointNormalized, QStringLiteral("止"), QColor(255, 177, 75));
     }
 
+    painter->restore();
+}
+
+void MockUltrasoundView::drawScaleRuler(QPainter* painter)
+{
+    if (painter == nullptr || !m_scaleRulerEnabled) {
+        return;
+    }
+
+    const QRectF toggleRect = scaleRulerToggleRect();
+    if (!toggleRect.isValid()) {
+        return;
+    }
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(QColor(10, 24, 40, 205));
+    painter->drawRoundedRect(toggleRect, 8.0, 8.0);
+    painter->setPen(QPen(QColor(210, 235, 255, 220), 1.0));
+    painter->setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 8, QFont::Bold));
+    painter->drawText(toggleRect, Qt::AlignCenter, m_scaleRulerExpanded ? QStringLiteral("尺<") : QStringLiteral(">"));
+
+    const QRectF rulerRect = scaleRulerRect();
+    if (!rulerRect.isValid()) {
+        painter->restore();
+        return;
+    }
+
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(QColor(10, 24, 40, 168));
+    painter->drawRoundedRect(rulerRect, 10.0, 10.0);
+
+    const qreal axisX = rulerRect.right() - 13.0;
+    const qreal topY = rulerRect.top() + 10.0;
+    const qreal bottomY = rulerRect.bottom() - 12.0;
+    painter->setPen(QPen(QColor(167, 220, 255, 235), 1.4));
+    painter->drawLine(QPointF(axisX, topY), QPointF(axisX, bottomY));
+
+    const QRectF visibleViewport = zoomViewportNormalizedRect();
+    const qreal startMm = visibleViewport.top() * 60.0;
+    const qreal visibleMm = std::max<qreal>(0.001, visibleViewport.height() * 60.0);
+    const qreal roughStep = visibleMm / std::clamp(std::floor((bottomY - topY) / 44.0), 3.0, 8.0);
+    const qreal stepMm = std::max<qreal>(1.0, niceRulerStepMm(roughStep));
+    const qreal firstTickMm = std::ceil(startMm / stepMm) * stepMm;
+
+    painter->setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 8));
+    for (qreal tickMm = firstTickMm; tickMm <= startMm + visibleMm + 0.01; tickMm += stepMm) {
+        const qreal ratio = (tickMm - startMm) / visibleMm;
+        const qreal y = topY + (bottomY - topY) * ratio;
+        painter->setPen(QPen(QColor(167, 220, 255, 235), 1.3));
+        painter->drawLine(QPointF(axisX - 8.0, y), QPointF(axisX, y));
+
+        const QRectF labelRect(rulerRect.left() + 4.0, y - 10.0, rulerRect.width() - 18.0, 20.0);
+        painter->setPen(QColor(228, 244, 255, 235));
+        painter->drawText(labelRect, Qt::AlignRight | Qt::AlignVCenter, formatRulerLabel(tickMm));
+    }
+
+    painter->setPen(QColor(146, 203, 242, 210));
+    painter->setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 7, QFont::Bold));
+    painter->drawText(QRectF(rulerRect.left() + 4.0, rulerRect.top() + 2.0, rulerRect.width() - 8.0, 12.0),
+        Qt::AlignLeft | Qt::AlignVCenter,
+        QStringLiteral("mm"));
     painter->restore();
 }
 

@@ -9,6 +9,7 @@
 #include <QDateTime>
 #include <QDialog>
 #include <QDoubleSpinBox>
+#include <QFrame>
 #include <QImage>
 #include <QLabel>
 #include <QMouseEvent>
@@ -149,7 +150,7 @@ TherapyPlan buildLayeredPlan()
 
     TherapySegment secondLayer;
     secondLayer.id = QStringLiteral("TEST-LAYER-02");
-    secondLayer.orderIndex = 1;
+    secondLayer.orderIndex = 16;
     secondLayer.label = QStringLiteral("Slice 02");
     secondLayer.points = {
         makePoint(0, -6.0, 0.0),
@@ -176,8 +177,10 @@ private slots:
     void generateTargetsDoesNotAutoLoadSeedHistory();
     void historyPreviewWheelZoomStaysInlineAndResettable();
     void comparisonSyncSliderLinksSlicePositions();
+    void treatmentLayerVisualizationFocusesPlanningComparison();
     void annotationPreviewSupportsZoomWithoutBackgroundImage();
     void annotationPreviewSupportsZoomAndPanWithBackgroundImage();
+    void annotationPreviewScaleRulerRendersAcrossZoomStates();
     void currentPreviewMaximizeDialogKeepsAnnotationsVisible();
     void currentPreviewMaximizeDialogSyncsAnnotationsOnWindowClose();
     void personalizationProfilesRestoreCollapseStates();
@@ -300,6 +303,11 @@ void PlanningPageRegressionTests::planningPageSectionsAreCollapsible()
     planningPage.show();
     QCoreApplication::processEvents();
 
+    const auto previewWidgets = planningPage.findChildren<MockUltrasoundView*>(QStringLiteral("planningPreviewWidget"));
+    QVERIFY(previewWidgets.size() >= 2);
+    QVERIFY(!previewWidgets.at(0)->isSyntheticImageEnabled());
+    QVERIFY(!previewWidgets.at(1)->isSyntheticImageEnabled());
+
     const auto collapseButtons = planningPage.findChildren<QToolButton*>(QStringLiteral("planningCollapseButton"));
     QVERIFY(collapseButtons.size() >= 9);
 
@@ -375,10 +383,29 @@ void PlanningPageRegressionTests::planningPageSectionsAreCollapsible()
     QVERIFY(respiratoryTitle != nullptr);
     QVERIFY(respiratoryTitle->minimumHeight() >= 36);
 
-    auto* respiratoryToggle = planningPage.findChild<QCheckBox*>(QStringLiteral("planningToggleCheck"));
+    auto* respiratoryToggle = planningPage.findChild<QCheckBox*>(QStringLiteral("planningModeOption"));
     QVERIFY(respiratoryToggle != nullptr);
-    QVERIFY(respiratoryToggle->minimumWidth() >= 78);
-    QVERIFY(respiratoryToggle->minimumHeight() >= 36);
+    QCOMPARE(respiratoryToggle->text(), QStringLiteral("\u547c\u5438\u8ddf\u968f"));
+    QVERIFY(respiratoryToggle->isCheckable());
+    QVERIFY(respiratoryToggle->minimumHeight() >= 32);
+
+    const auto annotationColorButtons = planningPage.findChildren<QToolButton*>(QStringLiteral("planningAnnotationColorButton"));
+    QVERIFY(annotationColorButtons.size() >= 4);
+    QToolButton* blueAnnotationButton = nullptr;
+    int checkedAnnotationButtons = 0;
+    for (QToolButton* button : annotationColorButtons) {
+        if (button->isChecked()) {
+            ++checkedAnnotationButtons;
+        }
+        if (button->property("swatchColor").toString() == QStringLiteral("blue")) {
+            blueAnnotationButton = button;
+        }
+    }
+    QCOMPARE(checkedAnnotationButtons, 1);
+    QVERIFY(blueAnnotationButton != nullptr);
+    blueAnnotationButton->click();
+    QCoreApplication::processEvents();
+    QVERIFY(blueAnnotationButton->isChecked());
 
     const auto sliceNavButtons = planningPage.findChildren<QToolButton*>(QStringLiteral("planningSliceNavButton"));
     QCOMPARE(sliceNavButtons.size(), 4);
@@ -652,6 +679,8 @@ void PlanningPageRegressionTests::historyPreviewWheelZoomStaysInlineAndResettabl
         }
     }
     QVERIFY(historySummaryLabel != nullptr);
+    QVERIFY(!historySummaryLabel->text().contains(tempDir.path()));
+    QVERIFY(historySummaryLabel->toolTip().isEmpty());
 
     QToolButton* historyPreviousButton = nullptr;
     QToolButton* historyNextButton = nullptr;
@@ -772,6 +801,17 @@ void PlanningPageRegressionTests::comparisonSyncSliderLinksSlicePositions()
     QVERIFY(QMetaObject::invokeMethod(&planningPage, "simulateImageAcquisition", Qt::DirectConnection));
     QCoreApplication::processEvents();
 
+    const auto previews = planningPage.findChildren<MockUltrasoundView*>(QStringLiteral("planningPreviewWidget"));
+    QVERIFY(previews.size() >= 2);
+    QVERIFY(!previews.at(0)->isSyntheticImageEnabled());
+    QVERIFY(previews.at(1)->isSyntheticImageEnabled());
+
+    for (QLabel* label : planningPage.findChildren<QLabel*>(QStringLiteral("planningSliceInfoLabel"))) {
+        QVERIFY(!label->text().contains(tempDir.path()));
+        QVERIFY(!label->text().contains(QStringLiteral("staging/")));
+        QVERIFY(label->toolTip().isEmpty());
+    }
+
     const auto sliceSliders = planningPage.findChildren<QSlider*>(QStringLiteral("planningSliceSlider"));
     QVERIFY(sliceSliders.size() >= 2);
     QSlider* historySlider = sliceSliders.at(0);
@@ -796,14 +836,20 @@ void PlanningPageRegressionTests::comparisonSyncSliderLinksSlicePositions()
     auto* rightEndButton = findSyncButton(QStringLiteral("右终点"));
     auto* syncCheck = planningPage.findChild<QCheckBox*>(QStringLiteral("planningComparisonSyncToggle"));
     auto* syncSlider = planningPage.findChild<QSlider*>(QStringLiteral("planningComparisonSyncSlider"));
+    const auto syncNavButtons = planningPage.findChildren<QToolButton*>(QStringLiteral("planningComparisonSyncNavButton"));
     QVERIFY(leftStartButton != nullptr);
     QVERIFY(leftEndButton != nullptr);
     QVERIFY(rightStartButton != nullptr);
     QVERIFY(rightEndButton != nullptr);
     QVERIFY(syncCheck != nullptr);
     QVERIFY(syncSlider != nullptr);
+    QCOMPARE(syncNavButtons.size(), 2);
+    auto* syncPrevButton = syncNavButtons.at(0);
+    auto* syncNextButton = syncNavButtons.at(1);
     QVERIFY(!syncCheck->isEnabled());
     QVERIFY(!syncSlider->isEnabled());
+    QVERIFY(!syncPrevButton->isEnabled());
+    QVERIFY(!syncNextButton->isEnabled());
 
     historySlider->setValue(1);
     leftStartButton->click();
@@ -815,10 +861,41 @@ void PlanningPageRegressionTests::comparisonSyncSliderLinksSlicePositions()
     rightEndButton->click();
 
     QVERIFY(syncCheck->isEnabled());
+    QVERIFY(!syncSlider->isEnabled());
+    QVERIFY(!syncPrevButton->isEnabled());
+    QVERIFY(!syncNextButton->isEnabled());
+    QVERIFY(syncSlider->property("syncInactive").toBool());
+    QVERIFY(!historySlider->property("syncLocked").toBool());
+    QVERIFY(!currentSlider->property("syncLocked").toBool());
+    QVERIFY(historySlider->isEnabled());
+    QVERIFY(currentSlider->isEnabled());
     syncCheck->setChecked(true);
     QCoreApplication::processEvents();
     QVERIFY(syncSlider->isEnabled());
+    QVERIFY(!historySlider->isEnabled());
+    QVERIFY(!currentSlider->isEnabled());
+    QVERIFY(!syncSlider->property("syncInactive").toBool());
+    QVERIFY(historySlider->property("syncLocked").toBool());
+    QVERIFY(currentSlider->property("syncLocked").toBool());
     QCOMPARE(syncSlider->maximum(), 6);
+    QCOMPARE(historySlider->value(), 1);
+    QCOMPARE(currentSlider->value(), 2);
+
+    currentSlider->setValue(3);
+    QCoreApplication::processEvents();
+    QCOMPARE(currentSlider->value(), 2);
+
+    QVERIFY(!syncPrevButton->isEnabled());
+    QVERIFY(syncNextButton->isEnabled());
+    syncNextButton->click();
+    QCoreApplication::processEvents();
+    QCOMPARE(syncSlider->value(), 1);
+    QCOMPARE(historySlider->value(), 2);
+    QCOMPARE(currentSlider->value(), 3);
+    QVERIFY(syncPrevButton->isEnabled());
+    syncPrevButton->click();
+    QCoreApplication::processEvents();
+    QCOMPARE(syncSlider->value(), 0);
     QCOMPARE(historySlider->value(), 1);
     QCOMPARE(currentSlider->value(), 2);
 
@@ -831,6 +908,138 @@ void PlanningPageRegressionTests::comparisonSyncSliderLinksSlicePositions()
     QCoreApplication::processEvents();
     QCOMPARE(historySlider->value(), 7);
     QCOMPARE(currentSlider->value(), 8);
+
+    syncCheck->setChecked(false);
+    QCoreApplication::processEvents();
+    QVERIFY(!syncSlider->isEnabled());
+    QVERIFY(!syncPrevButton->isEnabled());
+    QVERIFY(!syncNextButton->isEnabled());
+    QVERIFY(syncSlider->property("syncInactive").toBool());
+    QVERIFY(!historySlider->property("syncLocked").toBool());
+    QVERIFY(!currentSlider->property("syncLocked").toBool());
+    QVERIFY(historySlider->isEnabled());
+    QVERIFY(currentSlider->isEnabled());
+}
+
+void PlanningPageRegressionTests::treatmentLayerVisualizationFocusesPlanningComparison()
+{
+    EventBus eventBus;
+    AuditService auditService;
+    ApplicationContext context(&eventBus, &auditService);
+    SafetyKernel safetyKernel;
+    panthera::adapters::SeedClinicalDataRepository repository;
+    panthera::adapters::SimulationDeviceFacade simulationDevice;
+
+    const PatientRecord patient {
+        QStringLiteral("P-TREATMENT-FOCUS"),
+        QStringLiteral("Treatment Focus Patient"),
+        45,
+        QStringLiteral("F"),
+        QStringLiteral("Regression diagnosis"),
+        QStringLiteral("13800000003"),
+    };
+    QVERIFY(repository.createPatient(patient));
+
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    for (int index = 0; index < 4; ++index) {
+        const QString imagePath = tempDir.filePath(QStringLiteral("history-focus-%1.png").arg(index + 1));
+        QImage image(96, 72, QImage::Format_RGB32);
+        image.fill(QColor(30 + index * 8, 72, 108));
+        QVERIFY(image.save(imagePath));
+
+        ImageSeriesRecord historyImage;
+        historyImage.id = QStringLiteral("HISTORY-FOCUS-%1").arg(index + 1);
+        historyImage.patientId = patient.id;
+        historyImage.type = QStringLiteral("History ultrasound");
+        historyImage.storagePath = imagePath;
+        historyImage.acquisitionDate = QDate::currentDate();
+        historyImage.createdAt = QDateTime::currentDateTime().addSecs(index);
+        QVERIFY(repository.createImageSeries(historyImage));
+    }
+
+    PlanningPage planningPage(&context, &safetyKernel, &auditService, &repository, &simulationDevice);
+    planningPage.resize(1600, 900);
+    planningPage.show();
+    QCoreApplication::processEvents();
+
+    context.selectPatient(patient);
+    safetyKernel.setPatientSelected(true);
+    QCoreApplication::processEvents();
+
+    QSpinBox* layerCountSpin = nullptr;
+    for (QSpinBox* spin : planningPage.findChildren<QSpinBox*>(QStringLiteral("planningMetricSpin"))) {
+        if (spin->maximum() == 60) {
+            layerCountSpin = spin;
+            break;
+        }
+    }
+    QVERIFY(layerCountSpin != nullptr);
+    layerCountSpin->setValue(4);
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "addPathItem", Qt::DirectConnection));
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "simulateImageAcquisition", Qt::DirectConnection));
+    QCoreApplication::processEvents();
+
+    context.requestTreatmentLayerVisualization(QStringLiteral("FOCUS-PLAN"), 2, true);
+    QCoreApplication::processEvents();
+
+    for (QFrame* frame : planningPage.findChildren<QFrame*>(QStringLiteral("planningSidebarCard"))) {
+        QVERIFY(!frame->isVisible());
+    }
+    for (QFrame* frame : planningPage.findChildren<QFrame*>(QStringLiteral("planningBottomCard"))) {
+        QVERIFY(!frame->isVisible());
+    }
+    auto* leftColumnHost = planningPage.findChild<QWidget*>(QStringLiteral("planningLeftColumnHost"));
+    auto* centerColumnHost = planningPage.findChild<QWidget*>(QStringLiteral("planningCenterColumnHost"));
+    auto* rightColumnHost = planningPage.findChild<QWidget*>(QStringLiteral("planningRightColumnHost"));
+    auto* previewFrame = planningPage.findChild<QFrame*>(QStringLiteral("planningPreviewFrame"));
+    QVERIFY(leftColumnHost != nullptr);
+    QVERIFY(centerColumnHost != nullptr);
+    QVERIFY(rightColumnHost != nullptr);
+    QVERIFY(previewFrame != nullptr);
+    QVERIFY(!leftColumnHost->isVisible());
+    QVERIFY(rightColumnHost->isHidden());
+    QVERIFY(centerColumnHost->width() > planningPage.width() * 0.9);
+    QVERIFY(previewFrame->width() > planningPage.width() * 0.85);
+    auto* controlFrame = planningPage.findChild<QFrame*>(QStringLiteral("planningControlFrame"));
+    QVERIFY(controlFrame != nullptr);
+    QVERIFY(!controlFrame->isVisible());
+    auto* annotationPanel = planningPage.findChild<QFrame*>(QStringLiteral("planningAnnotationPanel"));
+    QVERIFY(annotationPanel != nullptr);
+    QVERIFY(!annotationPanel->isVisible());
+    const auto previewWidgets = planningPage.findChildren<MockUltrasoundView*>(QStringLiteral("planningPreviewWidget"));
+    QVERIFY(previewWidgets.size() >= 2);
+    QVERIFY(previewWidgets.at(0)->isBackgroundImageStretchToFill());
+    QVERIFY(previewWidgets.at(1)->isBackgroundImageStretchToFill());
+
+    const auto sliceSliders = planningPage.findChildren<QSlider*>(QStringLiteral("planningSliceSlider"));
+    QVERIFY(sliceSliders.size() >= 2);
+    QCOMPARE(sliceSliders.at(0)->value(), 2);
+    QCOMPARE(sliceSliders.at(1)->value(), 2);
+
+    auto* syncCheck = planningPage.findChild<QCheckBox*>(QStringLiteral("planningComparisonSyncToggle"));
+    auto* syncSlider = planningPage.findChild<QSlider*>(QStringLiteral("planningComparisonSyncSlider"));
+    QVERIFY(syncCheck != nullptr);
+    QVERIFY(syncSlider != nullptr);
+    QVERIFY(syncCheck->isChecked());
+    QVERIFY(syncSlider->isEnabled());
+    QCOMPARE(syncSlider->value(), 2);
+
+    context.requestTreatmentLayerVisualization(QStringLiteral("FOCUS-PLAN"), 2, false);
+    QCoreApplication::processEvents();
+
+    QVERIFY(controlFrame->isVisible());
+    QVERIFY(annotationPanel->isVisible());
+    QVERIFY(leftColumnHost->isVisible());
+    QVERIFY(rightColumnHost->isVisible());
+    QVERIFY(!previewWidgets.at(0)->isBackgroundImageStretchToFill());
+    QVERIFY(!previewWidgets.at(1)->isBackgroundImageStretchToFill());
+    for (QFrame* frame : planningPage.findChildren<QFrame*>(QStringLiteral("planningSidebarCard"))) {
+        QVERIFY(frame->isVisible());
+    }
+    for (QFrame* frame : planningPage.findChildren<QFrame*>(QStringLiteral("planningBottomCard"))) {
+        QVERIFY(frame->isVisible());
+    }
 }
 
 void PlanningPageRegressionTests::annotationPreviewSupportsZoomWithoutBackgroundImage()
@@ -940,6 +1149,41 @@ void PlanningPageRegressionTests::annotationPreviewSupportsZoomAndPanWithBackgro
 
     QVERIFY(beforeZoom.toImage() != afterPan.toImage());
     QVERIFY(!preview.annotationStrokes().isEmpty());
+}
+
+void PlanningPageRegressionTests::annotationPreviewScaleRulerRendersAcrossZoomStates()
+{
+    MockUltrasoundView preview;
+    preview.resize(960, 720);
+    preview.setImageZoomEnabled(true);
+    preview.setScaleRulerEnabled(true);
+    preview.setScaleRulerExpanded(true);
+    preview.show();
+    QCoreApplication::processEvents();
+
+    QVERIFY(preview.isScaleRulerEnabled());
+    QVERIFY(preview.isScaleRulerExpanded());
+
+    QPixmap expandedPixmap(preview.size());
+    expandedPixmap.fill(Qt::transparent);
+    preview.render(&expandedPixmap);
+
+    preview.setImageZoom(2.0, QPointF(0.5, 0.5));
+    QCoreApplication::processEvents();
+    QPixmap zoomedPixmap(preview.size());
+    zoomedPixmap.fill(Qt::transparent);
+    preview.render(&zoomedPixmap);
+
+    preview.setScaleRulerExpanded(false);
+    QCoreApplication::processEvents();
+    QVERIFY(!preview.isScaleRulerExpanded());
+
+    QPixmap collapsedPixmap(preview.size());
+    collapsedPixmap.fill(Qt::transparent);
+    preview.render(&collapsedPixmap);
+
+    QVERIFY(expandedPixmap.toImage() != zoomedPixmap.toImage());
+    QVERIFY(zoomedPixmap.toImage() != collapsedPixmap.toImage());
 }
 
 void PlanningPageRegressionTests::currentPreviewMaximizeDialogKeepsAnnotationsVisible()
@@ -1418,6 +1662,15 @@ void PlanningPageRegressionTests::treatmentPageSelectsSingleLayer()
     volumeButton->click();
     QVERIFY(sawVolumeDialog);
     QVERIFY(sawProgressSummary);
+
+    QSignalSpy visualizationSpy(&context, &ApplicationContext::treatmentLayerVisualizationRequested);
+    QVERIFY(QMetaObject::invokeMethod(&treatmentPage, "startTreatment", Qt::DirectConnection));
+    QCOMPARE(visualizationSpy.count(), 1);
+    const QList<QVariant> visualizationArgs = visualizationSpy.takeFirst();
+    QCOMPARE(visualizationArgs.at(0).toString(), plan.id);
+    QCOMPARE(visualizationArgs.at(1).toInt(), 16);
+    QVERIFY(visualizationArgs.at(2).toBool());
+    QVERIFY(QMetaObject::invokeMethod(&treatmentPage, "stopTreatment", Qt::DirectConnection));
 }
 
 void PlanningPageRegressionTests::mainWindowSwitchesFromTreatmentToPlanningWithoutCrash()

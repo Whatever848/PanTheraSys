@@ -478,16 +478,14 @@ QVector<qreal> samplePositionsForContinuousLineSpan(qreal startX, qreal endX, do
         return {};
     }
 
-    QVector<qreal> positions = distributedPositions(startX, endX, std::max(0.6, spacingMm * 0.85));
-    if (positions.isEmpty()) {
-        return {startX, endX};
-    }
-
-    positions.first() = startX;
-    if (positions.size() == 1 || positions.last() < endX - 0.01) {
-        positions.push_back(endX);
-    } else {
-        positions.last() = endX;
+    const qreal span = endX - startX;
+    const double targetStepMm = std::max(0.8, spacingMm * 1.15);
+    const int segmentCount = std::max(1, static_cast<int>(std::round(span / targetStepMm)));
+    QVector<qreal> positions;
+    positions.reserve(segmentCount + 1);
+    for (int index = 0; index <= segmentCount; ++index) {
+        const qreal ratio = static_cast<qreal>(index) / static_cast<qreal>(segmentCount);
+        positions.push_back(startX + span * ratio);
     }
     return positions;
 }
@@ -587,27 +585,50 @@ void appendContourBoundaryPointTargets(
             continue;
         }
 
+        QVector<double> segmentLengths;
+        segmentLengths.reserve(vertexCount);
+        double perimeterMm = 0.0;
         for (int index = 0; index < vertexCount; ++index) {
             const QPointF& start = contour.at(index);
             const QPointF& end = contour.at((index + 1) % vertexCount);
-            const QLineF edge(start, end);
-            const double edgeLengthMm = edge.length();
-            if (edgeLengthMm <= 1e-6) {
-                continue;
+            const double edgeLengthMm = QLineF(start, end).length();
+            segmentLengths.push_back(edgeLengthMm);
+            perimeterMm += edgeLengthMm;
+        }
+        if (perimeterMm <= 1e-6) {
+            continue;
+        }
+
+        const auto pointAtBoundaryDistance = [&contour, &segmentLengths, vertexCount](double targetDistanceMm) {
+            double traversedMm = 0.0;
+            for (int index = 0; index < vertexCount; ++index) {
+                const double edgeLengthMm = segmentLengths.at(index);
+                if (edgeLengthMm <= 1e-6) {
+                    continue;
+                }
+                if (targetDistanceMm <= traversedMm + edgeLengthMm || index == vertexCount - 1) {
+                    const QPointF& start = contour.at(index);
+                    const QPointF& end = contour.at((index + 1) % vertexCount);
+                    const double ratio = std::clamp((targetDistanceMm - traversedMm) / edgeLengthMm, 0.0, 1.0);
+                    return QPointF(
+                        start.x() + ((end.x() - start.x()) * ratio),
+                        start.y() + ((end.y() - start.y()) * ratio));
+                }
+                traversedMm += edgeLengthMm;
             }
 
-            for (double distanceMm = 0.0; distanceMm < edgeLengthMm - 1e-6; distanceMm += clampedSpacing) {
-                const double ratio = std::clamp(distanceMm / edgeLengthMm, 0.0, 1.0);
-                const QPointF candidate(
-                    start.x() + ((end.x() - start.x()) * ratio),
-                    start.y() + ((end.y() - start.y()) * ratio));
+            return contour.first();
+        };
 
-                TherapyPoint point;
-                point.positionMm = candidate;
-                point.dwellSeconds = dwellSeconds;
-                point.powerWatts = powerWatts;
-                targets->push_back(point);
-            }
+        // Sample the whole contour by arc length. Sampling each small hand-drawn edge would
+        // put a target on nearly every vertex and make the boundary look overpacked.
+        const double boundarySpacingMm = std::max(0.5, clampedSpacing * 1.3);
+        for (double distanceMm = 0.0; distanceMm < perimeterMm - 1e-6; distanceMm += boundarySpacingMm) {
+            TherapyPoint point;
+            point.positionMm = pointAtBoundaryDistance(distanceMm);
+            point.dwellSeconds = dwellSeconds;
+            point.powerWatts = powerWatts;
+            targets->push_back(point);
         }
     }
 }

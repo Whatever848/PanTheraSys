@@ -54,6 +54,7 @@ private:
     bool canTreatSelectedLayer() const;
     int layerCount(const panthera::core::TherapyPlan* plan = nullptr) const;
     int normalizedLayerIndex(const panthera::core::TherapyPlan& plan) const;
+    int visualizationSliceIndexForSelectedLayer(const panthera::core::TherapyPlan& plan) const;
     const panthera::core::TherapySegment* selectedLayerSegment() const;
     panthera::core::TherapyPlan selectedLayerPlan(const panthera::core::TherapyPlan& plan) const;
     int totalPointCount() const;

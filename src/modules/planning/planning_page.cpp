@@ -202,6 +202,17 @@ QString targetSummaryText(TreatmentPattern pattern, const QVector<TherapyPoint>&
     return QStringLiteral("靶点 %1 个").arg(points.size());
 }
 
+QString annotationAreaSummaryText(double areaMm2)
+{
+    if (areaMm2 <= 0.05) {
+        return QStringLiteral("\u5708\u753b\u9762\u79ef\uff1a\u672a\u5f62\u6210\u6709\u6548\u95ed\u5408\u533a\u57df");
+    }
+
+    return QStringLiteral("\u5708\u753b\u9762\u79ef\uff1a%1 mm\u00b2 (%2 cm\u00b2)")
+        .arg(areaMm2, 0, 'f', 1)
+        .arg(areaMm2 / 100.0, 0, 'f', 2);
+}
+
 double totalDwellSeconds(const QVector<TherapyPoint>& points)
 {
     double durationSeconds = 0.0;
@@ -336,6 +347,43 @@ QToolButton* createSliceNavButton(const QString& text, const QString& tooltip)
     return button;
 }
 
+void setAnnotationColorButtonsChecked(
+    QToolButton* redButton,
+    QToolButton* blueButton,
+    QToolButton* greenButton,
+    QToolButton* orangeButton,
+    const QColor& color)
+{
+    const auto updateButton = [&color](QToolButton* button, const QColor& buttonColor) {
+        if (button == nullptr) {
+            return;
+        }
+        button->setCheckable(true);
+        button->setChecked(buttonColor == color);
+        button->update();
+    };
+
+    updateButton(redButton, QColor(201, 71, 51));
+    updateButton(blueButton, QColor(91, 158, 230));
+    updateButton(greenButton, QColor(163, 239, 76));
+    updateButton(orangeButton, QColor(255, 177, 75));
+}
+
+void setSliderVisualState(QSlider* slider, const char* propertyName, bool active)
+{
+    if (slider == nullptr) {
+        return;
+    }
+    if (slider->property(propertyName).toBool() == active) {
+        return;
+    }
+
+    slider->setProperty(propertyName, active);
+    slider->style()->unpolish(slider);
+    slider->style()->polish(slider);
+    slider->update();
+}
+
 }  // namespace
 
 PlanningPage::PlanningPage(
@@ -356,9 +404,9 @@ PlanningPage::PlanningPage(
     setObjectName(QStringLiteral("planningPage"));
     setAttribute(Qt::WA_StyledBackground, true);
 
-    auto* rootLayout = new QHBoxLayout(this);
-    rootLayout->setContentsMargins(12, 12, 12, 12);
-    rootLayout->setSpacing(12);
+    m_rootLayout = new QHBoxLayout(this);
+    m_rootLayout->setContentsMargins(12, 12, 12, 12);
+    m_rootLayout->setSpacing(12);
 
     auto* leftColumn = new QVBoxLayout();
     leftColumn->setSpacing(10);
@@ -517,13 +565,17 @@ PlanningPage::PlanningPage(
     leftColumn->addWidget(modelCard);
     leftColumn->addStretch(1);
 
-    rootLayout->addLayout(leftColumn, 21);
+    m_leftColumnHost = new QWidget();
+    m_leftColumnHost->setObjectName(QStringLiteral("planningLeftColumnHost"));
+    m_leftColumnHost->setLayout(leftColumn);
+    m_rootLayout->addWidget(m_leftColumnHost, 21);
 
     auto* centerColumn = new QVBoxLayout();
     centerColumn->setSpacing(10);
     centerColumn->setContentsMargins(0, 0, 0, 0);
 
-    auto* previewFrame = new QFrame();
+    m_previewFrame = new QFrame();
+    auto* previewFrame = m_previewFrame;
     previewFrame->setObjectName(QStringLiteral("planningPreviewFrame"));
     previewFrame->setMinimumSize(720, 500);
     auto* previewFrameLayout = new QVBoxLayout(previewFrame);
@@ -552,7 +604,10 @@ PlanningPage::PlanningPage(
     m_historyPreview->setMinimumSize(0, 0);
     m_historyPreview->setCaption(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
     m_historyPreview->setAnnotationEnabled(false);
+    m_historyPreview->setSyntheticImageEnabled(false);
     m_historyPreview->setImageZoomEnabled(true);
+    m_historyPreview->setScaleRulerEnabled(true);
+    m_historyPreview->setScaleRulerExpanded(true);
 
     m_historyPreviewOverlayLabel = new QLabel(QStringLiteral("\u5de6\u5c4f\u663e\u793a\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
     m_historyPreviewOverlayLabel->setObjectName(QStringLiteral("planningPreviewOverlayLabel"));
@@ -629,21 +684,25 @@ PlanningPage::PlanningPage(
     m_annotationRedButton = new QToolButton();
     m_annotationRedButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
     m_annotationRedButton->setProperty("swatchColor", QStringLiteral("red"));
+    m_annotationRedButton->setToolTip(QStringLiteral("\u7ea2\u8272\u5708\u753b\u753b\u7b14"));
     annotationLayout->addWidget(m_annotationRedButton);
 
     m_annotationBlueButton = new QToolButton();
     m_annotationBlueButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
     m_annotationBlueButton->setProperty("swatchColor", QStringLiteral("blue"));
+    m_annotationBlueButton->setToolTip(QStringLiteral("\u84dd\u8272\u5708\u753b\u753b\u7b14"));
     annotationLayout->addWidget(m_annotationBlueButton);
 
     m_annotationGreenButton = new QToolButton();
     m_annotationGreenButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
     m_annotationGreenButton->setProperty("swatchColor", QStringLiteral("green"));
+    m_annotationGreenButton->setToolTip(QStringLiteral("\u7eff\u8272\u5708\u753b\u753b\u7b14"));
     annotationLayout->addWidget(m_annotationGreenButton);
 
     m_annotationOrangeButton = new QToolButton();
     m_annotationOrangeButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
     m_annotationOrangeButton->setProperty("swatchColor", QStringLiteral("orange"));
+    m_annotationOrangeButton->setToolTip(QStringLiteral("\u6a59\u8272\u5708\u753b\u753b\u7b14"));
     annotationLayout->addWidget(m_annotationOrangeButton);
 
     auto* separatorMiddle = new QFrame();
@@ -670,7 +729,10 @@ PlanningPage::PlanningPage(
     m_preview->setObjectName(QStringLiteral("planningPreviewWidget"));
     m_preview->setMinimumSize(0, 0);
     m_preview->setCaption(QStringLiteral(""));
+    m_preview->setSyntheticImageEnabled(false);
     m_preview->setImageZoomEnabled(true);
+    m_preview->setScaleRulerEnabled(true);
+    m_preview->setScaleRulerExpanded(true);
     m_preview->setAnnotationEnabled(true);
 
     m_previewOverlayLabel = new QLabel(QStringLiteral("\u56fe\u50cf\u663e\u793a\u533a\u57df"));
@@ -748,7 +810,21 @@ PlanningPage::PlanningPage(
     m_comparisonSyncSlider->setEnabled(false);
     m_comparisonSyncSlider->setToolTip(QStringLiteral("设置四个切片锚点后，拖动此滑条同比切换左右影像"));
     m_comparisonSyncSlider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_comparisonSyncPrevButton = new QToolButton();
+    m_comparisonSyncPrevButton->setObjectName(QStringLiteral("planningComparisonSyncNavButton"));
+    m_comparisonSyncPrevButton->setText(QStringLiteral("\u2039"));
+    m_comparisonSyncPrevButton->setToolTip(QStringLiteral("\u540c\u6b65\u79fb\u52a8\u5230\u4e0a\u4e00\u7ec4\u5de6\u53f3\u5207\u7247"));
+    m_comparisonSyncPrevButton->setEnabled(false);
+    m_comparisonSyncPrevButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    m_comparisonSyncNextButton = new QToolButton();
+    m_comparisonSyncNextButton->setObjectName(QStringLiteral("planningComparisonSyncNavButton"));
+    m_comparisonSyncNextButton->setText(QStringLiteral("\u203a"));
+    m_comparisonSyncNextButton->setToolTip(QStringLiteral("\u540c\u6b65\u79fb\u52a8\u5230\u4e0b\u4e00\u7ec4\u5de6\u53f3\u5207\u7247"));
+    m_comparisonSyncNextButton->setEnabled(false);
+    m_comparisonSyncNextButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    comparisonSyncLayout->addWidget(m_comparisonSyncPrevButton);
     comparisonSyncLayout->addWidget(m_comparisonSyncSlider, 1);
+    comparisonSyncLayout->addWidget(m_comparisonSyncNextButton);
 
     previewFrameLayout->addWidget(comparisonSyncPanel);
     centerColumn->addWidget(previewFrame, 1);
@@ -903,7 +979,10 @@ PlanningPage::PlanningPage(
     bottomRow->setStretch(2, 6);
 
     centerColumn->addLayout(bottomRow, 0);
-    rootLayout->addLayout(centerColumn, 55);
+    m_centerColumnHost = new QWidget();
+    m_centerColumnHost->setObjectName(QStringLiteral("planningCenterColumnHost"));
+    m_centerColumnHost->setLayout(centerColumn);
+    m_rootLayout->addWidget(m_centerColumnHost, 55);
 
     auto* rightColumn = new QVBoxLayout();
     rightColumn->setSpacing(0);
@@ -1050,9 +1129,9 @@ PlanningPage::PlanningPage(
     respiratoryTitle->setMinimumHeight(36);
     respiratoryRow->addWidget(respiratoryTitle);
     respiratoryRow->addStretch();
-    m_respiratoryTrackingCheck = new QCheckBox();
-    m_respiratoryTrackingCheck->setObjectName(QStringLiteral("planningToggleCheck"));
-    m_respiratoryTrackingCheck->setMinimumSize(78, 36);
+    m_respiratoryTrackingCheck = new QCheckBox(QStringLiteral("\u547c\u5438\u8ddf\u968f"));
+    m_respiratoryTrackingCheck->setObjectName(QStringLiteral("planningModeOption"));
+    m_respiratoryTrackingCheck->setMinimumHeight(32);
     m_respiratoryTrackingCheck->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     respiratoryRow->addWidget(m_respiratoryTrackingCheck, 0, Qt::AlignRight | Qt::AlignVCenter);
 
@@ -1209,7 +1288,10 @@ PlanningPage::PlanningPage(
     controlsScroll->setWidget(controlsFrame);
 
     rightColumn->addWidget(controlsScroll);
-    rootLayout->addLayout(rightColumn, 24);
+    m_rightColumnHost = new QWidget();
+    m_rightColumnHost->setObjectName(QStringLiteral("planningRightColumnHost"));
+    m_rightColumnHost->setLayout(rightColumn);
+    m_rootLayout->addWidget(m_rightColumnHost, 24);
 
     connect(m_addPathButton, &QPushButton::clicked, this, &PlanningPage::addPathItem);
     connect(m_removePathButton, &QPushButton::clicked, this, &PlanningPage::removeCurrentPathItem);
@@ -1219,6 +1301,11 @@ PlanningPage::PlanningPage(
     connect(m_storeImageButton, &QPushButton::clicked, this, &PlanningPage::storeCapturedImages);
     connect(m_loadImageButton, &QPushButton::clicked, this, &PlanningPage::loadStoredImages);
     connect(m_historySliceSlider, &QSlider::valueChanged, this, [this](int value) {
+        if (isComparisonSyncActive() && !m_applyingComparisonSync) {
+            const QSignalBlocker blocker(m_historySliceSlider);
+            m_historySliceSlider->setValue(m_currentHistorySliceIndex >= 0 ? m_currentHistorySliceIndex : m_historySliceSlider->minimum());
+            return;
+        }
         loadHistoricalSlice(value, true);
     });
     connect(m_historySliceSlider, &QSlider::rangeChanged, this, [this](int, int) {
@@ -1240,6 +1327,11 @@ PlanningPage::PlanningPage(
     });
     connect(m_currentMaximizeButton, &QToolButton::clicked, this, &PlanningPage::showCurrentPreviewMaximized);
     connect(m_currentSliceSlider, &QSlider::valueChanged, this, [this](int value) {
+        if (isComparisonSyncActive() && !m_applyingComparisonSync) {
+            const QSignalBlocker blocker(m_currentSliceSlider);
+            m_currentSliceSlider->setValue(m_currentStagedSliceIndex >= 0 ? m_currentStagedSliceIndex : m_currentSliceSlider->minimum());
+            return;
+        }
         if (m_modelList != nullptr && value < m_modelList->count() && m_modelList->currentRow() != value) {
             m_modelList->setCurrentRow(value);
             return;
@@ -1290,6 +1382,16 @@ PlanningPage::PlanningPage(
     });
     connect(m_resetComparisonSyncButton, &QPushButton::clicked, this, &PlanningPage::resetComparisonSyncCalibration);
     connect(m_comparisonSyncSlider, &QSlider::valueChanged, this, &PlanningPage::applyComparisonSyncSliderValue);
+    connect(m_comparisonSyncPrevButton, &QToolButton::clicked, this, [this]() {
+        if (m_comparisonSyncSlider != nullptr && m_comparisonSyncSlider->isEnabled()) {
+            m_comparisonSyncSlider->setValue(std::max(m_comparisonSyncSlider->minimum(), m_comparisonSyncSlider->value() - 1));
+        }
+    });
+    connect(m_comparisonSyncNextButton, &QToolButton::clicked, this, [this]() {
+        if (m_comparisonSyncSlider != nullptr && m_comparisonSyncSlider->isEnabled()) {
+            m_comparisonSyncSlider->setValue(std::min(m_comparisonSyncSlider->maximum(), m_comparisonSyncSlider->value() + 1));
+        }
+    });
     connect(m_generateTargetsButton, &QPushButton::clicked, this, &PlanningPage::generateTargetsForCurrentSlice);
     connect(m_generateAssessmentButton, &QPushButton::clicked, this, &PlanningPage::generateAssessmentForCurrentPlan);
     connect(m_previewPlanButton, &QPushButton::clicked, this, &PlanningPage::previewCurrentPlan);
@@ -1319,6 +1421,7 @@ PlanningPage::PlanningPage(
         }
         refreshContextSummary(false);
     });
+    connect(m_context, &ApplicationContext::treatmentLayerVisualizationRequested, this, &PlanningPage::showTreatmentComparisonLayer);
 
     const auto refreshMetrics = [this]() {
         refreshDerivedMetrics();
@@ -1386,8 +1489,7 @@ PlanningPage::PlanningPage(
     });
 
     const auto activateColor = [this](const QColor& color) {
-        m_preview->setCurrentAnnotationColor(color);
-        m_preview->setAnnotationEnabled(true);
+        updateAnnotationColorButtonSelection(color);
     };
     connect(m_annotationRedButton, &QToolButton::clicked, this, [activateColor]() { activateColor(QColor(201, 71, 51)); });
     connect(m_annotationBlueButton, &QToolButton::clicked, this, [activateColor]() { activateColor(QColor(91, 158, 230)); });
@@ -1395,6 +1497,7 @@ PlanningPage::PlanningPage(
     connect(m_annotationOrangeButton, &QToolButton::clicked, this, [activateColor]() { activateColor(QColor(255, 177, 75)); });
     connect(m_annotationUndoButton, &QToolButton::clicked, m_preview, &MockUltrasoundView::undoLastAnnotation);
     connect(m_annotationClearButton, &QToolButton::clicked, m_preview, &MockUltrasoundView::clearAnnotations);
+    updateAnnotationColorButtonSelection(m_activeAnnotationColor);
 
     if (m_simulationDevice != nullptr) {
         m_latestDeviceSnapshot = m_simulationDevice->latestSnapshot();
@@ -1689,9 +1792,10 @@ void PlanningPage::generateTargetsForCurrentSlice()
         ++generatedSliceCount;
         totalTargetCount += slice.targets.size();
         generatedSliceLines.push_back(
-            QStringLiteral("%1 | %2 | %3")
+            QStringLiteral("%1 | %2 | %3 | %4")
                 .arg(slice.label)
                 .arg(patternSummaryText(slice.pattern))
+                .arg(annotationAreaSummaryText(slice.annotatedAreaMm2))
                 .arg(targetSummaryText(slice.pattern, slice.targets)));
     }
 
@@ -1947,6 +2051,7 @@ void PlanningPage::refreshContextSummary(bool refreshHistoricalImages)
         if (m_stagedSlices.isEmpty()) {
             if (m_preview != nullptr) {
                 m_preview->clearBackgroundImage();
+                m_preview->setSyntheticImageEnabled(false);
                 m_preview->setPlan(plan);
                 m_preview->setSliceContext(0, 0);
                 m_preview->setCaption(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u65b9\u6848\u9884\u89c8"));
@@ -1962,6 +2067,7 @@ void PlanningPage::refreshContextSummary(bool refreshHistoricalImages)
         m_preview->clearPlan();
         if (m_stagedImageSeries.isEmpty()) {
             m_preview->setSliceContext(0, 0);
+            m_preview->setSyntheticImageEnabled(false);
             m_preview->setCaption(QStringLiteral(""));
             m_previewOverlayLabel->setText(QStringLiteral("\u53f3\u5c4f\u663e\u793a\u5f53\u524d\u6cbb\u7597\u5f71\u50cf"));
             m_previewOverlayLabel->setVisible(true);
@@ -2050,17 +2156,20 @@ TherapyPlan PlanningPage::buildPlanFromSlices(ApprovalState approvalState) const
     double totalDurationSeconds = 0.0;
     bool containsLineSlice = false;
     bool containsRespiratoryTracking = false;
-    for (const StagedSliceState& slice : m_stagedSlices) {
+    for (int sliceIndex = 0; sliceIndex < m_stagedSlices.size(); ++sliceIndex) {
+        const StagedSliceState& slice = m_stagedSlices.at(sliceIndex);
         if (!slice.targetsGenerated || slice.targets.isEmpty()) {
             continue;
         }
 
         TherapySegment segment;
         segment.id = QStringLiteral("%1-S%2").arg(plan.id).arg(segmentIndex + 1);
-        segment.orderIndex = segmentIndex;
+        segment.orderIndex = sliceIndex;
         segment.label = QStringLiteral("%1 | %2").arg(slice.label, patternSummaryText(slice.pattern));
-        segment.points = slice.targets;
-        segment.plannedDurationSeconds = totalDwellSeconds(slice.targets);
+        segment.points = slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated && !slice.respiratoryAdjustedTargets.isEmpty()
+            ? slice.respiratoryAdjustedTargets
+            : slice.targets;
+        segment.plannedDurationSeconds = totalDwellSeconds(segment.points);
 
         totalTargetCount += segment.points.size();
         totalDurationSeconds += segment.plannedDurationSeconds;
@@ -2155,6 +2264,21 @@ void PlanningPage::toggleAnnotationPanel()
     }
 }
 
+void PlanningPage::updateAnnotationColorButtonSelection(const QColor& color)
+{
+    m_activeAnnotationColor = color;
+    setAnnotationColorButtonsChecked(
+        m_annotationRedButton,
+        m_annotationBlueButton,
+        m_annotationGreenButton,
+        m_annotationOrangeButton,
+        m_activeAnnotationColor);
+    if (m_preview != nullptr) {
+        m_preview->setCurrentAnnotationColor(m_activeAnnotationColor);
+        m_preview->setAnnotationEnabled(true);
+    }
+}
+
 void PlanningPage::onPathSelectionChanged(int row)
 {
     if (row < 0) {
@@ -2198,7 +2322,10 @@ void PlanningPage::onPreviewAnnotationsChanged()
     StagedSliceState& slice = m_stagedSlices[m_currentStagedSliceIndex];
     if (slice.targetsGenerated) {
         invalidateCurrentSliceTargets();
+        return;
     }
+    refreshCurrentSliceVisualization();
+    updateSliceAssessmentMetrics();
 }
 
 void PlanningPage::onRespiratoryTrackingToggled(bool enabled)
@@ -2281,6 +2408,7 @@ void PlanningPage::persistCurrentSliceAnnotations()
     }
     slice.annotations = normalizedAnnotations;
     slice.edited = !slice.annotations.isEmpty();
+    slice.annotatedAreaMm2 = slice.annotations.isEmpty() ? 0.0 : annotationRegionAreaMm2(slice.annotations);
 }
 
 void PlanningPage::loadStagedSlice(int row)
@@ -2300,6 +2428,7 @@ void PlanningPage::loadStagedSlice(int row)
         if (m_preview != nullptr) {
             m_preview->setAnnotationStrokes({});
             m_preview->setSliceContext(0, 0);
+            m_preview->setSyntheticImageEnabled(false);
             if (!m_context->hasActivePlan()) {
                 m_preview->setCaption(QStringLiteral(""));
             }
@@ -2333,6 +2462,7 @@ void PlanningPage::loadStagedSlice(int row)
         QStringLiteral("\u6682\u5b58\u8def\u5f84\uff1a%1").arg(slice.image.storagePath),
         QStringLiteral("\u7f16\u8f91\u72b6\u6001\uff1a%1").arg(slice.edited ? QStringLiteral("\u5df2\u5708\u753b") : QStringLiteral("\u672a\u5708\u753b")),
         QStringLiteral("\u5f53\u524d\u7b14\u8ff9\u6570\uff1a%1").arg(slice.annotations.size()),
+        annotationAreaSummaryText(slice.annotatedAreaMm2),
         QStringLiteral("\u5f53\u524d\u9776\u70b9\u6570\uff1a%1").arg(slice.targets.size()),
         QStringLiteral("\u547c\u5438\u8ddf\u968f\uff1a%1").arg(
             slice.respiratoryTrackingEnabled
@@ -2371,6 +2501,7 @@ void PlanningPage::refreshCurrentSliceVisualization()
 
     if (m_currentStagedSliceIndex < 0 || m_currentStagedSliceIndex >= m_stagedSlices.size()) {
         m_preview->clearBackgroundImage();
+        m_preview->setSyntheticImageEnabled(false);
         if (!m_context->hasActivePlan()) {
             m_preview->clearPlan();
         }
@@ -2385,18 +2516,17 @@ void PlanningPage::refreshCurrentSliceVisualization()
     }
     if (m_currentSliceSummaryLabel != nullptr) {
         m_currentSliceSummaryLabel->setText(
-            QStringLiteral("\u7b2c %1/%2 \u5f20 | %3 | \u7b14\u8ff9 %4 | %5%6")
+            QStringLiteral("\u7b2c %1/%2 \u5f20 | \u7b14\u8ff9 %3 | %4%5")
                 .arg(m_currentStagedSliceIndex + 1)
                 .arg(m_stagedSlices.size())
-                .arg(slice.image.storagePath)
                 .arg(slice.annotations.size())
-                .arg(targetSummaryText(slice.pattern, slice.targets))
+                .arg(QStringLiteral("%1 | %2").arg(annotationAreaSummaryText(slice.annotatedAreaMm2), targetSummaryText(slice.pattern, slice.targets)))
                 .arg(slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated
                     ? QStringLiteral(" | \u547c\u5438\u8865\u507f dX %1 / dY %2")
                           .arg(slice.respiratoryOffsetMm.x(), 0, 'f', 2)
                           .arg(slice.respiratoryOffsetMm.y(), 0, 'f', 2)
                     : QString()));
-        m_currentSliceSummaryLabel->setToolTip(slice.image.storagePath);
+        m_currentSliceSummaryLabel->setToolTip(QString());
     }
 }
 
@@ -2414,6 +2544,7 @@ void PlanningPage::configureCurrentPreviewView(MockUltrasoundView* preview, int 
             ? m_preview->annotationStrokes()
             : slice.annotations;
         preview->clearBackgroundImage();
+        preview->setSyntheticImageEnabled(true);
         preview->setAnnotationStrokes(annotations);
         preview->setSliceContext(row, m_stagedSlices.size());
         const QString respiratoryCaption = slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated
@@ -2433,6 +2564,9 @@ void PlanningPage::configureCurrentPreviewView(MockUltrasoundView* preview, int 
                 : slice.targets;
             TherapyPlan previewPlan;
             previewPlan.pattern = slice.pattern;
+            previewPlan.spacingMm = slice.spacingMm > 0.0 ? slice.spacingMm : m_spacingSpin->value();
+            previewPlan.dwellSeconds = slice.dwellSeconds > 0.0 ? slice.dwellSeconds : m_dwellSpin->value();
+            previewPlan.plannedPowerWatts = slice.powerWatts > 0.0 ? slice.powerWatts : m_powerSpin->value();
             TherapySegment segment;
             segment.id = QStringLiteral("SLICE-%1").arg(row + 1);
             segment.orderIndex = 0;
@@ -2454,10 +2588,12 @@ void PlanningPage::configureCurrentPreviewView(MockUltrasoundView* preview, int 
             preview->setAnnotationStrokes(m_preview->annotationStrokes());
         }
         preview->clearBackgroundImage();
+        preview->setSyntheticImageEnabled(false);
         preview->setPlan(m_context->activePlan());
         preview->setCaption(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u65b9\u6848\u9884\u89c8"));
     } else {
         preview->clearBackgroundImage();
+        preview->setSyntheticImageEnabled(false);
         preview->clearPlan();
         preview->setCaption(QStringLiteral(""));
     }
@@ -2540,7 +2676,7 @@ void PlanningPage::invalidateCurrentSliceTargets(const QString& title, const QSt
     StagedSliceState& slice = m_stagedSlices[m_currentStagedSliceIndex];
     slice.targets.clear();
     slice.targetsGenerated = false;
-    slice.annotatedAreaMm2 = 0.0;
+    slice.annotatedAreaMm2 = slice.annotations.isEmpty() ? 0.0 : annotationRegionAreaMm2(slice.annotations);
     slice.estimatedVolumeCm3 = 0.0;
     slice.ablatedVolumeCm3 = 0.0;
     clearRespiratoryTrackingState(slice);
@@ -2588,7 +2724,7 @@ void PlanningPage::invalidateAllSliceTargets(const QString& title, const QString
         }
         slice.targets.clear();
         slice.targetsGenerated = false;
-        slice.annotatedAreaMm2 = 0.0;
+        slice.annotatedAreaMm2 = slice.annotations.isEmpty() ? 0.0 : annotationRegionAreaMm2(slice.annotations);
         slice.estimatedVolumeCm3 = 0.0;
         slice.ablatedVolumeCm3 = 0.0;
         clearRespiratoryTrackingState(slice);
@@ -2670,7 +2806,7 @@ void PlanningPage::clearSliceTargets(bool clearAnnotations)
     for (StagedSliceState& slice : m_stagedSlices) {
         slice.targets.clear();
         slice.targetsGenerated = false;
-        slice.annotatedAreaMm2 = 0.0;
+        slice.annotatedAreaMm2 = clearAnnotations || slice.annotations.isEmpty() ? 0.0 : annotationRegionAreaMm2(slice.annotations);
         slice.estimatedVolumeCm3 = 0.0;
         slice.ablatedVolumeCm3 = 0.0;
         clearRespiratoryTrackingState(slice);
@@ -3084,6 +3220,7 @@ void PlanningPage::resetActivePathWorkspace()
     if (m_preview != nullptr) {
         m_preview->setAnnotationStrokes({});
         m_preview->clearBackgroundImage();
+        m_preview->setSyntheticImageEnabled(false);
         m_preview->clearPlan();
         m_preview->setCompletedPointCount(0);
         m_preview->setSliceContext(0, 0);
@@ -3209,6 +3346,174 @@ void PlanningPage::loadPathState(int row)
     updatePathActionState();
 }
 
+void PlanningPage::showTreatmentComparisonLayer(const QString& planId, int layerIndex, bool treatmentActive)
+{
+    Q_UNUSED(planId)
+
+    if (!treatmentActive) {
+        setTreatmentComparisonFocusMode(false);
+        updateComparisonSyncState();
+        return;
+    }
+
+    setTreatmentComparisonFocusMode(true);
+
+    if (m_stagedSlices.isEmpty()) {
+        refreshCurrentSliceVisualization();
+        updateComparisonSyncState();
+        updateAcquisitionSummary(
+            QStringLiteral("\u6cbb\u7597\u8054\u52a8\u5f71\u50cf\u5bf9\u6bd4"),
+            {
+                QStringLiteral("\u5df2\u8fdb\u5165\u6cbb\u7597\u5bf9\u6bd4\u805a\u7126\u6a21\u5f0f"),
+                QStringLiteral("\u5f53\u524d\u6ca1\u6709\u53ef\u8df3\u8f6c\u7684\u91c7\u96c6\u5f71\u50cf\uff0c\u8bf7\u5148\u5728\u65b9\u6848\u9875\u5b8c\u6210\u56fe\u50cf\u91c7\u96c6\u3002")
+            });
+        return;
+    }
+
+    const int safeLayerIndex = qBound(0, layerIndex, static_cast<int>(m_stagedSlices.size()) - 1);
+    if (m_modelList != nullptr && m_modelList->currentRow() != safeLayerIndex) {
+        const QSignalBlocker blocker(m_modelList);
+        m_modelList->setCurrentRow(safeLayerIndex);
+    }
+    loadStagedSlice(safeLayerIndex);
+    configureTreatmentComparisonSyncForLayer(safeLayerIndex);
+
+    updateAcquisitionSummary(
+        QStringLiteral("\u6cbb\u7597\u8054\u52a8\u5f71\u50cf\u5bf9\u6bd4"),
+        {
+            QStringLiteral("\u5df2\u8fdb\u5165\u6cbb\u7597\u5bf9\u6bd4\u805a\u7126\u6a21\u5f0f"),
+            QStringLiteral("\u53f3\u4fa7\u5f53\u524d\u6cbb\u7597\u5f71\u50cf\uff1a\u7b2c %1 / %2 \u5f20").arg(safeLayerIndex + 1).arg(m_stagedSlices.size()),
+            m_historyImageSeries.isEmpty()
+                ? QStringLiteral("\u5de6\u4fa7\u65e2\u5f80\u5f71\u50cf\uff1a\u6682\u65e0\u53ef\u540c\u6b65\u5f71\u50cf")
+                : QStringLiteral("\u5de6\u4fa7\u65e2\u5f80\u5f71\u50cf\u5df2\u6309\u53f3\u4fa7\u5c42\u53f7\u540c\u6b65\u8df3\u8f6c"),
+            QStringLiteral("\u82e5\u5de6\u53f3\u5f71\u50cf\u6570\u91cf\u4e0d\u540c\uff0c\u540c\u6b65\u79fb\u52a8\u4f1a\u6309\u8d77\u70b9/\u7ec8\u70b9\u6bd4\u4f8b\u6620\u5c04\u3002")
+        });
+}
+
+void PlanningPage::setTreatmentComparisonFocusMode(bool enabled)
+{
+    if (m_treatmentComparisonFocusMode == enabled) {
+        return;
+    }
+
+    m_treatmentComparisonFocusMode = enabled;
+    setUpdatesEnabled(false);
+
+    if (m_rootLayout != nullptr) {
+        m_rootLayout->setContentsMargins(enabled ? QMargins(0, 0, 0, 0) : QMargins(12, 12, 12, 12));
+        m_rootLayout->setSpacing(enabled ? 0 : 12);
+        if (m_leftColumnHost != nullptr) {
+            m_rootLayout->setStretchFactor(m_leftColumnHost, enabled ? 0 : 21);
+        }
+        if (m_centerColumnHost != nullptr) {
+            m_rootLayout->setStretchFactor(m_centerColumnHost, 1);
+        }
+        if (m_rightColumnHost != nullptr) {
+            m_rootLayout->setStretchFactor(m_rightColumnHost, enabled ? 0 : 24);
+        }
+    }
+    if (m_leftColumnHost != nullptr) {
+        m_leftColumnHost->setVisible(!enabled);
+    }
+    if (m_rightColumnHost != nullptr) {
+        m_rightColumnHost->setVisible(!enabled);
+    }
+    if (m_previewFrame != nullptr) {
+        m_previewFrame->setMinimumSize(enabled ? QSize(0, 0) : QSize(720, 500));
+    }
+
+    const auto setFramesVisible = [this](const QString& objectName, bool visible) {
+        for (QFrame* frame : findChildren<QFrame*>(objectName)) {
+            frame->setVisible(visible);
+        }
+    };
+
+    setFramesVisible(QStringLiteral("planningSidebarCard"), !enabled);
+    setFramesVisible(QStringLiteral("planningBottomCard"), !enabled);
+    setFramesVisible(QStringLiteral("planningControlFrame"), !enabled);
+
+    if (m_annotationPanel != nullptr) {
+        m_annotationPanel->setVisible(!enabled);
+    }
+    if (m_currentMaximizeButton != nullptr) {
+        m_currentMaximizeButton->setVisible(!enabled);
+    }
+    if (m_historyPreview != nullptr) {
+        m_historyPreview->setBackgroundImageStretchToFill(enabled);
+    }
+    if (m_preview != nullptr) {
+        m_preview->setBackgroundImageStretchToFill(enabled);
+        m_preview->setAnnotationEnabled(!enabled);
+    }
+
+    setUpdatesEnabled(true);
+    updateGeometry();
+    update();
+}
+
+void PlanningPage::configureTreatmentComparisonSyncForLayer(int layerIndex)
+{
+    if (m_stagedSlices.isEmpty()) {
+        resetComparisonSyncCalibration();
+        return;
+    }
+
+    const int currentCount = static_cast<int>(m_stagedSlices.size());
+    const int historyCount = static_cast<int>(m_historyImageSeries.size());
+    const int safeCurrentIndex = qBound(0, layerIndex, currentCount - 1);
+
+    if (historyCount > 0) {
+        int historyIndex = qBound(0, safeCurrentIndex, historyCount - 1);
+        if (currentCount > 1 && historyCount > 1) {
+            const double ratio = static_cast<double>(safeCurrentIndex) / static_cast<double>(currentCount - 1);
+            historyIndex = qBound(0, qRound(ratio * static_cast<double>(historyCount - 1)), historyCount - 1);
+        }
+        loadHistoricalSlice(historyIndex, false);
+    }
+
+    if (currentCount <= 1 || historyCount <= 1) {
+        resetComparisonSyncCalibration();
+        updateComparisonSyncState();
+        return;
+    }
+
+    m_historySyncStartIndex = 0;
+    m_historySyncEndIndex = historyCount - 1;
+    m_currentSyncStartIndex = 0;
+    m_currentSyncEndIndex = currentCount - 1;
+    m_hasHistorySyncStartPoint = true;
+    m_hasHistorySyncEndPoint = true;
+    m_hasCurrentSyncStartPoint = true;
+    m_hasCurrentSyncEndPoint = true;
+
+    if (m_comparisonSyncCheck != nullptr && !m_comparisonSyncCheck->isChecked()) {
+        m_comparisonSyncCheck->setChecked(true);
+    }
+    updateComparisonSyncState();
+
+    if (m_comparisonSyncSlider != nullptr) {
+        const int syncValue = syncValueForCurrentSliceIndex(safeCurrentIndex);
+        m_comparisonSyncSlider->setValue(syncValue);
+        applyComparisonSyncSliderValue(syncValue);
+    }
+}
+
+int PlanningPage::syncValueForCurrentSliceIndex(int currentIndex) const
+{
+    if (!hasComparisonSyncCalibration()) {
+        return 0;
+    }
+
+    const int syncRange = comparisonSyncRange();
+    const int currentDelta = m_currentSyncEndIndex - m_currentSyncStartIndex;
+    if (syncRange <= 0 || currentDelta == 0) {
+        return 0;
+    }
+
+    const double ratio = static_cast<double>(currentIndex - m_currentSyncStartIndex) / static_cast<double>(currentDelta);
+    return qBound(0, qRound(ratio * static_cast<double>(syncRange)), syncRange);
+}
+
 void PlanningPage::showHistoryPreviewMaximized()
 {
     if (m_historyPreview == nullptr || m_historyImageSeries.isEmpty()) {
@@ -3297,6 +3602,13 @@ bool PlanningPage::hasComparisonSyncCalibration() const
         && m_currentSyncStartIndex != m_currentSyncEndIndex;
 }
 
+bool PlanningPage::isComparisonSyncActive() const
+{
+    return m_comparisonSyncCheck != nullptr
+        && m_comparisonSyncCheck->isChecked()
+        && hasComparisonSyncCalibration();
+}
+
 int PlanningPage::comparisonSyncRange() const
 {
     if (!hasComparisonSyncCalibration()) {
@@ -3325,6 +3637,12 @@ void PlanningPage::updateComparisonSyncState()
         || m_hasCurrentSyncStartPoint || m_hasCurrentSyncEndPoint;
     const bool ready = hasComparisonSyncCalibration();
     const bool enabled = ready && m_comparisonSyncCheck != nullptr && m_comparisonSyncCheck->isChecked();
+    const QString lockedSliderToolTip = QStringLiteral("\u540c\u6b65\u79fb\u52a8\u5df2\u5f00\u542f\uff0c\u8bf7\u4f7f\u7528\u4e0b\u65b9\u540c\u6b65\u79fb\u52a8\u6ed1\u52a8\u6761\u5207\u6362\u5de6\u53f3\u5f71\u50cf\u3002");
+    const QString syncSliderToolTip = ready
+        ? (enabled
+            ? QStringLiteral("\u62d6\u52a8\u6216\u70b9\u51fb\u4e24\u4fa7\u6309\u94ae\uff0c\u540c\u6b65\u5207\u6362\u5de6\u53f3\u5f71\u50cf\u3002")
+            : QStringLiteral("\u52fe\u9009\u201c\u540c\u6b65\u79fb\u52a8\u201d\u540e\uff0c\u6b64\u6ed1\u52a8\u6761\u53ef\u7528\u3002"))
+        : QStringLiteral("\u8bf7\u5148\u8bbe\u7f6e\u5de6\u53f3\u8d77\u70b9\u548c\u7ec8\u70b9\uff0c\u518d\u542f\u7528\u540c\u6b65\u79fb\u52a8\u3002");
 
     const auto updateAnchorButtonText = [](QPushButton* button, const QString& baseText, bool hasAnchor, int index) {
         if (button == nullptr) {
@@ -3353,10 +3671,53 @@ void PlanningPage::updateComparisonSyncState()
         const QSignalBlocker blocker(m_comparisonSyncSlider);
         m_comparisonSyncSlider->setRange(0, range);
         m_comparisonSyncSlider->setEnabled(enabled);
+        m_comparisonSyncSlider->setToolTip(syncSliderToolTip);
+        setSliderVisualState(m_comparisonSyncSlider, "syncInactive", !enabled);
         if (!ready || m_comparisonSyncSlider->value() > range) {
             m_comparisonSyncSlider->setValue(0);
         }
     }
+    if (m_comparisonSyncPrevButton != nullptr) {
+        m_comparisonSyncPrevButton->setEnabled(enabled
+            && m_comparisonSyncSlider != nullptr
+            && m_comparisonSyncSlider->value() > m_comparisonSyncSlider->minimum());
+        m_comparisonSyncPrevButton->setToolTip(syncSliderToolTip);
+    }
+    if (m_comparisonSyncNextButton != nullptr) {
+        m_comparisonSyncNextButton->setEnabled(enabled
+            && m_comparisonSyncSlider != nullptr
+            && m_comparisonSyncSlider->value() < m_comparisonSyncSlider->maximum());
+        m_comparisonSyncNextButton->setToolTip(syncSliderToolTip);
+    }
+
+    const auto updateSliceSlider = [enabled, &lockedSliderToolTip](QSlider* slider, bool hasMultipleSlices, const QString& unlockedToolTip) {
+        if (slider == nullptr) {
+            return;
+        }
+        slider->setEnabled(hasMultipleSlices && !enabled);
+        slider->setToolTip(enabled ? lockedSliderToolTip : unlockedToolTip);
+        setSliderVisualState(slider, "syncLocked", enabled);
+    };
+    updateSliceSlider(
+        m_historySliceSlider,
+        m_historySliceSlider != nullptr && m_historySliceSlider->maximum() > m_historySliceSlider->minimum(),
+        QStringLiteral("\u5207\u6362\u5de6\u4fa7\u65e2\u5f80\u5f71\u50cf"));
+    updateSliceSlider(
+        m_currentSliceSlider,
+        m_currentSliceSlider != nullptr && m_currentSliceSlider->maximum() > m_currentSliceSlider->minimum(),
+        QStringLiteral("\u5207\u6362\u53f3\u4fa7\u5f53\u524d\u6cbb\u7597\u5f71\u50cf"));
+
+    const auto updateButtons = [](QSlider* slider, QToolButton* previousButton, QToolButton* nextButton) {
+        const bool canNavigate = slider != nullptr && slider->isEnabled() && slider->maximum() > slider->minimum();
+        if (previousButton != nullptr) {
+            previousButton->setEnabled(canNavigate && slider->value() > slider->minimum());
+        }
+        if (nextButton != nullptr) {
+            nextButton->setEnabled(canNavigate && slider->value() < slider->maximum());
+        }
+    };
+    updateButtons(m_historySliceSlider, m_historyPrevSliceButton, m_historyNextSliceButton);
+    updateButtons(m_currentSliceSlider, m_currentPrevSliceButton, m_currentNextSliceButton);
 
     if (enabled && m_comparisonSyncSlider != nullptr) {
         applyComparisonSyncSliderValue(m_comparisonSyncSlider->value());
@@ -3389,6 +3750,12 @@ void PlanningPage::applyComparisonSyncSliderValue(int value)
         m_currentSliceSlider->setValue(currentIndex);
     }
     m_applyingComparisonSync = false;
+    if (m_comparisonSyncPrevButton != nullptr && m_comparisonSyncSlider != nullptr) {
+        m_comparisonSyncPrevButton->setEnabled(m_comparisonSyncSlider->value() > m_comparisonSyncSlider->minimum());
+    }
+    if (m_comparisonSyncNextButton != nullptr && m_comparisonSyncSlider != nullptr) {
+        m_comparisonSyncNextButton->setEnabled(m_comparisonSyncSlider->value() < m_comparisonSyncSlider->maximum());
+    }
 }
 
 void PlanningPage::showCurrentPreviewMaximized()
@@ -3439,21 +3806,25 @@ void PlanningPage::showCurrentPreviewMaximized()
     auto* dialogRedButton = new QToolButton();
     dialogRedButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
     dialogRedButton->setProperty("swatchColor", QStringLiteral("red"));
+    dialogRedButton->setToolTip(QStringLiteral("\u7ea2\u8272\u5708\u753b\u753b\u7b14"));
     dialogAnnotationLayout->addWidget(dialogRedButton);
 
     auto* dialogBlueButton = new QToolButton();
     dialogBlueButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
     dialogBlueButton->setProperty("swatchColor", QStringLiteral("blue"));
+    dialogBlueButton->setToolTip(QStringLiteral("\u84dd\u8272\u5708\u753b\u753b\u7b14"));
     dialogAnnotationLayout->addWidget(dialogBlueButton);
 
     auto* dialogGreenButton = new QToolButton();
     dialogGreenButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
     dialogGreenButton->setProperty("swatchColor", QStringLiteral("green"));
+    dialogGreenButton->setToolTip(QStringLiteral("\u7eff\u8272\u5708\u753b\u753b\u7b14"));
     dialogAnnotationLayout->addWidget(dialogGreenButton);
 
     auto* dialogOrangeButton = new QToolButton();
     dialogOrangeButton->setObjectName(QStringLiteral("planningAnnotationColorButton"));
     dialogOrangeButton->setProperty("swatchColor", QStringLiteral("orange"));
+    dialogOrangeButton->setToolTip(QStringLiteral("\u6a59\u8272\u5708\u753b\u753b\u7b14"));
     dialogAnnotationLayout->addWidget(dialogOrangeButton);
 
     auto* dialogSeparatorMiddle = new QFrame();
@@ -3504,7 +3875,11 @@ void PlanningPage::showCurrentPreviewMaximized()
     dialogPreview->setMaximumSize(expandedPreviewSize);
     dialogPreview->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     dialogPreview->setImageZoomEnabled(true);
+    dialogPreview->setScaleRulerEnabled(true);
+    dialogPreview->setScaleRulerExpanded(m_preview != nullptr ? m_preview->isScaleRulerExpanded() : true);
     dialogPreview->setAnnotationEnabled(true);
+    dialogPreview->setCurrentAnnotationColor(m_activeAnnotationColor);
+    setAnnotationColorButtonsChecked(dialogRedButton, dialogBlueButton, dialogGreenButton, dialogOrangeButton, m_activeAnnotationColor);
     const int dialogSliceCount = m_stagedSlices.size();
     int dialogSliceIndex = m_currentStagedSliceIndex >= 0 && m_currentStagedSliceIndex < dialogSliceCount
         ? m_currentStagedSliceIndex
@@ -3555,7 +3930,10 @@ void PlanningPage::showCurrentPreviewMaximized()
     hintLabel->setWordWrap(true);
     layout->addWidget(hintLabel);
 
-    const auto activateDialogColor = [dialogPreview](const QColor& color) {
+    const auto activateDialogColor = [this, dialogPreview, dialogRedButton, dialogBlueButton, dialogGreenButton, dialogOrangeButton](const QColor& color) {
+        m_activeAnnotationColor = color;
+        setAnnotationColorButtonsChecked(dialogRedButton, dialogBlueButton, dialogGreenButton, dialogOrangeButton, color);
+        updateAnnotationColorButtonSelection(color);
         dialogPreview->setCurrentAnnotationColor(color);
         dialogPreview->setAnnotationEnabled(true);
     };
@@ -3587,6 +3965,7 @@ void PlanningPage::showCurrentPreviewMaximized()
         StagedSliceState& slice = m_stagedSlices[dialogSliceIndex];
         slice.annotations = normalizedAnnotations;
         slice.edited = !slice.annotations.isEmpty();
+        slice.annotatedAreaMm2 = slice.annotations.isEmpty() ? 0.0 : annotationRegionAreaMm2(slice.annotations);
     };
     const auto loadDialogSlice = [&](int row) {
         if (m_stagedSlices.isEmpty()) {
@@ -3618,6 +3997,7 @@ void PlanningPage::showCurrentPreviewMaximized()
     dialog.show();
     dialog.exec();
     if (m_preview != nullptr) {
+        m_preview->setScaleRulerExpanded(dialogPreview->isScaleRulerExpanded());
         saveDialogSliceAnnotations();
         if (dialogSliceIndex >= 0 && dialogSliceIndex < m_stagedSlices.size()) {
             if (m_modelList != nullptr && m_modelList->currentRow() != dialogSliceIndex) {
@@ -3769,12 +4149,11 @@ void PlanningPage::loadHistoricalSlice(int row, bool announce)
     }
     if (m_historySliceSummaryLabel != nullptr) {
         m_historySliceSummaryLabel->setText(
-            QStringLiteral("\u7b2c %1/%2 \u5f20 | %3 | %4")
+            QStringLiteral("\u7b2c %1/%2 \u5f20 | %3")
                 .arg(safeRow + 1)
                 .arg(m_historyImageSeries.size())
-                .arg(dateText)
-                .arg(pathText));
-        m_historySliceSummaryLabel->setToolTip(pathText);
+                .arg(dateText));
+        m_historySliceSummaryLabel->setToolTip(QString());
     }
     updateHistoryMaximizeButtonState();
     updateSliceNavigationButtons();
@@ -3802,6 +4181,7 @@ void PlanningPage::clearHistoricalComparison(const QString& overlayText)
     if (m_historyPreview != nullptr) {
         m_historyPreview->clearPlan();
         m_historyPreview->clearBackgroundImage();
+        m_historyPreview->setSyntheticImageEnabled(false);
         m_historyPreview->setCompletedPointCount(0);
         m_historyPreview->setSliceContext(0, 0);
         m_historyPreview->setCaption(QStringLiteral("\u65e2\u5f80\u6cbb\u7597\u5f71\u50cf"));
@@ -3973,6 +4353,7 @@ void PlanningPage::simulateImageAcquisition()
     } else if (m_preview != nullptr) {
         m_preview->setAnnotationStrokes({});
         m_preview->setSliceContext(0, 0);
+        m_preview->setSyntheticImageEnabled(false);
         m_preview->setCaption(QStringLiteral(""));
     }
 
