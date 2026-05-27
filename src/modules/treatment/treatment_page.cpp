@@ -42,6 +42,63 @@ bool isSuppressedSystemPlan(const TherapyPlan& plan)
     return plan.name.trimmed().compare(QStringLiteral("Imported treatment plan"), Qt::CaseInsensitive) == 0;
 }
 
+bool segmentHasLineTreatmentMetadata(const TherapySegment& segment)
+{
+    for (const TherapyPoint& point : segment.points) {
+        if (point.lineGroupIndex >= 0 || point.lineStart || point.lineEnd) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool shouldUseSerpentinePointOrder(const TherapyPlan& plan, const TherapySegment& segment)
+{
+    if (segment.points.size() <= 1 || plan.pattern == TreatmentPattern::Line) {
+        return false;
+    }
+
+    return !segmentHasLineTreatmentMetadata(segment);
+}
+
+bool hasSameTargetPositionOrder(const QVector<TherapyPoint>& left, const QVector<TherapyPoint>& right)
+{
+    if (left.size() != right.size()) {
+        return false;
+    }
+
+    for (int index = 0; index < left.size(); ++index) {
+        const QPointF& leftPosition = left.at(index).positionMm;
+        const QPointF& rightPosition = right.at(index).positionMm;
+        if (std::abs(leftPosition.x() - rightPosition.x()) > 0.001
+            || std::abs(leftPosition.y() - rightPosition.y()) > 0.001) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool applySerpentinePointExecutionOrder(TherapyPlan* plan)
+{
+    if (plan == nullptr) {
+        return false;
+    }
+
+    bool changed = false;
+    for (TherapySegment& segment : plan->segments) {
+        if (!shouldUseSerpentinePointOrder(*plan, segment)) {
+            continue;
+        }
+
+        const QVector<TherapyPoint> orderedPoints = orderPointTargetsSerpentine(segment.points, plan->spacingMm);
+        if (!hasSameTargetPositionOrder(segment.points, orderedPoints)) {
+            segment.points = orderedPoints;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 QString formatTreatmentDuration(double seconds)
 {
     if (seconds <= 0.0) {
@@ -545,6 +602,16 @@ void TreatmentPage::startTreatment()
         return;
     }
 
+    const int requestedLayerIndex = m_selectedLayerIndex;
+    TherapyPlan executionPlan = m_context->activePlan();
+    if (applySerpentinePointExecutionOrder(&executionPlan)) {
+        m_context->setActivePlan(executionPlan);
+        m_selectedLayerIndex = std::clamp(requestedLayerIndex, 0, std::max(0, static_cast<int>(executionPlan.segments.size()) - 1));
+        m_completedPointCount = 0;
+        ensureLayerProgressStorage(executionPlan);
+        updateLayerPreview();
+    }
+
     QString reason;
     if (!m_safetyKernel->requestTreatmentStart(&reason)) {
         appendLog(QStringLiteral("\u62d2\u7edd\u5f00\u59cb\u6cbb\u7597\uff1a%1").arg(reason));
@@ -804,6 +871,7 @@ void TreatmentPage::onPlanSelectionChanged(int index)
     }
 
     m_deferStartupPlanSelection = false;
+    applySerpentinePointExecutionOrder(&therapyPlan);
     m_context->setActivePlan(therapyPlan);
     if (m_safetyKernel != nullptr) {
         m_safetyKernel->setPlanApprovalState(therapyPlan.approvalState);
@@ -1113,6 +1181,7 @@ TherapyPlan TreatmentPage::selectedLayerPlan(const TherapyPlan& plan) const
     TherapySegment layerSegment = plan.segments.at(normalizedLayerIndex(plan));
     layerSegment.orderIndex = 0;
     layerPlan.segments.push_back(layerSegment);
+    applySerpentinePointExecutionOrder(&layerPlan);
     return layerPlan;
 }
 

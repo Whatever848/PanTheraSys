@@ -17,6 +17,7 @@ private slots:
     void extractContourFromAnnotationsUsesLargestStroke();
     void generateTherapyTargetsWithinContourStaysInsideContour();
     void generatePointTargetsPackAcrossContourRows();
+    void generatePointTargetsUseSerpentineOrder();
     void generatePointTargetsIncludeContourBoundary();
     void generatePointTargetsCoverNearContourEdgeBands();
     void generatePointTargetsDoNotOversampleDenseContourBoundary();
@@ -198,6 +199,71 @@ void TherapyImagingAlgorithmsTests::generatePointTargetsPackAcrossContourRows()
     }
 
     QVERIFY(rowKeys.size() >= 3);
+}
+
+void TherapyImagingAlgorithmsTests::generatePointTargetsUseSerpentineOrder()
+{
+    const QVector<QPointF> contour {
+        QPointF(0.0, 0.0),
+        QPointF(18.0, 0.0),
+        QPointF(18.0, 12.0),
+        QPointF(0.0, 12.0),
+        QPointF(0.0, 0.0)
+    };
+
+    const double spacingMm = 3.0;
+    const QVector<TherapyPoint> targets = generateTherapyTargetsWithinContour(
+        contour,
+        TreatmentPattern::Point,
+        spacingMm,
+        0.3,
+        400.0);
+
+    QVERIFY(targets.size() >= 12);
+
+    struct TargetRow {
+        QVector<TherapyPoint> points;
+        qreal averageY {0.0};
+    };
+
+    QVector<TargetRow> rows;
+    const qreal rowToleranceMm = spacingMm * 0.35;
+    for (int targetIndex = 0; targetIndex < targets.size(); ++targetIndex) {
+        const TherapyPoint& point = targets.at(targetIndex);
+        QVERIFY(contourContainsPointMm(contour, point.positionMm, 0.2));
+        QCOMPARE(point.index, targetIndex);
+        QCOMPARE(point.lineGroupIndex, -1);
+        QVERIFY(!point.lineStart);
+        QVERIFY(!point.lineEnd);
+
+        if (rows.isEmpty() || std::abs(point.positionMm.y() - rows.last().averageY) > rowToleranceMm) {
+            TargetRow row;
+            row.averageY = point.positionMm.y();
+            row.points.push_back(point);
+            rows.push_back(row);
+            continue;
+        }
+
+        TargetRow& row = rows.last();
+        const int previousCount = row.points.size();
+        row.averageY = ((row.averageY * previousCount) + point.positionMm.y()) / (previousCount + 1);
+        row.points.push_back(point);
+    }
+
+    QVERIFY(rows.size() >= 3);
+    for (int rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+        const QVector<TherapyPoint>& row = rows.at(rowIndex).points;
+        if (rowIndex > 0) {
+            QVERIFY(rows.at(rowIndex).averageY >= rows.at(rowIndex - 1).averageY - 0.001);
+        }
+
+        const bool shouldMoveLeftToRight = rowIndex % 2 == 0;
+        for (int pointIndex = 1; pointIndex < row.size(); ++pointIndex) {
+            QVERIFY(shouldMoveLeftToRight
+                ? row.at(pointIndex).positionMm.x() >= row.at(pointIndex - 1).positionMm.x() - 0.001
+                : row.at(pointIndex).positionMm.x() <= row.at(pointIndex - 1).positionMm.x() + 0.001);
+        }
+    }
 }
 
 void TherapyImagingAlgorithmsTests::generatePointTargetsIncludeContourBoundary()

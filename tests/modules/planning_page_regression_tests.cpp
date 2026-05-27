@@ -15,6 +15,7 @@
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QSettings>
 #include <QSlider>
 #include <QSpinBox>
@@ -173,6 +174,7 @@ private slots:
     void pointPreviewRenderDoesNotCrash();
     void approvalButtonApprovesDraftPlan();
     void planningPageSectionsAreCollapsible();
+    void segmentedTreatmentOptionIsHiddenOnPlanningPage();
     void activePlanChangesDoNotAutoLoadSeedHistory();
     void generateTargetsDoesNotAutoLoadSeedHistory();
     void historyPreviewWheelZoomStaysInlineAndResettable();
@@ -248,6 +250,7 @@ void PlanningPageRegressionTests::approvalButtonApprovesDraftPlan()
     PlanningPage planningPage(&context, &safetyKernel, &auditService, nullptr, &simulationDevice);
     planningPage.resize(1600, 900);
     planningPage.show();
+    planningPage.applyPersonalizationProfile(QStringLiteral("\u5168\u5c55\u5f00"));
     QCoreApplication::processEvents();
 
     const PatientRecord patient {
@@ -292,6 +295,9 @@ void PlanningPageRegressionTests::approvalButtonApprovesDraftPlan()
 
 void PlanningPageRegressionTests::planningPageSectionsAreCollapsible()
 {
+    QSettings settings(QStringLiteral("PanTheraSys"), QStringLiteral("PanTheraConsole"));
+    settings.remove(QStringLiteral("ui/planningPersonalization/activeProfileName"));
+
     EventBus eventBus;
     AuditService auditService;
     ApplicationContext context(&eventBus, &auditService);
@@ -471,6 +477,35 @@ void PlanningPageRegressionTests::planningPageSectionsAreCollapsible()
     }
 }
 
+void PlanningPageRegressionTests::segmentedTreatmentOptionIsHiddenOnPlanningPage()
+{
+    EventBus eventBus;
+    AuditService auditService;
+    ApplicationContext context(&eventBus, &auditService);
+    SafetyKernel safetyKernel;
+    panthera::adapters::SimulationDeviceFacade simulationDevice;
+
+    PlanningPage planningPage(&context, &safetyKernel, &auditService, nullptr, &simulationDevice);
+    planningPage.resize(1600, 900);
+    planningPage.show();
+    QCoreApplication::processEvents();
+
+    QRadioButton* segmentedRadio = nullptr;
+    QRadioButton* directRadio = nullptr;
+    for (QRadioButton* button : planningPage.findChildren<QRadioButton*>()) {
+        if (button->text() == QStringLiteral("\u5206\u6bb5\u6267\u884c")) {
+            segmentedRadio = button;
+        } else if (button->text() == QStringLiteral("\u76f4\u63a5\u6cbb\u7597")) {
+            directRadio = button;
+        }
+    }
+
+    QVERIFY(segmentedRadio != nullptr);
+    QVERIFY(segmentedRadio->isHidden());
+    QVERIFY(segmentedRadio->parentWidget() != nullptr);
+    QVERIFY(directRadio != nullptr);
+}
+
 void PlanningPageRegressionTests::personalizationProfilesRestoreCollapseStates()
 {
     EventBus eventBus;
@@ -521,6 +556,12 @@ void PlanningPageRegressionTests::personalizationProfilesRestoreCollapseStates()
     QVERIFY(collapseButtons.at(0)->isChecked());
     QVERIFY(collapseButtons.at(1)->isChecked());
     QVERIFY(!collapseButtons.at(2)->isChecked());
+
+    QVERIFY(planningPage.deletePersonalizationProfile(profileName));
+    QVERIFY(!planningPage.personalizationProfileNames().contains(profileName));
+    QVERIFY(planningPage.activePersonalizationProfileName().isEmpty());
+    QVERIFY(!planningPage.deletePersonalizationProfile(profileName));
+    QVERIFY(!planningPage.deletePersonalizationProfile(QStringLiteral("鍏ㄥ睍寮€")));
 
     settings.remove(QStringLiteral("ui/planningPersonalization/profiles/%1").arg(storageKey));
     settings.remove(QStringLiteral("ui/planningPersonalization/activeProfileName"));

@@ -45,6 +45,9 @@ QVector<AnnotationStroke> normalizeClosedAnnotations(const QVector<AnnotationStr
 double annotationRegionAreaMm2(const QVector<AnnotationStroke>& annotations);
 QRectF annotationRegionBoundsMm(const QVector<AnnotationStroke>& annotations);
 int therapyLineGroupCount(const QVector<panthera::core::TherapyPoint>& points);
+QVector<panthera::core::TherapyPoint> orderPointTargetsSerpentine(
+    const QVector<panthera::core::TherapyPoint>& targets,
+    double spacingMm);
 double contourAreaMm2(const QVector<QPointF>& contour);
 QRectF contourBoundsMm(const QVector<QPointF>& contour);
 bool contourContainsPointMm(const QVector<QPointF>& contour, const QPointF& pointMm, double toleranceMm = 0.0);

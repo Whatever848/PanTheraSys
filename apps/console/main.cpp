@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QByteArray>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -21,6 +22,55 @@
 #include "modules/shell/main_window.h"
 
 namespace {
+
+QString executableDirectoryPath(int argc, char* argv[])
+{
+    if (argc <= 0 || argv == nullptr || argv[0] == nullptr) {
+        return QDir::currentPath();
+    }
+
+    const QString executablePath = QString::fromLocal8Bit(argv[0]);
+    QFileInfo executableInfo(executablePath);
+    if (executableInfo.isRelative()) {
+        executableInfo = QFileInfo(QDir::current().absoluteFilePath(executablePath));
+    }
+    return executableInfo.absoluteDir().absolutePath();
+}
+
+void prependQtPluginRoot(const QString& pluginRoot)
+{
+    const QByteArray nativePluginRoot = QDir::toNativeSeparators(pluginRoot).toLocal8Bit();
+    if (nativePluginRoot.isEmpty()) {
+        return;
+    }
+
+    const QByteArray existingPluginPath = qgetenv("QT_PLUGIN_PATH");
+    if (existingPluginPath.isEmpty()) {
+        qputenv("QT_PLUGIN_PATH", nativePluginRoot);
+        return;
+    }
+
+    if (!existingPluginPath.split(';').contains(nativePluginRoot)) {
+        qputenv("QT_PLUGIN_PATH", nativePluginRoot + QByteArray(";") + existingPluginPath);
+    }
+}
+
+void configureQtPlatformPluginPath(int argc, char* argv[])
+{
+    const QDir executableDir(executableDirectoryPath(argc, argv));
+    const QString platformsPath = executableDir.absoluteFilePath(QStringLiteral("platforms"));
+    const QDir platformsDir(platformsPath);
+    const bool hasWindowsPlatformPlugin =
+        QFileInfo::exists(platformsDir.absoluteFilePath(QStringLiteral("qwindowsd.dll")))
+        || QFileInfo::exists(platformsDir.absoluteFilePath(QStringLiteral("qwindows.dll")));
+
+    if (!hasWindowsPlatformPlugin) {
+        return;
+    }
+
+    qputenv("QT_QPA_PLATFORM_PLUGIN_PATH", QDir::toNativeSeparators(platformsPath).toLocal8Bit());
+    prependQtPluginRoot(executableDir.absolutePath());
+}
 
 QString resolveRuntimePath(const QString& relativePath)
 {
@@ -72,6 +122,8 @@ bool isDatabaseEnabled(const QString& defaultsIniPath)
 
 int main(int argc, char* argv[])
 {
+    configureQtPlatformPluginPath(argc, argv);
+
     QApplication application(argc, argv);
     application.setQuitOnLastWindowClosed(false);
     application.setOrganizationName(QStringLiteral("PanTheraSys"));

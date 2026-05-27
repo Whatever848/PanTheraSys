@@ -50,6 +50,7 @@ private:
     void showDataManagementSection(DataManagementPage::Section section);
     void setActivePage(int index, QAbstractButton* activeButton);
     void applyPlanningPersonalizationProfile(const QString& profileName);
+    void deletePlanningPersonalizationProfile(const QString& profileName);
 
     panthera::core::ApplicationContext* m_context {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};

@@ -6,6 +6,7 @@
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QMenu>
+#include <QMessageBox>
 #include <QStyle>
 #include <QVBoxLayout>
 
@@ -251,7 +252,7 @@ void MainWindow::refreshPlanningPersonalizationMenu()
     }
 
     m_planningPersonalizationMenu->addSeparator();
-    QAction* saveAction = m_planningPersonalizationMenu->addAction(QStringLiteral("保存当前习惯..."));
+    QAction* saveAction = m_planningPersonalizationMenu->addAction(QStringLiteral("保存当前方案"));
     connect(saveAction, &QAction::triggered, this, &MainWindow::savePlanningPersonalizationProfile);
 
     if (m_planningPage == nullptr) {
@@ -261,6 +262,15 @@ void MainWindow::refreshPlanningPersonalizationMenu()
     const QStringList profileNames = m_planningPage->personalizationProfileNames();
     if (profileNames.isEmpty()) {
         return;
+    }
+
+    QMenu* deleteMenu = m_planningPersonalizationMenu->addMenu(QStringLiteral("\u5220\u9664\u5df2\u4fdd\u5b58\u65b9\u6848"));
+    deleteMenu->setObjectName(QStringLiteral("navDropMenu"));
+    for (const QString& profileName : profileNames) {
+        QAction* deleteAction = deleteMenu->addAction(profileName);
+        connect(deleteAction, &QAction::triggered, this, [this, profileName]() {
+            deletePlanningPersonalizationProfile(profileName);
+        });
     }
 
     m_planningPersonalizationMenu->addSeparator();
@@ -335,6 +345,33 @@ void MainWindow::applyPlanningPersonalizationProfile(const QString& profileName)
     }
 
     m_planningPage->applyPersonalizationProfile(profileName);
+}
+
+void MainWindow::deletePlanningPersonalizationProfile(const QString& profileName)
+{
+    showPlanning();
+    if (m_planningPage == nullptr) {
+        return;
+    }
+
+    const QString normalizedProfileName = profileName.trimmed();
+    if (normalizedProfileName.isEmpty()) {
+        return;
+    }
+
+    const QMessageBox::StandardButton answer = QMessageBox::question(
+        this,
+        QStringLiteral("\u5220\u9664\u5df2\u4fdd\u5b58\u65b9\u6848"),
+        QStringLiteral("\u786e\u5b9a\u5220\u9664\u201c%1\u201d\u5417\uff1f").arg(normalizedProfileName),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    if (m_planningPage->deletePersonalizationProfile(normalizedProfileName)) {
+        refreshPlanningPersonalizationMenu();
+    }
 }
 
 void MainWindow::updateStatusBarSummary()

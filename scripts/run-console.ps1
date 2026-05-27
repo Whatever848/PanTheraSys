@@ -16,5 +16,11 @@ if (-not (Test-Path $appPath)) {
     throw "Application not found: $appPath. Build the project first."
 }
 
-$env:PATH = "$qtBin;$env:PATH"
+$appDir = Split-Path -Parent (Resolve-Path $appPath)
+$platformPluginDir = Join-Path $appDir "platforms"
+$qtPluginRoot = Join-Path $QtRoot "plugins"
+
+$env:PATH = "$appDir;$qtBin;$env:PATH"
+$env:QT_PLUGIN_PATH = "$appDir;$qtPluginRoot"
+$env:QT_QPA_PLATFORM_PLUGIN_PATH = $platformPluginDir
 & $appPath

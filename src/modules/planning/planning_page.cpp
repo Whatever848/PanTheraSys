@@ -1023,13 +1023,15 @@ PlanningPage::PlanningPage(
     auto* executeRow = new QHBoxLayout();
     executeRow->setSpacing(18);
     m_directTreatmentRadio = new QRadioButton(QStringLiteral("\u76f4\u63a5\u6cbb\u7597"));
-    m_segmentedTreatmentRadio = new QRadioButton(QStringLiteral("\u5206\u6bb5\u6267\u884c"));
+    m_segmentedTreatmentRadio = new QRadioButton(QStringLiteral("\u5206\u6bb5\u6267\u884c"), modeCard);
     m_directTreatmentRadio->setChecked(true);
+    // Segmented execution is temporarily hidden from the planning page while
+    // retaining the control and existing logic for future restoration.
+    m_segmentedTreatmentRadio->setVisible(false);
     auto* deliveryModeGroup = new QButtonGroup(this);
     deliveryModeGroup->addButton(m_directTreatmentRadio);
     deliveryModeGroup->addButton(m_segmentedTreatmentRadio);
     executeRow->addWidget(m_directTreatmentRadio);
-    executeRow->addWidget(m_segmentedTreatmentRadio);
 
     auto* patternRow = new QHBoxLayout();
     patternRow->setSpacing(18);
@@ -1595,6 +1597,34 @@ bool PlanningPage::saveCurrentPersonalizationProfile(const QString& profileName)
     settings.endGroup();
 
     setActivePersonalizationProfileName(normalizedProfileName);
+    return true;
+}
+
+bool PlanningPage::deletePersonalizationProfile(const QString& profileName)
+{
+    const QString normalizedProfileName = profileName.trimmed();
+    if (normalizedProfileName.isEmpty()
+        || normalizedProfileName == collapseAllProfileName()
+        || normalizedProfileName == expandAllProfileName()) {
+        return false;
+    }
+
+    const QString storageKey = settingsProfileStorageKey(normalizedProfileName);
+    const QString profileRoot = planningPersonalizationProfilesRoot();
+    QSettings settings(QStringLiteral("PanTheraSys"), QStringLiteral("PanTheraConsole"));
+    settings.beginGroup(profileRoot);
+    const bool profileExists = settings.childGroups().contains(storageKey);
+    settings.endGroup();
+    if (!profileExists) {
+        return false;
+    }
+
+    settings.remove(profileRoot + QStringLiteral("/") + storageKey);
+    if (m_activePersonalizationProfileName == normalizedProfileName
+        || settings.value(planningPersonalizationActiveProfileKey()).toString().trimmed() == normalizedProfileName) {
+        clearActivePersonalizationProfileName();
+    }
+    settings.sync();
     return true;
 }
 

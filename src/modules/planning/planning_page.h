@@ -55,6 +55,7 @@ public:
     [[nodiscard]] QString activePersonalizationProfileName() const;
     void applyPersonalizationProfile(const QString& profileName);
     bool saveCurrentPersonalizationProfile(const QString& profileName);
+    bool deletePersonalizationProfile(const QString& profileName);
 
 public slots:
     void showTreatmentComparisonLayer(const QString& planId, int layerIndex, bool treatmentActive);

@@ -740,6 +740,10 @@ QVector<TherapyPoint> generateTherapyTargetsInRegionPath(
         targets.push_back(fallbackPoint);
     }
 
+    if (pattern == TreatmentPattern::Point) {
+        targets = orderPointTargetsSerpentine(targets, clampedSpacing);
+    }
+
     for (int index = 0; index < targets.size(); ++index) {
         targets[index].index = index;
     }
@@ -810,6 +814,80 @@ int therapyLineGroupCount(const QVector<TherapyPoint>& points)
         groupIndices.push_back(point.lineGroupIndex);
     }
     return groupIndices.size();
+}
+
+QVector<TherapyPoint> orderPointTargetsSerpentine(const QVector<TherapyPoint>& targets, double spacingMm)
+{
+    QVector<TherapyPoint> sortedTargets = targets;
+    if (sortedTargets.size() <= 1) {
+        for (int index = 0; index < sortedTargets.size(); ++index) {
+            sortedTargets[index].index = index;
+        }
+        return sortedTargets;
+    }
+
+    const double clampedSpacing = std::max(0.5, spacingMm);
+    const qreal rowToleranceMm = static_cast<qreal>(std::max(0.05, clampedSpacing * 0.35));
+    std::sort(sortedTargets.begin(), sortedTargets.end(), [](const TherapyPoint& left, const TherapyPoint& right) {
+        if (std::abs(left.positionMm.y() - right.positionMm.y()) > 0.001) {
+            return left.positionMm.y() < right.positionMm.y();
+        }
+        if (std::abs(left.positionMm.x() - right.positionMm.x()) > 0.001) {
+            return left.positionMm.x() < right.positionMm.x();
+        }
+        return left.index < right.index;
+    });
+
+    struct TargetRow {
+        QVector<TherapyPoint> points;
+        qreal averageY {0.0};
+    };
+
+    QVector<TargetRow> rows;
+    for (const TherapyPoint& target : sortedTargets) {
+        if (rows.isEmpty() || std::abs(target.positionMm.y() - rows.last().averageY) > rowToleranceMm) {
+            TargetRow row;
+            row.averageY = target.positionMm.y();
+            row.points.push_back(target);
+            rows.push_back(row);
+            continue;
+        }
+
+        TargetRow& row = rows.last();
+        const int previousCount = row.points.size();
+        row.averageY = ((row.averageY * previousCount) + target.positionMm.y()) / (previousCount + 1);
+        row.points.push_back(target);
+    }
+
+    QVector<TherapyPoint> orderedTargets;
+    orderedTargets.reserve(sortedTargets.size());
+    for (int rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+        QVector<TherapyPoint> rowPoints = rows.at(rowIndex).points;
+        std::sort(rowPoints.begin(), rowPoints.end(), [](const TherapyPoint& left, const TherapyPoint& right) {
+            if (std::abs(left.positionMm.x() - right.positionMm.x()) > 0.001) {
+                return left.positionMm.x() < right.positionMm.x();
+            }
+            if (std::abs(left.positionMm.y() - right.positionMm.y()) > 0.001) {
+                return left.positionMm.y() < right.positionMm.y();
+            }
+            return left.index < right.index;
+        });
+        if (rowIndex % 2 == 1) {
+            std::reverse(rowPoints.begin(), rowPoints.end());
+        }
+        for (TherapyPoint point : rowPoints) {
+            point.lineGroupIndex = -1;
+            point.lineSampleIndex = 0;
+            point.lineStart = false;
+            point.lineEnd = false;
+            orderedTargets.push_back(point);
+        }
+    }
+
+    for (int index = 0; index < orderedTargets.size(); ++index) {
+        orderedTargets[index].index = index;
+    }
+    return orderedTargets;
 }
 
 double contourAreaMm2(const QVector<QPointF>& contour)
