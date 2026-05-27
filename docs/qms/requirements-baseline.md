@@ -6,7 +6,7 @@ Provide a Windows-based workstation for breast ultrasound ablation workflow orch
 
 ## Baseline Functional Areas
 
-- Device monitoring with electrical, water loop, motion, transducer, and image-quality indicators
+- Device monitoring with electrical, water loop, six-channel temperature control, motion, transducer, and image-quality indicators
 - Treatment planning with image channel selection, plan drafting, parameterization, review, and approval lock
 - Treatment execution with start, pause, resume, stop, progress tracking, and interlock enforcement
 - Data management for patient, imaging, treatment, and report records
@@ -17,5 +17,5 @@ Provide a Windows-based workstation for breast ultrasound ablation workflow orch
 - No treatment start without selected patient
 - No treatment start without approved plan
 - No treatment start during emergency-stop or subsystem red interlock
-- Treatment execution must stop or reject continuation when water, motion, or power health becomes unsafe
+- Treatment execution must stop or reject continuation when water, temperature, motion, or power health becomes unsafe
 - Critical configuration must be versioned and auditable

@@ -1,4 +1,5 @@
 set(PANTHERA_ADAPTERS_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/anthone/lu926_temperature_protocol.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config/local_settings_store.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dobot/dobot_motion_controller.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dobot/dobot_tcp_client.cpp

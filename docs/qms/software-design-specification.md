@@ -12,6 +12,8 @@
   Audit service and shared service contracts
 - `adapters/sim`
   Simulation device facade implementing hardware abstraction interfaces
+- `adapters/anthone`
+  LU-926UT6Y temperature-module register map and unit conversion helpers
 - `adapters/config`
   QSettings-based local settings store
 - `adapters/mysql`
@@ -30,5 +32,6 @@
 - Qt Widgets only for first phase
 - UI thread never blocks on simulated long-running work
 - Hardware dependencies remain behind interfaces
+- Temperature control hardware remains behind `ITemperatureController`; adapters must validate Modbus communication freshness, channel limits, and hardware fault codes before publishing telemetry
 - The execution screen consumes approved plans only
 - Data-management visibility is role-gated for engineering access

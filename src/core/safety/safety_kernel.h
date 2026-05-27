@@ -21,6 +21,7 @@ public:
     void setPatientSelected(bool selected);
     void setPlanApprovalState(ApprovalState approvalState);
     void setWaterLoopHealthy(bool healthy);
+    void setTemperatureHealthy(bool healthy);
     void setPowerReady(bool ready);
     void setMotionReady(bool ready);
     void setEmergencyStopReleased(bool released);
@@ -47,6 +48,7 @@ private:
     bool m_patientSelected {false};
     ApprovalState m_planApprovalState {ApprovalState::Draft};
     bool m_waterLoopHealthy {true};
+    bool m_temperatureHealthy {true};
     bool m_powerReady {true};
     bool m_motionReady {true};
     bool m_emergencyStopReleased {true};

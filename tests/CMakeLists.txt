@@ -62,6 +62,26 @@ set_tests_properties(
 )
 
 add_executable(
+    panthera_simulation_device_facade_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/simulation_device_facade_tests.cpp
+)
+
+target_link_libraries(
+    panthera_simulation_device_facade_tests
+    PRIVATE
+        panthera_core
+        panthera_adapters
+        Qt6::Test
+)
+
+add_test(NAME panthera_simulation_device_facade_tests COMMAND panthera_simulation_device_facade_tests)
+set_tests_properties(
+    panthera_simulation_device_facade_tests
+    PROPERTIES
+        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:Qt6::Core>;$ENV{PATH}"
+)
+
+add_executable(
     panthera_mysql_clinical_data_integration_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/integration/mysql_clinical_data_integration_tests.cpp
 )

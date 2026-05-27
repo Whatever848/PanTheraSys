@@ -67,6 +67,16 @@ void SafetyKernel::setWaterLoopHealthy(bool healthy)
     rebuildSnapshot();
 }
 
+void SafetyKernel::setTemperatureHealthy(bool healthy)
+{
+    if (m_temperatureHealthy == healthy) {
+        return;
+    }
+
+    m_temperatureHealthy = healthy;
+    rebuildSnapshot();
+}
+
 void SafetyKernel::setPowerReady(bool ready)
 {
     if (m_powerReady == ready) {
@@ -202,6 +212,9 @@ void SafetyKernel::rebuildSnapshot()
     }
     if (!m_waterLoopHealthy) {
         nextSnapshot.activeInterlocks.push_back(InterlockReason::WaterLoopFault);
+    }
+    if (!m_temperatureHealthy) {
+        nextSnapshot.activeInterlocks.push_back(InterlockReason::TemperatureFault);
     }
     if (!m_powerReady) {
         nextSnapshot.activeInterlocks.push_back(InterlockReason::PowerFault);

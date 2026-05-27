@@ -17,6 +17,8 @@ class SimulationDeviceFacade final
     , public panthera::core::IUltrasoundSource
     , public panthera::core::IPowerController
     , public panthera::core::IWaterLoopMonitor
+    , public panthera::core::IInfusionPumpController
+    , public panthera::core::ITemperatureController
     , public panthera::core::IDeviceHealthService
     , public panthera::core::IEmergencyStopChannel {
     Q_OBJECT
@@ -39,6 +41,24 @@ public:
     double pressureMpa() const override;
     double flowRateLpm() const override;
 
+    panthera::core::InfusionPumpTelemetry latestInfusionPumpTelemetry() const override;
+    bool setInfusionPumpEnabled(bool enabled, QString* errorMessage = nullptr) override;
+    bool setInfusionPumpOperatingMode(panthera::core::InfusionPumpOperatingMode mode, QString* errorMessage = nullptr) override;
+    bool setInfusionPumpDirection(panthera::core::InfusionPumpDirection direction, QString* errorMessage = nullptr) override;
+    bool setInfusionPumpSpeedRpm(double rpm, QString* errorMessage = nullptr) override;
+    bool setInfusionPumpFlowMlPerMin(double flowMlPerMin, QString* errorMessage = nullptr) override;
+    bool setInfusionPumpTargetVolumeMl(double volumeMl, QString* errorMessage = nullptr) override;
+    bool setInfusionPumpCycleTiming(double runSeconds, double stopSeconds, QString* errorMessage = nullptr) override;
+    bool configureInfusionPumpCommunication(int modbusAddress, int baudRate, QString* errorMessage = nullptr) override;
+    bool resetInfusionPumpFault(QString* errorMessage = nullptr) override;
+
+    panthera::core::TemperatureModuleTelemetry latestTemperatureTelemetry() const override;
+    bool setTemperatureControlEnabled(bool enabled, QString* errorMessage = nullptr) override;
+    bool setTemperatureChannelSetpoint(int channelIndex, double celsius, QString* errorMessage = nullptr) override;
+    bool configureTemperatureInput(int channelIndex, panthera::core::TemperatureInputType inputType, QString* errorMessage = nullptr) override;
+    bool configureTemperatureCommunication(int modbusAddress, int baudRate, QString* errorMessage = nullptr) override;
+    bool resetTemperatureFault(QString* errorMessage = nullptr) override;
+
     panthera::core::DeviceSnapshot latestSnapshot() const override;
     bool isEmergencyStopReleased() const override;
 
@@ -49,7 +69,7 @@ public:
 
 signals:
     void snapshotUpdated(const panthera::core::DeviceSnapshot& snapshot);
-    void healthSignalsChanged(bool waterHealthy, bool powerReady, bool motionReady, bool emergencyStopReleased, bool ultrasoundAvailable);
+    void healthSignalsChanged(bool waterHealthy, bool powerReady, bool motionReady, bool temperatureHealthy, bool emergencyStopReleased, bool ultrasoundAvailable);
 
 private slots:
     void tick();
@@ -60,9 +80,12 @@ private:
     QTimer m_timer;
     panthera::core::DeviceSnapshot m_snapshot;
     bool m_treatmentOutputEnabled {false};
+    bool m_infusionPumpEnabled {false};
+    bool m_temperatureControlEnabled {true};
     bool m_waterFaultInjected {false};
     bool m_powerFaultInjected {false};
     bool m_motionFaultInjected {false};
+    bool m_temperatureFaultInjected {false};
     bool m_emergencyStopInjected {false};
 };
 

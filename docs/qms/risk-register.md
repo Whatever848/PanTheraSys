@@ -8,3 +8,4 @@
 | R-004 | Emergency stop ignored | Dedicated interlock path forces red state and treatment abort |
 | R-005 | Untracked configuration drift | Versioned config profiles and audit entries |
 | R-006 | Sensitive data leakage in repository | Git LFS rules, anonymization policy, non-checked-in runtime data |
+| R-007 | Temperature-control module communication loss, stale data, or channel over-temperature during treatment | LU-926UT6Y telemetry is validated before publication; unsafe temperature health drives `TemperatureFault` red interlock and abort request |

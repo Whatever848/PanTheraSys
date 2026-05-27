@@ -7,6 +7,8 @@
 #include <QString>
 #include <QVector>
 
+#include <array>
+
 namespace panthera::core {
 
 // 这里定义整个原型系统共用的工作流类型与数据契约。
@@ -42,6 +44,7 @@ enum class InterlockReason {
     NoPatientSelected,
     PlanNotApproved,
     WaterLoopFault,
+    TemperatureFault,
     PowerFault,
     MotionFault,
     EmergencyStop,
@@ -67,6 +70,46 @@ enum class TreatmentPattern {
     Point,
     Line,
     Segmented
+};
+
+enum class InfusionPumpRunState {
+    Unknown,
+    Stopped,
+    Running,
+    Fault
+};
+
+enum class InfusionPumpOperatingMode {
+    Speed,
+    Flow
+};
+
+enum class InfusionPumpCycleMode {
+    Automatic,
+    SemiAutomatic,
+    Manual
+};
+
+enum class InfusionPumpDirection {
+    Clockwise,
+    CounterClockwise
+};
+
+enum class TemperatureInputType {
+    ThermocoupleS,
+    ThermocoupleR,
+    ThermocoupleB,
+    ThermocoupleK,
+    ThermocoupleN,
+    ThermocoupleE,
+    ThermocoupleJ,
+    ThermocoupleT,
+    Pt100,
+    Cu50,
+    Cu100,
+    Millivolt,
+    Resistance,
+    Disabled
 };
 
 // 六轴治疗头通用位姿定义。
@@ -179,6 +222,66 @@ struct TreatmentReportRecord {
     QString notes;
 };
 
+// DIP 1500 V2 注水蠕动泵的中立遥测模型。
+// 真实硬件适配器必须先完成范围校验、通信时效校验和故障码解析，再更新该结构。
+struct InfusionPumpTelemetry {
+    bool connected {false};
+    bool dataValid {false};
+    bool dataStale {true};
+    bool safetyLimitsOk {false};
+    QString backendName;
+    QString lastError;
+    InfusionPumpRunState runState {InfusionPumpRunState::Unknown};
+    InfusionPumpOperatingMode operatingMode {InfusionPumpOperatingMode::Flow};
+    InfusionPumpCycleMode cycleMode {InfusionPumpCycleMode::Automatic};
+    InfusionPumpDirection direction {InfusionPumpDirection::Clockwise};
+    double speedRpm {0.0};
+    double targetFlowMlPerMin {0.0};
+    double actualFlowMlPerMin {0.0};
+    double targetVolumeMl {0.0};
+    double deliveredVolumeMl {0.0};
+    double runTimeSeconds {0.0};
+    double stopTimeSeconds {0.0};
+    int modbusAddress {192};
+    int baudRate {9600};
+    QDateTime updatedAt;
+};
+
+// LU-926UT6Y 六路温控模块的中立遥测模型。
+// 真实硬件适配器必须完成 Modbus CRC、地址/功能码校验、0.1 摄氏度换算、
+// 通信时效校验和报警/故障位解析后，再更新该结构。
+struct TemperatureChannelTelemetry {
+    int channelIndex {1};
+    QString label;
+    bool enabled {true};
+    bool dataValid {false};
+    bool alarmActive {false};
+    bool faultActive {false};
+    TemperatureInputType inputType {TemperatureInputType::Pt100};
+    double processTemperatureCelsius {0.0};
+    double setpointTemperatureCelsius {0.0};
+    double outputPercent {0.0};
+    double lowerSafetyLimitCelsius {0.0};
+    double upperSafetyLimitCelsius {50.0};
+    QString statusMessage;
+};
+
+struct TemperatureModuleTelemetry {
+    bool connected {false};
+    bool dataValid {false};
+    bool dataStale {true};
+    bool safetyLimitsOk {false};
+    QString backendName;
+    QString lastError;
+    int modbusAddress {1};
+    int baudRate {9600};
+    double samplePeriodSeconds {0.5};
+    double coldJunctionTemperatureCelsius {0.0};
+    unsigned int faultCode {0};
+    std::array<TemperatureChannelTelemetry, 6> channels;
+    QDateTime updatedAt;
+};
+
 // DeviceSnapshot 是适配层向界面层和安全逻辑输出的统一设备遥测快照。
 // 后续真实硬件接入时，应把厂商协议转换为这个中立结构。
 struct DeviceSnapshot {
@@ -205,6 +308,8 @@ struct DeviceSnapshot {
     bool coolerOn {true};
     bool heaterOn {true};
     bool emergencyStopEngaged {false};
+    InfusionPumpTelemetry infusionPump;
+    TemperatureModuleTelemetry temperatureModule;
 };
 
 struct AuditEntry {
@@ -238,11 +343,19 @@ QString toDisplayString(InterlockReason reason);
 QString toDisplayString(ApprovalState state);
 QString toDisplayString(RoleType role);
 QString toDisplayString(TreatmentPattern pattern);
+QString toDisplayString(InfusionPumpRunState state);
+QString toDisplayString(InfusionPumpOperatingMode mode);
+QString toDisplayString(InfusionPumpCycleMode mode);
+QString toDisplayString(InfusionPumpDirection direction);
+QString toDisplayString(TemperatureInputType type);
 
 }  // panthera::core 命名空间
 
 Q_DECLARE_METATYPE(panthera::core::PatientRecord)
 Q_DECLARE_METATYPE(panthera::core::TherapyPlan)
+Q_DECLARE_METATYPE(panthera::core::TemperatureInputType)
+Q_DECLARE_METATYPE(panthera::core::TemperatureChannelTelemetry)
+Q_DECLARE_METATYPE(panthera::core::TemperatureModuleTelemetry)
 Q_DECLARE_METATYPE(panthera::core::DeviceSnapshot)
 Q_DECLARE_METATYPE(panthera::core::SafetySnapshot)
 Q_DECLARE_METATYPE(panthera::core::AuditEntry)

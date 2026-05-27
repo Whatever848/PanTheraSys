@@ -11,6 +11,7 @@ private slots:
     void rejectsTreatmentWithoutPatient();
     void requiresApprovedPlanBeforeStart();
     void emergencyStopForcesRedInterlock();
+    void temperatureFaultForcesRedInterlock();
 };
 
 void SafetyKernelTests::rejectsTreatmentWithoutPatient()
@@ -48,6 +49,21 @@ void SafetyKernelTests::emergencyStopForcesRedInterlock()
     kernel.setEmergencyStopReleased(false);
 
     QCOMPARE(kernel.snapshot().state, SafetyState::Red);
+    QCOMPARE(kernel.mode(), SystemMode::Alarm);
+}
+
+void SafetyKernelTests::temperatureFaultForcesRedInterlock()
+{
+    SafetyKernel kernel;
+    kernel.setPatientSelected(true);
+    kernel.setPlanApprovalState(ApprovalState::Locked);
+
+    QString reason;
+    QVERIFY(kernel.requestTreatmentStart(&reason));
+    kernel.setTemperatureHealthy(false);
+
+    QCOMPARE(kernel.snapshot().state, SafetyState::Red);
+    QVERIFY(kernel.snapshot().activeInterlocks.contains(InterlockReason::TemperatureFault));
     QCOMPARE(kernel.mode(), SystemMode::Alarm);
 }
 

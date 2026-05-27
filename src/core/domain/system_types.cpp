@@ -64,6 +64,8 @@ QString toDisplayString(InterlockReason reason)
         return QStringLiteral("方案未审批");
     case InterlockReason::WaterLoopFault:
         return QStringLiteral("水循环异常");
+    case InterlockReason::TemperatureFault:
+        return QStringLiteral("温控模块异常");
     case InterlockReason::PowerFault:
         return QStringLiteral("功率链路异常");
     case InterlockReason::MotionFault:
@@ -117,6 +119,91 @@ QString toDisplayString(TreatmentPattern pattern)
         return QStringLiteral("线治疗");
     case TreatmentPattern::Segmented:
         return QStringLiteral("分段治疗");
+    }
+    return QStringLiteral("未知");
+}
+
+QString toDisplayString(InfusionPumpRunState state)
+{
+    switch (state) {
+    case InfusionPumpRunState::Unknown:
+        return QStringLiteral("未知");
+    case InfusionPumpRunState::Stopped:
+        return QStringLiteral("停止");
+    case InfusionPumpRunState::Running:
+        return QStringLiteral("运行");
+    case InfusionPumpRunState::Fault:
+        return QStringLiteral("故障");
+    }
+    return QStringLiteral("未知");
+}
+
+QString toDisplayString(InfusionPumpOperatingMode mode)
+{
+    switch (mode) {
+    case InfusionPumpOperatingMode::Speed:
+        return QStringLiteral("转速模式");
+    case InfusionPumpOperatingMode::Flow:
+        return QStringLiteral("流量模式");
+    }
+    return QStringLiteral("未知");
+}
+
+QString toDisplayString(InfusionPumpCycleMode mode)
+{
+    switch (mode) {
+    case InfusionPumpCycleMode::Automatic:
+        return QStringLiteral("全自动循环");
+    case InfusionPumpCycleMode::SemiAutomatic:
+        return QStringLiteral("半自动循环");
+    case InfusionPumpCycleMode::Manual:
+        return QStringLiteral("手动");
+    }
+    return QStringLiteral("未知");
+}
+
+QString toDisplayString(InfusionPumpDirection direction)
+{
+    switch (direction) {
+    case InfusionPumpDirection::Clockwise:
+        return QStringLiteral("顺时针");
+    case InfusionPumpDirection::CounterClockwise:
+        return QStringLiteral("逆时针");
+    }
+    return QStringLiteral("未知");
+}
+
+QString toDisplayString(TemperatureInputType type)
+{
+    switch (type) {
+    case TemperatureInputType::ThermocoupleS:
+        return QStringLiteral("S型热电偶");
+    case TemperatureInputType::ThermocoupleR:
+        return QStringLiteral("R型热电偶");
+    case TemperatureInputType::ThermocoupleB:
+        return QStringLiteral("B型热电偶");
+    case TemperatureInputType::ThermocoupleK:
+        return QStringLiteral("K型热电偶");
+    case TemperatureInputType::ThermocoupleN:
+        return QStringLiteral("N型热电偶");
+    case TemperatureInputType::ThermocoupleE:
+        return QStringLiteral("E型热电偶");
+    case TemperatureInputType::ThermocoupleJ:
+        return QStringLiteral("J型热电偶");
+    case TemperatureInputType::ThermocoupleT:
+        return QStringLiteral("T型热电偶");
+    case TemperatureInputType::Pt100:
+        return QStringLiteral("PT100热电阻");
+    case TemperatureInputType::Cu50:
+        return QStringLiteral("Cu50热电阻");
+    case TemperatureInputType::Cu100:
+        return QStringLiteral("Cu100热电阻");
+    case TemperatureInputType::Millivolt:
+        return QStringLiteral("自定义mV信号");
+    case TemperatureInputType::Resistance:
+        return QStringLiteral("自定义电阻信号");
+    case TemperatureInputType::Disabled:
+        return QStringLiteral("关闭");
     }
     return QStringLiteral("未知");
 }

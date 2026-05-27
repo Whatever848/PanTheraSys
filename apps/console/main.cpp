@@ -80,6 +80,9 @@ int main(int argc, char* argv[])
 
     qRegisterMetaType<panthera::core::PatientRecord>();
     qRegisterMetaType<panthera::core::TherapyPlan>();
+    qRegisterMetaType<panthera::core::TemperatureInputType>();
+    qRegisterMetaType<panthera::core::TemperatureChannelTelemetry>();
+    qRegisterMetaType<panthera::core::TemperatureModuleTelemetry>();
     qRegisterMetaType<panthera::core::DeviceSnapshot>();
     qRegisterMetaType<panthera::core::SafetySnapshot>();
     qRegisterMetaType<panthera::core::AuditEntry>();
@@ -105,10 +108,11 @@ int main(int argc, char* argv[])
         &simulationDevice,
         &panthera::adapters::SimulationDeviceFacade::healthSignalsChanged,
         &safetyKernel,
-        [&safetyKernel](bool waterHealthy, bool powerReady, bool motionReady, bool emergencyStopReleased, bool ultrasoundAvailable) {
+        [&safetyKernel](bool waterHealthy, bool powerReady, bool motionReady, bool temperatureHealthy, bool emergencyStopReleased, bool ultrasoundAvailable) {
             safetyKernel.setWaterLoopHealthy(waterHealthy);
             safetyKernel.setPowerReady(powerReady);
             safetyKernel.setMotionReady(motionReady);
+            safetyKernel.setTemperatureHealthy(temperatureHealthy);
             safetyKernel.setEmergencyStopReleased(emergencyStopReleased);
             safetyKernel.setUltrasoundAvailable(ultrasoundAvailable);
         });
