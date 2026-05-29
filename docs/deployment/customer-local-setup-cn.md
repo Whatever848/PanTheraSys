@@ -256,6 +256,14 @@ connect_timeout_seconds=2
 image_root=runtime/images
 report_root=runtime/reports
 
+[display]
+mode=three_screen
+fullscreen=true
+dashboard_screen=auto
+planning_screen=auto
+treatment_screen=auto
+fallback_single_window=true
+
 [simulation]
 enabled=true
 timer_interval_ms=1000
@@ -267,11 +275,50 @@ timer_interval_ms=1000
 - `database/enabled=true`：启用 MySQL 持久化，需要完成 MySQL 配置。
 - `storage/image_root`：影像文件目录，建议使用客户电脑可写目录。
 - `storage/report_root`：报告文件目录，建议使用客户电脑可写目录。
+- `display/mode=three_screen`：启用三屏医疗显示模式。
+- `display/fullscreen=true`：三块屏幕全屏显示，隐藏普通窗口边框和任务栏干扰。
+- `display/dashboard_screen`：设备监控屏。`auto` 时优先选择最左侧屏幕。
+- `display/planning_screen`：治疗方案屏。`auto` 时优先选择剩余屏幕中位置靠上的屏幕。
+- `display/treatment_screen`：治疗执行屏。`auto` 时优先选择最宽的主显示屏。
+- `display/fallback_single_window=true`：客户电脑不足三块屏幕时自动回退到原单窗口模式。
 - `simulation/enabled=true`：当前项目演示模式应保持启用。
 
 交付前必须修改默认数据库密码，不要把 `root/123456` 作为客户现场配置。
 
-### 6.2 `config/deployment.example.ini`
+### 6.2 三屏显示配置
+
+客户现场三块屏幕建议按照片中的物理布局使用：
+
+- 左侧竖屏：设备监控屏，对应图片 1。
+- 上方横屏：治疗方案屏，对应图片 2。
+- 下方主宽屏：治疗执行屏，对应图片 3。
+
+程序默认会按屏幕几何位置自动分配。如果 Windows 的显示器编号或排列不符合现场，可以先运行：
+
+```powershell
+.\PanTheraConsole.exe --list-screens
+```
+
+根据输出的屏幕编号修改 `config/defaults.ini`：
+
+```ini
+[display]
+mode=three_screen
+fullscreen=true
+dashboard_screen=0
+planning_screen=1
+treatment_screen=2
+fallback_single_window=true
+```
+
+如果现场临时只有一块屏幕，可改为：
+
+```ini
+[display]
+mode=single
+```
+
+### 6.3 `config/deployment.example.ini`
 
 该文件用于记录部署环境、硬件模式和未来真实设备接入参数。当前项目主程序主要使用仿真设备，建议客户现场保持：
 
@@ -488,4 +535,3 @@ ctest --test-dir build\msvc2019 --output-on-failure
 6. 创建 `runtime/images` 和 `runtime/reports`。
 7. 客户电脑安装 VC++ Redistributable x64。
 8. 双击 `PanTheraConsole.exe` 验证主窗口和主要页面。
-
