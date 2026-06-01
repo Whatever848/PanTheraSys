@@ -1,6 +1,6 @@
 param(
     [string]$BuildDir = "build/msvc2019",
-    [string]$QtRoot = "D:/Qt/6.2.0/msvc2019_64"
+    [string]$QtRoot = "C:/Qt/6.2.0/msvc2019_64"
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,12 +11,12 @@ cmd /c chcp 65001 > $null
 
 $vswhere = "C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
 if (-not (Test-Path $vswhere)) {
-    throw "vswhere.exe not found. Install Visual Studio 2019 with MSVC C++ tools."
+    throw "vswhere.exe not found. Install Visual Studio with MSVC C++ tools."
 }
 
 $installationPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (-not $installationPath) {
-    throw "Visual Studio 2019 with MSVC x64 tools was not found."
+    throw "Visual Studio with MSVC x64 tools was not found."
 }
 
 $vsDevCmd = Join-Path $installationPath "Common7/Tools/VsDevCmd.bat"

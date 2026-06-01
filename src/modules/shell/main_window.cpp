@@ -75,9 +75,12 @@ MainWindow::MainWindow(
     m_dashboardButton = createNavButton(QStringLiteral("设备监控"), QStyle::SP_ComputerIcon);
     m_planningButton = createNavButton(QStringLiteral("治疗方案"), QStyle::SP_FileDialogDetailedView);
     m_planningPersonalizationButton = new QToolButton();
+    m_planningPersonalizationButton->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
     m_planningPersonalizationButton->setObjectName(QStringLiteral("navUtilityButton"));
     m_planningPersonalizationButton->setText(QStringLiteral("⚙"));
     m_planningPersonalizationButton->setToolTip(QStringLiteral("治疗方案个性化设置"));
+    m_planningPersonalizationButton->setText(QString());
+    m_planningPersonalizationButton->setToolTip(QStringLiteral("\u533b\u751f\u4e60\u60ef\u8bbe\u7f6e"));
     m_planningPersonalizationButton->setPopupMode(QToolButton::InstantPopup);
     m_planningPersonalizationButton->setAutoRaise(true);
     m_treatmentButton = createNavButton(QStringLiteral("治疗"), QStyle::SP_MediaPlay);

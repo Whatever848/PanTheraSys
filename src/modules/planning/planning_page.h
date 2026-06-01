@@ -189,6 +189,7 @@ private:
     void clearActivePersonalizationProfileName();
     void restoreLastPersonalizationProfile();
     void updateAnnotationColorButtonSelection(const QColor& color);
+    void setAnnotationEditingEnabled(bool enabled);
     void setTreatmentComparisonFocusMode(bool enabled);
     void configureTreatmentComparisonSyncForLayer(int layerIndex);
     int syncValueForCurrentSliceIndex(int currentIndex) const;
@@ -305,6 +306,7 @@ private:
     int m_currentSyncEndIndex {-1};
     bool m_applyingComparisonSync {false};
     bool m_treatmentComparisonFocusMode {false};
+    bool m_imageAcquisitionCompleted {false};
     QColor m_activeAnnotationColor {QColor(201, 71, 51)};
 };
 

@@ -410,7 +410,7 @@ PlanningPage::PlanningPage(
 
     auto* leftColumn = new QVBoxLayout();
     leftColumn->setSpacing(10);
-    leftColumn->setContentsMargins(0, 0, 0, 0);
+    leftColumn->setContentsMargins(10, 10, 10, 10);
 
     auto* pathCard = new QFrame();
     pathCard->setObjectName(QStringLiteral("planningSidebarCard"));
@@ -733,7 +733,8 @@ PlanningPage::PlanningPage(
     m_preview->setImageZoomEnabled(true);
     m_preview->setScaleRulerEnabled(true);
     m_preview->setScaleRulerExpanded(true);
-    m_preview->setAnnotationEnabled(true);
+    m_preview->setAnnotationEnabled(false);
+    setAnnotationEditingEnabled(false);
 
     m_previewOverlayLabel = new QLabel(QStringLiteral("\u56fe\u50cf\u663e\u793a\u533a\u57df"));
     m_previewOverlayLabel->setObjectName(QStringLiteral("planningPreviewOverlayLabel"));
@@ -2286,12 +2287,10 @@ void PlanningPage::editCurrentPlan()
 
 void PlanningPage::toggleAnnotationPanel()
 {
-    if (m_preview != nullptr) {
-        m_preview->setAnnotationEnabled(true);
-    }
     if (m_annotationPanel != nullptr) {
         m_annotationPanel->setVisible(true);
     }
+    setAnnotationEditingEnabled(m_imageAcquisitionCompleted);
 }
 
 void PlanningPage::updateAnnotationColorButtonSelection(const QColor& color)
@@ -2305,7 +2304,21 @@ void PlanningPage::updateAnnotationColorButtonSelection(const QColor& color)
         m_activeAnnotationColor);
     if (m_preview != nullptr) {
         m_preview->setCurrentAnnotationColor(m_activeAnnotationColor);
-        m_preview->setAnnotationEnabled(true);
+        m_preview->setAnnotationEnabled(m_imageAcquisitionCompleted && !m_treatmentComparisonFocusMode);
+    }
+}
+
+void PlanningPage::setAnnotationEditingEnabled(bool enabled)
+{
+    const bool allowEditing = enabled && !m_treatmentComparisonFocusMode;
+    if (m_annotationPanel != nullptr) {
+        m_annotationPanel->setEnabled(enabled);
+        for (QToolButton* button : m_annotationPanel->findChildren<QToolButton*>()) {
+            button->setEnabled(enabled);
+        }
+    }
+    if (m_preview != nullptr) {
+        m_preview->setAnnotationEnabled(allowEditing);
     }
 }
 
@@ -2471,6 +2484,7 @@ void PlanningPage::loadStagedSlice(int row)
             m_currentSliceSummaryLabel->setToolTip(QString());
         }
         updateSliceNavigationButtons();
+        setAnnotationEditingEnabled(false);
         return;
     }
 
@@ -2505,6 +2519,7 @@ void PlanningPage::loadStagedSlice(int row)
     };
     updateAcquisitionSummary(QStringLiteral("\u5207\u7247\u7f16\u8f91"), lines);
     updateSliceNavigationButtons();
+    setAnnotationEditingEnabled(m_imageAcquisitionCompleted);
 }
 
 QPixmap PlanningPage::renderCurrentSlicePixmap(int row, const QSize& size) const
@@ -3237,6 +3252,7 @@ void PlanningPage::resetActivePathWorkspace()
     m_stagedSlices.clear();
     m_currentStagedSliceIndex = -1;
     m_lastAcquisitionAt = QDateTime {};
+    m_imageAcquisitionCompleted = false;
 
     rebuildModelList();
     if (m_currentSliceSlider != nullptr) {
@@ -3255,12 +3271,12 @@ void PlanningPage::resetActivePathWorkspace()
         m_preview->setCompletedPointCount(0);
         m_preview->setSliceContext(0, 0);
         m_preview->setCaption(QString());
-        m_preview->setAnnotationEnabled(true);
     }
 
     if (m_annotationPanel != nullptr) {
         m_annotationPanel->setVisible(true);
     }
+    setAnnotationEditingEnabled(false);
 
     {
         const QSignalBlocker spacingBlocker(m_spacingSpin);
@@ -3329,6 +3345,7 @@ void PlanningPage::loadPathState(int row)
     m_stagedSlices = state.stagedSlices;
     m_currentStagedSliceIndex = state.currentStagedSliceIndex;
     m_lastAcquisitionAt = state.lastAcquisitionAt;
+    m_imageAcquisitionCompleted = !m_stagedSlices.isEmpty();
     rebuildModelList();
 
     if (state.hasActivePlan && m_context != nullptr) {
@@ -3370,9 +3387,7 @@ void PlanningPage::loadPathState(int row)
     if (m_annotationPanel != nullptr) {
         m_annotationPanel->setVisible(true);
     }
-    if (m_preview != nullptr) {
-        m_preview->setAnnotationEnabled(true);
-    }
+    setAnnotationEditingEnabled(m_imageAcquisitionCompleted);
     updatePathActionState();
 }
 
@@ -3473,8 +3488,8 @@ void PlanningPage::setTreatmentComparisonFocusMode(bool enabled)
     }
     if (m_preview != nullptr) {
         m_preview->setBackgroundImageStretchToFill(enabled);
-        m_preview->setAnnotationEnabled(!enabled);
     }
+    setAnnotationEditingEnabled(m_imageAcquisitionCompleted);
 
     setUpdatesEnabled(true);
     updateGeometry();
@@ -3907,8 +3922,12 @@ void PlanningPage::showCurrentPreviewMaximized()
     dialogPreview->setImageZoomEnabled(true);
     dialogPreview->setScaleRulerEnabled(true);
     dialogPreview->setScaleRulerExpanded(m_preview != nullptr ? m_preview->isScaleRulerExpanded() : true);
-    dialogPreview->setAnnotationEnabled(true);
+    dialogPreview->setAnnotationEnabled(m_imageAcquisitionCompleted);
     dialogPreview->setCurrentAnnotationColor(m_activeAnnotationColor);
+    dialogAnnotationPanel->setEnabled(m_imageAcquisitionCompleted);
+    for (QToolButton* button : dialogAnnotationPanel->findChildren<QToolButton*>()) {
+        button->setEnabled(m_imageAcquisitionCompleted);
+    }
     setAnnotationColorButtonsChecked(dialogRedButton, dialogBlueButton, dialogGreenButton, dialogOrangeButton, m_activeAnnotationColor);
     const int dialogSliceCount = m_stagedSlices.size();
     int dialogSliceIndex = m_currentStagedSliceIndex >= 0 && m_currentStagedSliceIndex < dialogSliceCount
@@ -3965,7 +3984,7 @@ void PlanningPage::showCurrentPreviewMaximized()
         setAnnotationColorButtonsChecked(dialogRedButton, dialogBlueButton, dialogGreenButton, dialogOrangeButton, color);
         updateAnnotationColorButtonSelection(color);
         dialogPreview->setCurrentAnnotationColor(color);
-        dialogPreview->setAnnotationEnabled(true);
+        dialogPreview->setAnnotationEnabled(m_imageAcquisitionCompleted);
     };
     connect(dialogRedButton, &QToolButton::clicked, this, [activateDialogColor]() { activateDialogColor(QColor(201, 71, 51)); });
     connect(dialogBlueButton, &QToolButton::clicked, this, [activateDialogColor]() { activateDialogColor(QColor(91, 158, 230)); });
@@ -4317,6 +4336,8 @@ void PlanningPage::simulateImageAcquisition()
     activatePlanningWorkspace();
     populateDefaultScanChannels();
     if (!hasActivePathSelection()) {
+        m_imageAcquisitionCompleted = false;
+        setAnnotationEditingEnabled(false);
         updateAcquisitionSummary(
             QStringLiteral("\u56fe\u50cf\u901a\u9053\u91c7\u96c6"),
             {
@@ -4336,6 +4357,8 @@ void PlanningPage::simulateImageAcquisition()
 
     m_stagedImageSeries.clear();
     m_stagedSlices.clear();
+    m_imageAcquisitionCompleted = false;
+    setAnnotationEditingEnabled(false);
     m_stagedImageSeries.reserve(layerCount);
     m_stagedSlices.reserve(layerCount);
     for (int layerIndex = 0; layerIndex < layerCount; ++layerIndex) {
@@ -4378,9 +4401,13 @@ void PlanningPage::simulateImageAcquisition()
         }
     }
     if (!m_stagedSlices.isEmpty()) {
+        m_imageAcquisitionCompleted = true;
+        setAnnotationEditingEnabled(true);
         m_modelList->setCurrentRow(0);
         loadStagedSlice(0);
     } else if (m_preview != nullptr) {
+        m_imageAcquisitionCompleted = false;
+        setAnnotationEditingEnabled(false);
         m_preview->setAnnotationStrokes({});
         m_preview->setSliceContext(0, 0);
         m_preview->setSyntheticImageEnabled(false);

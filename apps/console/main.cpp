@@ -1,3 +1,5 @@
+#include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QByteArray>
 #include <QDir>
@@ -5,14 +7,18 @@
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QLabel>
 #include <QMainWindow>
+#include <QMenu>
 #include <QResource>
 #include <QScreen>
 #include <QSettings>
+#include <QStackedWidget>
 #include <QStyle>
 #include <QTextStream>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWindow>
 
@@ -28,6 +34,7 @@
 #include "core/safety/safety_kernel.h"
 #include "core/services/audit_service.h"
 #include "core/services/clinical_data_service.h"
+#include "modules/data/data_management_page.h"
 #include "modules/dashboard/device_monitor_page.h"
 #include "modules/planning/planning_page.h"
 #include "modules/shell/main_window.h"
@@ -265,50 +272,58 @@ QVector<int> resolveClinicalScreenIndexes(const DisplaySettings& settings)
     assignRequestedScreen(1, settings.planningScreen);
     assignRequestedScreen(2, settings.treatmentScreen);
 
-    const auto pickUnusedScreen = [&](const auto& isBetter) {
-        int bestIndex = -1;
-        for (int index = 0; index < screens.size(); ++index) {
-            if (isAssigned(index)) {
-                continue;
-            }
-            if (bestIndex < 0 || isBetter(index, bestIndex)) {
-                bestIndex = index;
+    if (screens.size() >= 3 && assignments[0] < 0 && assignments[1] < 0 && assignments[2] < 0) {
+        int leftScreenIndex = 0;
+        for (int index = 1; index < screens.size(); ++index) {
+            const QRect candidateGeometry = screens.at(index)->geometry();
+            const QRect bestGeometry = screens.at(leftScreenIndex)->geometry();
+            if (candidateGeometry.x() < bestGeometry.x()) {
+                leftScreenIndex = index;
             }
         }
-        return bestIndex;
-    };
 
-    if (assignments[2] < 0) {
-        assignments[2] = pickUnusedScreen([&screens](int candidate, int best) {
-            const QRect candidateGeometry = screens.at(candidate)->geometry();
-            const QRect bestGeometry = screens.at(best)->geometry();
-            if (candidateGeometry.width() != bestGeometry.width()) {
-                return candidateGeometry.width() > bestGeometry.width();
+        assignments[0] = leftScreenIndex;
+
+        int upperRightScreenIndex = -1;
+        int lowerRightScreenIndex = -1;
+        for (int index = 0; index < screens.size(); ++index) {
+            if (index == leftScreenIndex) {
+                continue;
             }
-            return candidateGeometry.width() * candidateGeometry.height() > bestGeometry.width() * bestGeometry.height();
-        });
+
+            if (upperRightScreenIndex < 0) {
+                upperRightScreenIndex = index;
+                lowerRightScreenIndex = index;
+                continue;
+            }
+
+            const QRect candidateGeometry = screens.at(index)->geometry();
+            const QRect upperGeometry = screens.at(upperRightScreenIndex)->geometry();
+            const QRect lowerGeometry = screens.at(lowerRightScreenIndex)->geometry();
+            if (candidateGeometry.y() < upperGeometry.y()) {
+                upperRightScreenIndex = index;
+            }
+            if (candidateGeometry.y() > lowerGeometry.y()) {
+                lowerRightScreenIndex = index;
+            }
+        }
+
+        assignments[1] = lowerRightScreenIndex;
+        assignments[2] = upperRightScreenIndex;
+        return assignments;
     }
 
-    if (assignments[0] < 0) {
-        assignments[0] = pickUnusedScreen([&screens](int candidate, int best) {
-            const QRect candidateGeometry = screens.at(candidate)->geometry();
-            const QRect bestGeometry = screens.at(best)->geometry();
-            if (candidateGeometry.x() != bestGeometry.x()) {
-                return candidateGeometry.x() < bestGeometry.x();
-            }
-            return candidateGeometry.height() > bestGeometry.height();
-        });
-    }
+    for (int assignmentIndex = 0; assignmentIndex < assignments.size(); ++assignmentIndex) {
+        if (assignments.at(assignmentIndex) >= 0) {
+            continue;
+        }
 
-    if (assignments[1] < 0) {
-        assignments[1] = pickUnusedScreen([&screens](int candidate, int best) {
-            const QRect candidateGeometry = screens.at(candidate)->geometry();
-            const QRect bestGeometry = screens.at(best)->geometry();
-            if (candidateGeometry.y() != bestGeometry.y()) {
-                return candidateGeometry.y() < bestGeometry.y();
+        for (int screenIndex = 0; screenIndex < screens.size(); ++screenIndex) {
+            if (!isAssigned(screenIndex)) {
+                assignments[assignmentIndex] = screenIndex;
+                break;
             }
-            return candidateGeometry.x() < bestGeometry.x();
-        });
+        }
     }
 
     return assignments;
@@ -356,25 +371,56 @@ public:
         titleLayout->addWidget(titleLabel);
         headerLayout->addWidget(titleBlock);
 
-        auto* roleBlock = new QFrame();
-        roleBlock->setProperty("navButton", true);
-        auto* roleLayout = new QVBoxLayout(roleBlock);
-        roleLayout->setContentsMargins(30, 8, 30, 8);
-        roleLayout->setSpacing(2);
+        if (role == ClinicalDisplayRole::Dashboard) {
+            m_dashboardMonitorButton = createHeaderNavButton(QStringLiteral("\u8bbe\u5907\u76d1\u63a7"), QStyle::SP_ComputerIcon, true);
+            m_dashboardDataButton = createHeaderNavButton(QStringLiteral("\u6570\u636e\u7ba1\u7406"), QStyle::SP_DirIcon, true);
+            configureDashboardDataMenu();
+            headerLayout->addSpacing(18);
+            headerLayout->addWidget(m_dashboardMonitorButton);
+            headerLayout->addWidget(m_dashboardDataButton);
+        } else {
+            auto* roleBlock = new QFrame();
+            roleBlock->setProperty("navButton", true);
+            auto* roleLayout = new QVBoxLayout(roleBlock);
+            roleLayout->setContentsMargins(30, 8, 30, 8);
+            roleLayout->setSpacing(2);
 
-        auto* roleTitle = new QLabel(clinicalDisplayTitle(role));
-        roleTitle->setObjectName(QStringLiteral("navTitleLabel"));
-        auto* roleSubtitle = new QLabel(clinicalDisplaySubtitle(role));
-        roleSubtitle->setObjectName(QStringLiteral("navStatusLabel"));
-        roleLayout->addWidget(roleTitle);
-        roleLayout->addWidget(roleSubtitle);
-        headerLayout->addWidget(roleBlock);
+            auto* roleTitle = new QLabel(clinicalDisplayTitle(role));
+            roleTitle->setObjectName(QStringLiteral("navTitleLabel"));
+            auto* roleSubtitle = new QLabel(clinicalDisplaySubtitle(role));
+            roleSubtitle->setObjectName(QStringLiteral("navStatusLabel"));
+            roleLayout->addWidget(roleTitle);
+            roleLayout->addWidget(roleSubtitle);
+            headerLayout->addWidget(roleBlock);
+        }
 
         headerLayout->addStretch();
 
         m_statusLabel = new QLabel();
         m_statusLabel->setObjectName(QStringLiteral("navStatusLabel"));
         headerLayout->addWidget(m_statusLabel);
+        headerLayout->addSpacing(8);
+
+        if (role == ClinicalDisplayRole::Planning) {
+            m_planningHabitButton = createUtilityButton(QStyle::SP_FileDialogDetailedView, QStringLiteral("\u533b\u751f\u4e60\u60ef\u8bbe\u7f6e"));
+            m_planningHabitButton->setText(QStringLiteral("\u2699"));
+            m_planningHabitButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+            m_planningHabitButton->setPopupMode(QToolButton::InstantPopup);
+            m_planningHabitMenu = new QMenu(m_planningHabitButton);
+            m_planningHabitMenu->setObjectName(QStringLiteral("navDropMenu"));
+            m_planningHabitMenu->setMinimumWidth(190);
+            m_collapseAllAction = m_planningHabitMenu->addAction(QStringLiteral("\u5168\u6298\u53e0"));
+            m_collapseAllAction->setCheckable(true);
+            m_expandAllAction = m_planningHabitMenu->addAction(QStringLiteral("\u5168\u5c55\u5f00"));
+            m_expandAllAction->setCheckable(true);
+            m_planningHabitMenu->addSeparator();
+            m_saveHabitAction = m_planningHabitMenu->addAction(QStringLiteral("\u4fdd\u5b58\u533b\u751f\u4e60\u60ef"));
+            m_planningHabitButton->setMenu(m_planningHabitMenu);
+            headerLayout->addWidget(m_planningHabitButton, 0, Qt::AlignVCenter);
+        }
+
+        m_exitButton = createUtilityButton(QStyle::SP_DialogCloseButton, QStringLiteral("\u9000\u51fa\u7cfb\u7edf"));
+        headerLayout->addWidget(m_exitButton, 0, Qt::AlignVCenter);
 
         rootLayout->addWidget(header);
         rootLayout->addWidget(createClinicalPage(role, auditService, clinicalDataRepository, simulationDevice), 1);
@@ -389,10 +435,97 @@ public:
         connect(m_safetyKernel, &panthera::core::SafetyKernel::systemModeChanged, this, [this]() {
             updateStatusSummary();
         });
+        if (m_dashboardMonitorButton != nullptr) {
+            connect(m_dashboardMonitorButton, &QToolButton::clicked, this, [this]() {
+                showDashboardMonitor();
+            });
+        }
+        if (m_dashboardDataButton != nullptr) {
+            connect(m_dashboardDataButton, &QToolButton::clicked, this, [this]() {
+                showDashboardData();
+            });
+        }
+        if (m_expandAllAction != nullptr) {
+            connect(m_expandAllAction, &QAction::triggered, this, [this]() {
+                applyPlanningPersonalizationProfile(QStringLiteral("\u5168\u5c55\u5f00"));
+            });
+        }
+        if (m_collapseAllAction != nullptr) {
+            connect(m_collapseAllAction, &QAction::triggered, this, [this]() {
+                applyPlanningPersonalizationProfile(QStringLiteral("\u5168\u6298\u53e0"));
+            });
+        }
+        if (m_saveHabitAction != nullptr) {
+            connect(m_saveHabitAction, &QAction::triggered, this, [this]() {
+                savePlanningPersonalizationProfile();
+            });
+        }
+        if (m_planningHabitMenu != nullptr) {
+            connect(m_planningHabitMenu, &QMenu::aboutToShow, this, [this]() {
+                refreshPlanningHabitMenu();
+            });
+        }
+        connect(m_exitButton, &QToolButton::clicked, qApp, []() {
+            qApp->quit();
+        });
         updateStatusSummary();
     }
 
 private:
+    QToolButton* createHeaderNavButton(const QString& text, QStyle::StandardPixmap iconType, bool checkable)
+    {
+        auto* button = new QToolButton(this);
+        button->setText(text);
+        button->setIcon(style()->standardIcon(iconType));
+        button->setCheckable(checkable);
+        button->setAutoRaise(true);
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        button->setProperty("navButton", true);
+        return button;
+    }
+
+    QToolButton* createUtilityButton(QStyle::StandardPixmap iconType, const QString& tooltip)
+    {
+        auto* button = new QToolButton(this);
+        button->setObjectName(QStringLiteral("navUtilityButton"));
+        button->setIcon(style()->standardIcon(iconType));
+        button->setToolTip(tooltip);
+        button->setAutoRaise(true);
+        return button;
+    }
+
+    void configureDashboardDataMenu()
+    {
+        if (m_dashboardDataButton == nullptr) {
+            return;
+        }
+
+        m_dashboardDataButton->setPopupMode(QToolButton::MenuButtonPopup);
+        m_dashboardDataMenu = new QMenu(m_dashboardDataButton);
+        m_dashboardDataMenu->setObjectName(QStringLiteral("navDropMenu"));
+        m_dashboardDataMenu->setMinimumWidth(170);
+        m_dashboardDataActionGroup = new QActionGroup(m_dashboardDataMenu);
+        m_dashboardDataActionGroup->setExclusive(true);
+
+        const auto addSectionAction = [this](const QString& text, panthera::modules::DataManagementPage::Section section) {
+            QAction* action = m_dashboardDataMenu->addAction(text);
+            action->setCheckable(true);
+            action->setData(static_cast<int>(section));
+            m_dashboardDataActionGroup->addAction(action);
+            connect(action, &QAction::triggered, this, [this, section]() {
+                showDashboardDataSection(section);
+            });
+            return action;
+        };
+
+        m_patientInfoAction = addSectionAction(QStringLiteral("\u60a3\u8005\u4fe1\u606f"), panthera::modules::DataManagementPage::Section::PatientInfo);
+        m_imagingDataAction = addSectionAction(QStringLiteral("\u5f71\u50cf\u6570\u636e"), panthera::modules::DataManagementPage::Section::ImagingData);
+        m_treatmentReportAction = addSectionAction(QStringLiteral("\u6cbb\u7597\u62a5\u544a"), panthera::modules::DataManagementPage::Section::TreatmentReport);
+        m_treatmentDataAction = addSectionAction(QStringLiteral("\u6cbb\u7597\u6570\u636e"), panthera::modules::DataManagementPage::Section::TreatmentData);
+        m_patientInfoAction->setChecked(true);
+        m_dashboardDataButton->setMenu(m_dashboardDataMenu);
+    }
+
     QWidget* createClinicalPage(
         ClinicalDisplayRole role,
         panthera::core::AuditService* auditService,
@@ -400,26 +533,114 @@ private:
         panthera::adapters::SimulationDeviceFacade* simulationDevice)
     {
         using panthera::modules::DeviceMonitorPage;
+        using panthera::modules::DataManagementPage;
         using panthera::modules::PlanningPage;
         using panthera::modules::TreatmentPage;
 
         switch (role) {
-        case ClinicalDisplayRole::Dashboard:
-            return new DeviceMonitorPage(simulationDevice, m_safetyKernel);
+        case ClinicalDisplayRole::Dashboard: {
+            m_dashboardStack = new QStackedWidget();
+            m_dashboardStack->addWidget(new DeviceMonitorPage(simulationDevice, m_safetyKernel));
+            m_dataManagementPage = new DataManagementPage(m_context, auditService, clinicalDataRepository);
+            m_dashboardStack->addWidget(m_dataManagementPage);
+            showDashboardMonitor();
+            return m_dashboardStack;
+        }
         case ClinicalDisplayRole::Planning: {
-            auto* planningPage = new PlanningPage(m_context, m_safetyKernel, auditService, clinicalDataRepository, simulationDevice);
-            connect(m_context, &panthera::core::ApplicationContext::treatmentLayerVisualizationRequested, planningPage, [planningPage](const QString& planId, int layerIndex, bool treatmentActive) {
+            m_planningPage = new PlanningPage(m_context, m_safetyKernel, auditService, clinicalDataRepository, simulationDevice);
+            connect(m_context, &panthera::core::ApplicationContext::treatmentLayerVisualizationRequested, m_planningPage, [this](const QString& planId, int layerIndex, bool treatmentActive) {
                 if (treatmentActive) {
-                    planningPage->showTreatmentComparisonLayer(planId, layerIndex, true);
+                    m_planningPage->showTreatmentComparisonLayer(planId, layerIndex, true);
                 }
             });
-            return planningPage;
+            return m_planningPage;
         }
         case ClinicalDisplayRole::Treatment:
             return new TreatmentPage(m_context, m_safetyKernel, auditService, clinicalDataRepository, simulationDevice);
         }
 
         return new QWidget();
+    }
+
+    void showDashboardMonitor()
+    {
+        if (m_dashboardStack != nullptr) {
+            m_dashboardStack->setCurrentIndex(0);
+        }
+        if (m_dashboardMonitorButton != nullptr) {
+            m_dashboardMonitorButton->setChecked(true);
+        }
+        if (m_dashboardDataButton != nullptr) {
+            m_dashboardDataButton->setChecked(false);
+        }
+    }
+
+    void showDashboardData()
+    {
+        showDashboardDataSection(panthera::modules::DataManagementPage::Section::PatientInfo);
+    }
+
+    void showDashboardDataSection(panthera::modules::DataManagementPage::Section section)
+    {
+        if (m_dashboardStack != nullptr) {
+            m_dashboardStack->setCurrentIndex(1);
+        }
+        if (m_dataManagementPage != nullptr) {
+            m_dataManagementPage->showSection(section);
+        }
+        if (m_dashboardDataActionGroup != nullptr) {
+            for (QAction* action : m_dashboardDataActionGroup->actions()) {
+                action->setChecked(action->data().toInt() == static_cast<int>(section));
+            }
+        }
+        if (m_dashboardMonitorButton != nullptr) {
+            m_dashboardMonitorButton->setChecked(false);
+        }
+        if (m_dashboardDataButton != nullptr) {
+            m_dashboardDataButton->setChecked(true);
+        }
+    }
+
+    void applyPlanningPersonalizationProfile(const QString& profileName)
+    {
+        if (m_planningPage == nullptr) {
+            return;
+        }
+
+        m_planningPage->applyPersonalizationProfile(profileName);
+        refreshPlanningHabitMenu();
+    }
+
+    void refreshPlanningHabitMenu()
+    {
+        if (m_planningPage == nullptr) {
+            return;
+        }
+
+        const QString activeProfileName = m_planningPage->activePersonalizationProfileName();
+        if (m_expandAllAction != nullptr) {
+            m_expandAllAction->setChecked(activeProfileName == QStringLiteral("\u5168\u5c55\u5f00"));
+        }
+        if (m_collapseAllAction != nullptr) {
+            m_collapseAllAction->setChecked(activeProfileName == QStringLiteral("\u5168\u6298\u53e0"));
+        }
+    }
+
+    void savePlanningPersonalizationProfile()
+    {
+        if (m_planningPage == nullptr) {
+            return;
+        }
+
+        const QString profileName = QInputDialog::getText(
+            this,
+            QStringLiteral("\u4fdd\u5b58\u533b\u751f\u4e60\u60ef"),
+            QStringLiteral("\u8bf7\u8f93\u5165\u4e60\u60ef\u540d\u79f0"));
+        if (profileName.trimmed().isEmpty()) {
+            return;
+        }
+
+        m_planningPage->saveCurrentPersonalizationProfile(profileName);
     }
 
     void updateStatusSummary()
@@ -433,6 +654,23 @@ private:
     panthera::core::ApplicationContext* m_context {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
     QLabel* m_statusLabel {nullptr};
+    QStackedWidget* m_dashboardStack {nullptr};
+    panthera::modules::DataManagementPage* m_dataManagementPage {nullptr};
+    panthera::modules::PlanningPage* m_planningPage {nullptr};
+    QToolButton* m_dashboardMonitorButton {nullptr};
+    QToolButton* m_dashboardDataButton {nullptr};
+    QMenu* m_dashboardDataMenu {nullptr};
+    QActionGroup* m_dashboardDataActionGroup {nullptr};
+    QAction* m_patientInfoAction {nullptr};
+    QAction* m_imagingDataAction {nullptr};
+    QAction* m_treatmentReportAction {nullptr};
+    QAction* m_treatmentDataAction {nullptr};
+    QToolButton* m_planningHabitButton {nullptr};
+    QMenu* m_planningHabitMenu {nullptr};
+    QAction* m_expandAllAction {nullptr};
+    QAction* m_collapseAllAction {nullptr};
+    QAction* m_saveHabitAction {nullptr};
+    QToolButton* m_exitButton {nullptr};
 };
 
 void showWindowOnScreen(QMainWindow* window, QScreen* screen, bool fullScreen)
@@ -451,7 +689,7 @@ void showWindowOnScreen(QMainWindow* window, QScreen* screen, bool fullScreen)
     if (fullScreen) {
         window->showFullScreen();
     } else {
-        window->showMaximized();
+        window->show();
     }
     window->raise();
     window->activateWindow();

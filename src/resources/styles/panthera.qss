@@ -472,6 +472,22 @@ QWidget#planningPage {
     background-color: #07182a;
 }
 
+QWidget#planningLeftColumnHost {
+    background-color: #121f34;
+    border: 1px solid #1d3350;
+    border-radius: 14px;
+}
+
+QWidget#planningRightColumnHost {
+    background-color: #121f34;
+    border: 1px solid #1d3350;
+    border-radius: 0px;
+}
+
+QWidget#planningCenterColumnHost {
+    background-color: #07182a;
+}
+
 QWidget#planningSectionBody,
 QWidget#planningImageOpsBody {
     background-color: transparent;

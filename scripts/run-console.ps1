@@ -1,6 +1,6 @@
 param(
     [string]$BuildDir = "build/msvc2019",
-    [string]$QtRoot = "D:/Qt/6.2.0/msvc2019_64"
+    [string]$QtRoot = "C:/Qt/6.2.0/msvc2019_64"
 )
 
 $ErrorActionPreference = "Stop"

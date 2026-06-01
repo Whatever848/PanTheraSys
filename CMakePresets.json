@@ -8,15 +8,16 @@
   "configurePresets": [
     {
       "name": "msvc2019-debug",
-      "displayName": "PanTheraSys VS2019 Debug",
-      "description": "Configure the PanTheraSys desktop application with VS2019, Qt 6.2 and the existing Debug build tree.",
+      "displayName": "PanTheraSys VS2022 Debug",
+      "description": "Configure the PanTheraSys desktop application with VS2022, Qt 6.2 and the existing Debug build tree.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/msvc2019",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_PREFIX_PATH": "D:/Qt/6.2.0/msvc2019_64",
-        "CMAKE_CXX_COMPILER": "D:/VS2019/Microsoft Visual Studio/2019/Community/VC/Tools/MSVC/14.29.30133/bin/Hostx64/x64/cl.exe",
+        "CMAKE_PREFIX_PATH": "C:/Qt/6.2.0/msvc2019_64",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe",
+        "CMAKE_MAKE_PROGRAM": "C:/Program Files/Microsoft Visual Studio/2022/Professional/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe",
         "PANTHERA_BUILD_TESTS": "ON"
       }
     }
