@@ -8,16 +8,19 @@
   "configurePresets": [
     {
       "name": "msvc2019-debug",
-      "displayName": "PanTheraSys VS2022 Debug",
-      "description": "Configure the PanTheraSys desktop application with VS2022, Qt 6.2 and the existing Debug build tree.",
+      "displayName": "PanTheraSys Qt MinGW Debug",
+      "description": "Configure the PanTheraSys desktop application with the Qt 6.2 MinGW toolchain installed under D:/PanSoftware/QT.",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/msvc2019",
+      "binaryDir": "${sourceDir}/build/mingw",
+      "environment": {
+        "PATH": "D:/PanSoftware/QT/Tools/mingw810_64/bin;D:/PanSoftware/QT/6.2.0/mingw81_64/bin;$penv{PATH}"
+      },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_PREFIX_PATH": "C:/Qt/6.2.0/msvc2019_64",
-        "CMAKE_CXX_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe",
-        "CMAKE_MAKE_PROGRAM": "C:/Program Files/Microsoft Visual Studio/2022/Professional/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe",
+        "CMAKE_PREFIX_PATH": "D:/PanSoftware/QT/6.2.0/mingw81_64",
+        "CMAKE_CXX_COMPILER": "D:/PanSoftware/QT/Tools/mingw810_64/bin/g++.exe",
+        "CMAKE_MAKE_PROGRAM": "D:/PanSoftware/QT/Tools/Ninja/ninja.exe",
         "PANTHERA_BUILD_TESTS": "ON"
       }
     }

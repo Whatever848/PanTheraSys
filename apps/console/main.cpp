@@ -142,16 +142,25 @@ void configureQtPlatformPluginPath(int argc, char* argv[])
 QString resolveRuntimePath(const QString& relativePath)
 {
     const QString appDir = QApplication::applicationDirPath();
-    const QStringList candidates {
-        QDir::current().absoluteFilePath(relativePath),
-        QDir(appDir).absoluteFilePath(relativePath),
-        QDir(appDir).absoluteFilePath(QStringLiteral("../../%1").arg(relativePath)),
-        QDir(appDir).absoluteFilePath(QStringLiteral("../../../%1").arg(relativePath))
+    const QList<QDir> baseDirectories {
+        QDir::current(),
+        QDir(appDir)
+    };
+    const QStringList relativeCandidates {
+        relativePath,
+        QStringLiteral("../%1").arg(relativePath),
+        QStringLiteral("../../%1").arg(relativePath),
+        QStringLiteral("../../../%1").arg(relativePath),
+        QStringLiteral("../../../../%1").arg(relativePath),
+        QStringLiteral("../../../../../%1").arg(relativePath)
     };
 
-    for (const QString& candidate : candidates) {
-        if (QFileInfo::exists(candidate)) {
-            return QDir::cleanPath(candidate);
+    for (const QDir& baseDirectory : baseDirectories) {
+        for (const QString& relativeCandidate : relativeCandidates) {
+            const QString candidate = baseDirectory.absoluteFilePath(relativeCandidate);
+            if (QFileInfo::exists(candidate)) {
+                return QDir::cleanPath(candidate);
+            }
         }
     }
 

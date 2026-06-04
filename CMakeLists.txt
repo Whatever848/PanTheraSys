@@ -30,6 +30,10 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10)
+    add_compile_options(-U__cpp_impl_three_way_comparison)
+endif()
+
 add_subdirectory(src/core)
 add_subdirectory(src/adapters)
 add_subdirectory(src/modules)
