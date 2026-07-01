@@ -193,6 +193,9 @@ void hydratePlanPayload(const QString& serializedPayload, TherapyPlan* therapyPl
 QString serializeSegmentPayload(const TherapySegment& segment)
 {
     QJsonObject root;
+    root.insert(QStringLiteral("source_slice_index"), segment.sourceSliceIndex);
+    root.insert(QStringLiteral("axis7_position_steps"), segment.axis7PositionSteps);
+    root.insert(QStringLiteral("source_image_path"), segment.sourceImagePath);
     QJsonArray points;
     for (const TherapyPoint& point : segment.points) {
         points.push_back(therapyPointToJson(point));
@@ -211,12 +214,19 @@ TherapySegment mapTherapySegment(const QSqlQuery& query)
 
     const QJsonDocument document = QJsonDocument::fromJson(query.value(QStringLiteral("serialized_payload")).toString().toUtf8());
     if (document.isObject()) {
-        const QJsonArray points = document.object().value(QStringLiteral("points")).toArray();
+        const QJsonObject root = document.object();
+        segment.sourceSliceIndex = root.value(QStringLiteral("source_slice_index")).toInt(-1);
+        segment.axis7PositionSteps = root.value(QStringLiteral("axis7_position_steps")).toInt(-1);
+        segment.sourceImagePath = root.value(QStringLiteral("source_image_path")).toString();
+        const QJsonArray points = root.value(QStringLiteral("points")).toArray();
         for (const QJsonValue& pointValue : points) {
             if (pointValue.isObject()) {
                 segment.points.push_back(therapyPointFromJson(pointValue.toObject()));
             }
         }
+    }
+    if (segment.sourceSliceIndex < 0) {
+        segment.sourceSliceIndex = segment.orderIndex;
     }
 
     return segment;

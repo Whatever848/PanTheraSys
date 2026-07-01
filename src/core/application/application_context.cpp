@@ -104,4 +104,31 @@ void ApplicationContext::requestTreatmentLayerVisualization(const QString& planI
     emit treatmentLayerVisualizationRequested(planId, layerIndex, treatmentActive);
 }
 
+void ApplicationContext::updateTreatmentCameraFrame(const QImage& frame, const QString& cameraDescription)
+{
+    if (frame.isNull()) {
+        return;
+    }
+
+    m_latestTreatmentCameraFrame = frame.copy();
+    m_latestTreatmentCameraDescription = cameraDescription.trimmed();
+    m_hasLatestTreatmentCameraFrame = true;
+    emit treatmentCameraFrameUpdated(m_latestTreatmentCameraFrame, m_latestTreatmentCameraDescription);
+}
+
+bool ApplicationContext::hasLatestTreatmentCameraFrame() const
+{
+    return m_hasLatestTreatmentCameraFrame && !m_latestTreatmentCameraFrame.isNull();
+}
+
+QImage ApplicationContext::latestTreatmentCameraFrame() const
+{
+    return m_latestTreatmentCameraFrame;
+}
+
+QString ApplicationContext::latestTreatmentCameraDescription() const
+{
+    return m_latestTreatmentCameraDescription;
+}
+
 }  // panthera::core 命名空间

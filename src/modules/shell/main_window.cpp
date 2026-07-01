@@ -129,7 +129,8 @@ MainWindow::MainWindow(
     rootLayout->addWidget(navBar);
 
     m_stack = new QStackedWidget();
-    m_stack->addWidget(new DeviceMonitorPage(simulationDevice, safetyKernel));
+    m_dashboardPage = new DeviceMonitorPage(simulationDevice, safetyKernel);
+    m_stack->addWidget(m_dashboardPage);
     m_stack->addWidget(new QWidget());
     m_stack->addWidget(new QWidget());
     m_stack->addWidget(new QWidget());
@@ -184,6 +185,9 @@ void MainWindow::showDashboard()
 
 void MainWindow::showPlanning()
 {
+    if (m_dashboardPage != nullptr) {
+        m_dashboardPage->releaseThreeAxisGatewayForSharedUse();
+    }
     m_safetyKernel->enterPlanningMode();
     ensurePlanningPage();
     setActivePage(1, m_planningButton);
@@ -191,6 +195,9 @@ void MainWindow::showPlanning()
 
 void MainWindow::showTreatment()
 {
+    if (m_dashboardPage != nullptr) {
+        m_dashboardPage->releaseThreeAxisGatewayForSharedUse();
+    }
     ensureTreatmentPage();
     setActivePage(2, m_treatmentButton);
 }

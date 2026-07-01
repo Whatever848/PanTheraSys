@@ -12,6 +12,7 @@
 #include <QWheelEvent>
 
 #include "modules/shared/therapy_imaging_algorithms.h"
+#include "modules/shared/ultrasound_geometry.h"
 
 namespace panthera::modules {
 
@@ -54,13 +55,13 @@ qreal niceRulerStepMm(qreal roughStep)
     return niceNormalized * magnitude;
 }
 
-QString formatRulerLabel(qreal valueMm)
+QString formatRulerLabel(qreal valueCm)
 {
-    const qreal rounded = std::round(valueMm);
-    if (std::abs(valueMm - rounded) < 0.05) {
+    const qreal rounded = std::round(valueCm);
+    if (std::abs(valueCm - rounded) < 0.05) {
         return QString::number(static_cast<int>(rounded));
     }
-    return QString::number(valueMm, 'f', 1);
+    return QString::number(valueCm, 'f', 1);
 }
 
 QVector<QPointF> uniqueStrokePoints(const QVector<QPointF>& points)
@@ -337,9 +338,11 @@ void drawLineTreatmentTrack(QPainter* painter, const LineRenderTrack& track, qre
 
 qreal pointTreatmentRadiusPx(double spacingMm, const QRectF& canvas, qreal zoomScale)
 {
-    const qreal mmToPx = std::min(canvas.width(), canvas.height()) / 60.0;
-    const qreal baseRadius = std::clamp<qreal>(std::max(0.8, spacingMm) * mmToPx * 0.68, 5.5, 16.0);
-    return baseRadius * zoomScale;
+    const qreal mmToPx = std::min(
+        canvas.width() / kUltrasoundLateralSpanMm,
+        canvas.height() / kUltrasoundDepthRangeMm);
+    const qreal physicalRadius = std::max<qreal>(0.8, spacingMm) * mmToPx * 0.68 * zoomScale;
+    return std::max<qreal>(3.5, physicalRadius);
 }
 
 void drawPointTreatmentMarker(QPainter* painter, const QPointF& mappedPoint, qreal radiusPx, qreal zoomScale, bool completed)
@@ -670,18 +673,18 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
         const qreal lateralShift = (ratio - 0.5) * 9.0;
         const qreal depthShift = std::sin(ratio * 3.14159265358979323846) * 4.0 - 1.5;
         QPolygonF lesion;
-        lesion << mapPointToWidget(QPointF(-18.0 + lateralShift, -8.0 + depthShift))
-               << mapPointToWidget(QPointF(-8.0 + lateralShift, -16.0 + depthShift * 0.9))
-               << mapPointToWidget(QPointF(12.0 + lateralShift, -10.0 + depthShift * 0.75))
-               << mapPointToWidget(QPointF(20.0 + lateralShift, 6.0 + depthShift))
-               << mapPointToWidget(QPointF(6.0 + lateralShift, 18.0 + depthShift * 0.85))
-               << mapPointToWidget(QPointF(-14.0 + lateralShift, 12.0 + depthShift));
+        lesion << mapPointToWidget(QPointF(-18.0 + lateralShift, 18.0 + depthShift))
+               << mapPointToWidget(QPointF(-8.0 + lateralShift, 11.0 + depthShift * 0.9))
+               << mapPointToWidget(QPointF(12.0 + lateralShift, 16.0 + depthShift * 0.75))
+               << mapPointToWidget(QPointF(20.0 + lateralShift, 30.0 + depthShift))
+               << mapPointToWidget(QPointF(6.0 + lateralShift, 41.0 + depthShift * 0.85))
+               << mapPointToWidget(QPointF(-14.0 + lateralShift, 35.0 + depthShift));
 
         painter.setBrush(QColor(255, 144, 0, 80));
         painter.setPen(QPen(QColor(255, 190, 70), 2.0));
         painter.drawPolygon(lesion);
 
-        const QPointF focusCenter = mapPointToWidget(QPointF(-4.0 + lateralShift * 0.55, 1.5 + depthShift * 0.8));
+        const QPointF focusCenter = mapPointToWidget(QPointF(-4.0 + lateralShift * 0.55, 27.0 + depthShift * 0.8));
         QRadialGradient focusGradient(focusCenter, 28.0);
         focusGradient.setColorAt(0.0, QColor(255, 86, 0, 120));
         focusGradient.setColorAt(0.4, QColor(255, 166, 76, 84));
@@ -698,7 +701,7 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
     if (m_hasPlan) {
         int currentIndex = 0;
         const qreal zoomScale = treatmentVisualZoomScale(m_imageZoomFactor);
-        const qreal pointRadiusPx = pointTreatmentRadiusPx(m_plan.spacingMm, annotationCanvasRect(), zoomScale);
+        const qreal pointRadiusPx = pointTreatmentRadiusPx(m_plan.spacingMm, contentViewportRect(), zoomScale);
         for (const TherapySegment& segment : m_plan.segments) {
             if (hasLineTreatmentTracks(segment, m_plan.pattern)) {
                 const QVector<LineRenderTrack> tracks = buildLineRenderTracks(
@@ -747,7 +750,7 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
     drawScaleRuler(&painter);
 
     qreal captionLeftInset = 8.0;
-    if (m_scaleRulerEnabled) {
+    if (m_scaleRulerEnabled && m_backgroundImage.isNull()) {
         const QRectF toggleRect = scaleRulerToggleRect();
         const QRectF rulerRect = scaleRulerRect();
         captionLeftInset = std::max(captionLeftInset, toggleRect.right() + 8.0);
@@ -931,9 +934,7 @@ int MockUltrasoundView::totalPointCount() const
 
 QPointF MockUltrasoundView::mapPointToWidget(const QPointF& logicalPoint) const
 {
-    const qreal normalizedX = (logicalPoint.x() + 30.0) / 60.0;
-    const qreal normalizedY = (logicalPoint.y() + 30.0) / 60.0;
-    return denormalizePoint(QPointF(normalizedX, normalizedY));
+    return denormalizePoint(ultrasoundMillimeterPointToNormalized(logicalPoint));
 }
 
 QRectF MockUltrasoundView::annotationCanvasRect() const
@@ -1143,6 +1144,9 @@ void MockUltrasoundView::drawScaleRuler(QPainter* painter)
     if (painter == nullptr || !m_scaleRulerEnabled) {
         return;
     }
+    if (!m_backgroundImage.isNull()) {
+        return;
+    }
 
     const QRectF toggleRect = scaleRulerToggleRect();
     if (!toggleRect.isValid()) {
@@ -1175,8 +1179,8 @@ void MockUltrasoundView::drawScaleRuler(QPainter* painter)
     painter->drawLine(QPointF(axisX, topY), QPointF(axisX, bottomY));
 
     const QRectF visibleViewport = zoomViewportNormalizedRect();
-    const qreal startMm = visibleViewport.top() * 60.0;
-    const qreal visibleMm = std::max<qreal>(0.001, visibleViewport.height() * 60.0);
+    const qreal startMm = visibleViewport.top() * kUltrasoundDepthRangeMm;
+    const qreal visibleMm = std::max<qreal>(0.001, visibleViewport.height() * kUltrasoundDepthRangeMm);
     const qreal roughStep = visibleMm / std::clamp(std::floor((bottomY - topY) / 44.0), 3.0, 8.0);
     const qreal stepMm = std::max<qreal>(1.0, niceRulerStepMm(roughStep));
     const qreal firstTickMm = std::ceil(startMm / stepMm) * stepMm;
@@ -1190,14 +1194,14 @@ void MockUltrasoundView::drawScaleRuler(QPainter* painter)
 
         const QRectF labelRect(rulerRect.left() + 4.0, y - 10.0, rulerRect.width() - 18.0, 20.0);
         painter->setPen(QColor(228, 244, 255, 235));
-        painter->drawText(labelRect, Qt::AlignRight | Qt::AlignVCenter, formatRulerLabel(tickMm));
+        painter->drawText(labelRect, Qt::AlignRight | Qt::AlignVCenter, formatRulerLabel(-tickMm / 10.0));
     }
 
     painter->setPen(QColor(146, 203, 242, 210));
     painter->setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 7, QFont::Bold));
     painter->drawText(QRectF(rulerRect.left() + 4.0, rulerRect.top() + 2.0, rulerRect.width() - 8.0, 12.0),
         Qt::AlignLeft | Qt::AlignVCenter,
-        QStringLiteral("mm"));
+        QStringLiteral("cm"));
     painter->restore();
 }
 

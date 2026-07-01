@@ -1,14 +1,20 @@
 #include "modules/planning/planning_page.h"
 
+#include "modules/shared/system_sound_guard.h"
+#include "modules/shared/ultrasound_geometry.h"
+
 #include <algorithm>
 #include <cmath>
 
 #include <QButtonGroup>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDirIterator>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -37,6 +43,127 @@ using namespace panthera::core;
 namespace {
 
 constexpr int kPathStateKeyRole = Qt::UserRole + 1;
+constexpr int kImageAcquisitionAxisNodeId = 7;
+constexpr int kImageAcquisitionStepsPerTurn = 3200;
+constexpr double kImageAcquisitionMillimetersPerTurn = 2.0;
+constexpr double kImageAcquisitionStepsPerMillimeter =
+    kImageAcquisitionStepsPerTurn / kImageAcquisitionMillimetersPerTurn;
+constexpr int kImageAcquisitionMotorSpeed = 2000;
+constexpr int kImageAcquisitionS2PositionSteps = 0;
+constexpr int kImageAcquisitionS1PositionSteps = 76119;
+constexpr int kImageAcquisitionMinimumPositionSteps = kImageAcquisitionS2PositionSteps;
+constexpr int kImageAcquisitionMaximumPositionSteps = kImageAcquisitionS1PositionSteps;
+constexpr int kImageAcquisitionReturnHomeToleranceSteps = 20;
+constexpr int kImageAcquisitionMoveStartTimeoutMs = 3000;
+constexpr int kImageAcquisitionStopPollMs = 200;
+constexpr int kImageAcquisitionStopTimeoutMs = 90000;
+constexpr int kImageAcquisitionStopStableToleranceSteps = 3;
+constexpr int kImageAcquisitionStopStableSamples = 4;
+constexpr int kImageAcquisitionCameraWarmupTimeoutMs = 2000;
+
+QString imageAcquisitionOptionalIntText(bool hasValue, int value)
+{
+    return hasValue ? QString::number(value) : QStringLiteral("-");
+}
+
+QString imageAcquisitionBoolText(bool value)
+{
+    return value ? QStringLiteral("1") : QStringLiteral("0");
+}
+
+bool imageAcquisitionSnapshotPosition(
+    const diji::adapters::uim::UimMotorSnapshot& snapshot,
+    int* positionSteps,
+    QString* errorMessage)
+{
+    if (snapshot.hasPosition) {
+        if (positionSteps != nullptr) {
+            *positionSteps = snapshot.position;
+        }
+        return true;
+    }
+    if (snapshot.hasEncoderPosition) {
+        if (positionSteps != nullptr) {
+            *positionSteps = snapshot.encoderPosition;
+        }
+        return true;
+    }
+
+    if (errorMessage != nullptr) {
+        *errorMessage = QStringLiteral("无法读取 7 号电机绝对位置，POS/QEC 均无反馈");
+    }
+    return false;
+}
+
+bool imageAcquisitionSnapshotMoved(
+    const diji::adapters::uim::UimMotorSnapshot& startSnapshot,
+    const diji::adapters::uim::UimMotorSnapshot& currentSnapshot)
+{
+    if (startSnapshot.hasPosition && currentSnapshot.hasPosition
+        && std::abs(currentSnapshot.position - startSnapshot.position) > kImageAcquisitionStopStableToleranceSteps) {
+        return true;
+    }
+    if (startSnapshot.hasEncoderPosition && currentSnapshot.hasEncoderPosition
+        && std::abs(currentSnapshot.encoderPosition - startSnapshot.encoderPosition) > kImageAcquisitionStopStableToleranceSteps) {
+        return true;
+    }
+    return false;
+}
+
+int imageAcquisitionMotionPosition(
+    const diji::adapters::uim::UimMotorSnapshot& startSnapshot,
+    const diji::adapters::uim::UimMotorSnapshot& currentSnapshot,
+    int fallbackPositionSteps)
+{
+    if (startSnapshot.hasPosition && currentSnapshot.hasPosition
+        && std::abs(currentSnapshot.position - startSnapshot.position) > kImageAcquisitionStopStableToleranceSteps) {
+        return currentSnapshot.position;
+    }
+    if (startSnapshot.hasEncoderPosition && currentSnapshot.hasEncoderPosition
+        && std::abs(currentSnapshot.encoderPosition - startSnapshot.encoderPosition) > kImageAcquisitionStopStableToleranceSteps) {
+        return currentSnapshot.encoderPosition;
+    }
+    int positionSteps = fallbackPositionSteps;
+    imageAcquisitionSnapshotPosition(currentSnapshot, &positionSteps, nullptr);
+    return positionSteps;
+}
+
+QString imageAcquisitionAxisStatusText(const diji::adapters::uim::UimMotorSnapshot& snapshot)
+{
+    QString sensorText = QStringLiteral("S1/S2/S3=-");
+    if (snapshot.hasSensorFeedback) {
+        sensorText = QStringLiteral("S1/S2/S3=%1/%2/%3")
+            .arg(imageAcquisitionBoolText(snapshot.sensor1))
+            .arg(imageAcquisitionBoolText(snapshot.sensor2))
+            .arg(imageAcquisitionBoolText(snapshot.sensor3));
+    }
+
+    return QStringLiteral("ENA=%1, SPD=%2, STEP=%3, POS=%4, QEC=%5, %6")
+        .arg(imageAcquisitionBoolText(snapshot.enabled))
+        .arg(snapshot.speed)
+        .arg(snapshot.step)
+        .arg(imageAcquisitionOptionalIntText(snapshot.hasPosition, snapshot.position))
+        .arg(imageAcquisitionOptionalIntText(snapshot.hasEncoderPosition, snapshot.encoderPosition))
+        .arg(sensorText);
+}
+
+QString defaultImageAcquisitionSdkPath()
+{
+    const QStringList candidates {
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral("UISimCanFunc.dll")),
+        QStringLiteral("D:/PanSoftware/UIMDemo/UISimCanFunc.dll"),
+        QStringLiteral("D:/PanSoftware/DIANJIDEMO2/build/mingw/apps/three_axis_motor/UISimCanFunc.dll"),
+        QStringLiteral("D:/PanSoftware/DianJi/电机控制/UIMDemoNew/UIMDemo20170523/example/VC/UIMVCDemo/DLL/UISimCanFunc.dll"),
+        QStringLiteral("D:/PanSoftware/DianJi/电机控制/UIMDemo20170523/example/VC/UIMVCDemo/DLL/UISimCanFunc.dll")
+    };
+
+    for (const QString& candidate : candidates) {
+        if (QFileInfo::exists(candidate)) {
+            return QDir::toNativeSeparators(QFileInfo(candidate).absoluteFilePath());
+        }
+    }
+    return QDir::toNativeSeparators(candidates.first());
+}
 
 QString collapseAllProfileName()
 {
@@ -46,6 +173,12 @@ QString collapseAllProfileName()
 QString expandAllProfileName()
 {
     return QStringLiteral("全展开");
+}
+
+bool isBuiltInPersonalizationProfile(const QString& profileName)
+{
+    const QString normalizedProfileName = profileName.trimmed();
+    return normalizedProfileName == collapseAllProfileName() || normalizedProfileName == expandAllProfileName();
 }
 
 QString planningPersonalizationProfilesRoot()
@@ -132,6 +265,42 @@ QString buildStoragePath(const QString& patientId, const QString& batchToken, in
         .arg(batchToken)
         .arg(channelIndex + 1, 2, 10, QChar('0'))
         .arg(sliceIndex + 1, 3, 10, QChar('0'));
+}
+
+QString sanitizedStorageToken(const QString& value, const QString& fallback)
+{
+    QString token = value.trimmed();
+    if (token.isEmpty()) {
+        token = fallback;
+    }
+    for (QChar& character : token) {
+        if (!character.isLetterOrNumber() && character != QLatin1Char('-') && character != QLatin1Char('_')) {
+            character = QLatin1Char('_');
+        }
+    }
+    return token;
+}
+
+QString imageAcquisitionStorageDirectory(const QString& patientId, const QString& batchToken)
+{
+    return QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(
+        QStringLiteral("runtime/acquisitions/%1/%2")
+            .arg(sanitizedStorageToken(patientId, QStringLiteral("anonymous")))
+            .arg(sanitizedStorageToken(batchToken, QStringLiteral("batch"))));
+}
+
+QString imageAcquisitionSliceStoragePath(
+    const QString& patientId,
+    const QString& batchToken,
+    int channelIndex,
+    int sliceIndex,
+    int axis7PositionSteps)
+{
+    return QDir(imageAcquisitionStorageDirectory(patientId, batchToken)).absoluteFilePath(
+        QStringLiteral("channel_%1_slice_%2_axis7_%3.png")
+            .arg(channelIndex + 1, 2, 10, QChar('0'))
+            .arg(sliceIndex + 1, 3, 10, QChar('0'))
+            .arg(axis7PositionSteps));
 }
 
 QVector3D parseCoordinateText(const QString& text)
@@ -403,7 +572,6 @@ PlanningPage::PlanningPage(
 {
     setObjectName(QStringLiteral("planningPage"));
     setAttribute(Qt::WA_StyledBackground, true);
-
     m_rootLayout = new QHBoxLayout(this);
     m_rootLayout->setContentsMargins(12, 12, 12, 12);
     m_rootLayout->setSpacing(12);
@@ -1293,8 +1461,11 @@ PlanningPage::PlanningPage(
     rightColumn->addWidget(controlsScroll);
     m_rightColumnHost = new QWidget();
     m_rightColumnHost->setObjectName(QStringLiteral("planningRightColumnHost"));
+    m_rightColumnHost->setMinimumWidth(380);
+    m_rightColumnHost->setMaximumWidth(380);
+    m_rightColumnHost->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     m_rightColumnHost->setLayout(rightColumn);
-    m_rootLayout->addWidget(m_rightColumnHost, 24);
+    m_rootLayout->addWidget(m_rightColumnHost, 0);
 
     connect(m_addPathButton, &QPushButton::clicked, this, &PlanningPage::addPathItem);
     connect(m_removePathButton, &QPushButton::clicked, this, &PlanningPage::removeCurrentPathItem);
@@ -1579,9 +1750,7 @@ void PlanningPage::applyPersonalizationProfile(const QString& profileName)
 bool PlanningPage::saveCurrentPersonalizationProfile(const QString& profileName)
 {
     const QString normalizedProfileName = profileName.trimmed();
-    if (normalizedProfileName.isEmpty()
-        || normalizedProfileName == collapseAllProfileName()
-        || normalizedProfileName == expandAllProfileName()) {
+    if (normalizedProfileName.isEmpty() || isBuiltInPersonalizationProfile(normalizedProfileName)) {
         return false;
     }
 
@@ -1596,6 +1765,7 @@ bool PlanningPage::saveCurrentPersonalizationProfile(const QString& profileName)
         settings.setValue(QStringLiteral("states/%1").arg(it.key()), it.value().toBool());
     }
     settings.endGroup();
+    settings.sync();
 
     setActivePersonalizationProfileName(normalizedProfileName);
     return true;
@@ -1604,9 +1774,7 @@ bool PlanningPage::saveCurrentPersonalizationProfile(const QString& profileName)
 bool PlanningPage::deletePersonalizationProfile(const QString& profileName)
 {
     const QString normalizedProfileName = profileName.trimmed();
-    if (normalizedProfileName.isEmpty()
-        || normalizedProfileName == collapseAllProfileName()
-        || normalizedProfileName == expandAllProfileName()) {
+    if (normalizedProfileName.isEmpty() || isBuiltInPersonalizationProfile(normalizedProfileName)) {
         return false;
     }
 
@@ -1638,6 +1806,11 @@ void PlanningPage::registerCollapseSection(const QString& key, QToolButton* butt
     m_collapseButtonsByKey.insert(key, button);
     connect(button, &QToolButton::toggled, this, [this]() {
         if (m_applyingPersonalizationProfile) {
+            return;
+        }
+        const QString activeProfileName = m_activePersonalizationProfileName.trimmed();
+        if (!activeProfileName.isEmpty() && !isBuiltInPersonalizationProfile(activeProfileName)) {
+            saveCurrentPersonalizationProfile(activeProfileName);
             return;
         }
         clearActivePersonalizationProfileName();
@@ -1693,17 +1866,19 @@ void PlanningPage::setActivePersonalizationProfileName(const QString& profileNam
     m_activePersonalizationProfileName = profileName.trimmed();
     QSettings settings(QStringLiteral("PanTheraSys"), QStringLiteral("PanTheraConsole"));
     settings.setValue(planningPersonalizationActiveProfileKey(), m_activePersonalizationProfileName);
+    settings.sync();
 }
 
 void PlanningPage::clearActivePersonalizationProfileName()
 {
-    if (m_activePersonalizationProfileName.isEmpty()) {
+    QSettings settings(QStringLiteral("PanTheraSys"), QStringLiteral("PanTheraConsole"));
+    if (m_activePersonalizationProfileName.isEmpty() && !settings.contains(planningPersonalizationActiveProfileKey())) {
         return;
     }
 
     m_activePersonalizationProfileName.clear();
-    QSettings settings(QStringLiteral("PanTheraSys"), QStringLiteral("PanTheraConsole"));
     settings.remove(planningPersonalizationActiveProfileKey());
+    settings.sync();
 }
 
 void PlanningPage::restoreLastPersonalizationProfile()
@@ -2158,7 +2333,9 @@ TherapyPlan PlanningPage::buildPlanFromUi(ApprovalState approvalState) const
         segment.label = QStringLiteral("\u6cbb\u7597\u6bb5 %1").arg(segmentIndex + 1);
 
         for (int layer = 0; layer < layersPerSegment; ++layer) {
-            const qreal y = -18.0 + (segmentIndex * layersPerSegment + layer) * m_spacingSpin->value() * 0.8;
+            const qreal y = std::min(
+                kUltrasoundDepthRangeMm - 6.0,
+                12.0 + (segmentIndex * layersPerSegment + layer) * m_spacingSpin->value() * 0.8);
             for (int column = 0; column < 4; ++column) {
                 TherapyPoint point;
                 point.index = pointIndex++;
@@ -2196,6 +2373,9 @@ TherapyPlan PlanningPage::buildPlanFromSlices(ApprovalState approvalState) const
         TherapySegment segment;
         segment.id = QStringLiteral("%1-S%2").arg(plan.id).arg(segmentIndex + 1);
         segment.orderIndex = sliceIndex;
+        segment.sourceSliceIndex = sliceIndex;
+        segment.axis7PositionSteps = slice.acquisitionAxis7PositionSteps;
+        segment.sourceImagePath = slice.image.storagePath;
         segment.label = QStringLiteral("%1 | %2").arg(slice.label, patternSummaryText(slice.pattern));
         segment.points = slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated && !slice.respiratoryAdjustedTargets.isEmpty()
             ? slice.respiratoryAdjustedTargets
@@ -2504,6 +2684,9 @@ void PlanningPage::loadStagedSlice(int row)
     const QStringList lines {
         QStringLiteral("\u5f53\u524d\u5207\u7247\uff1a%1").arg(slice.label),
         QStringLiteral("\u6682\u5b58\u8def\u5f84\uff1a%1").arg(slice.image.storagePath),
+        slice.acquisitionAxis7PositionSteps >= 0
+            ? QStringLiteral("7号绝对位置：%1 步").arg(slice.acquisitionAxis7PositionSteps)
+            : QStringLiteral("7号绝对位置：未记录"),
         QStringLiteral("\u7f16\u8f91\u72b6\u6001\uff1a%1").arg(slice.edited ? QStringLiteral("\u5df2\u5708\u753b") : QStringLiteral("\u672a\u5708\u753b")),
         QStringLiteral("\u5f53\u524d\u7b14\u8ff9\u6570\uff1a%1").arg(slice.annotations.size()),
         annotationAreaSummaryText(slice.annotatedAreaMm2),
@@ -2588,8 +2771,14 @@ void PlanningPage::configureCurrentPreviewView(MockUltrasoundView* preview, int 
         const QVector<AnnotationStroke> annotations = useActivePreviewAnnotations && preview != m_preview && m_preview != nullptr
             ? m_preview->annotationStrokes()
             : slice.annotations;
-        preview->clearBackgroundImage();
-        preview->setSyntheticImageEnabled(true);
+        if (slice.capturedFrame.isNull()) {
+            preview->clearBackgroundImage();
+            preview->setSyntheticImageEnabled(true);
+        } else {
+            preview->setBackgroundImageStretchToFill(false);
+            preview->setBackgroundImage(slice.capturedFrame);
+            preview->setSyntheticImageEnabled(false);
+        }
         preview->setAnnotationStrokes(annotations);
         preview->setSliceContext(row, m_stagedSlices.size());
         const QString respiratoryCaption = slice.respiratoryTrackingEnabled && slice.respiratoryTrackingCalibrated
@@ -2615,6 +2804,9 @@ void PlanningPage::configureCurrentPreviewView(MockUltrasoundView* preview, int 
             TherapySegment segment;
             segment.id = QStringLiteral("SLICE-%1").arg(row + 1);
             segment.orderIndex = 0;
+            segment.sourceSliceIndex = row;
+            segment.axis7PositionSteps = slice.acquisitionAxis7PositionSteps;
+            segment.sourceImagePath = slice.image.storagePath;
             segment.label = slice.label;
             segment.points = previewPoints;
             segment.plannedDurationSeconds = totalDwellSeconds(previewPoints);
@@ -3054,10 +3246,13 @@ void PlanningPage::populateDefaultScanChannels()
         return;
     }
 
+    if (m_pathList->count() == 0) {
+        m_pathList->addItem(createPathListItem(0));
+    }
     if (m_pathList->count() > 0 && m_pathList->currentRow() < 0) {
-        const QSignalBlocker blocker(m_pathList);
         m_pathList->setCurrentRow(0);
     }
+    updatePathActionState();
 }
 
 bool PlanningPage::hasActivePathSelection() const
@@ -3072,7 +3267,7 @@ void PlanningPage::updatePathActionState()
         m_removePathButton->setEnabled(hasPathSelection);
     }
     if (m_acquireImageButton != nullptr) {
-        m_acquireImageButton->setEnabled(hasPathSelection);
+        m_acquireImageButton->setEnabled(!m_imageAcquisitionRunning);
     }
     if (m_generate3dButton != nullptr) {
         m_generate3dButton->setEnabled(hasPathSelection && !m_stagedSlices.isEmpty());
@@ -3451,10 +3646,10 @@ void PlanningPage::setTreatmentComparisonFocusMode(bool enabled)
             m_rootLayout->setStretchFactor(m_leftColumnHost, enabled ? 0 : 21);
         }
         if (m_centerColumnHost != nullptr) {
-            m_rootLayout->setStretchFactor(m_centerColumnHost, 1);
+            m_rootLayout->setStretchFactor(m_centerColumnHost, enabled ? 1 : 55);
         }
         if (m_rightColumnHost != nullptr) {
-            m_rootLayout->setStretchFactor(m_rightColumnHost, enabled ? 0 : 24);
+            m_rootLayout->setStretchFactor(m_rightColumnHost, 0);
         }
     }
     if (m_leftColumnHost != nullptr) {
@@ -3484,10 +3679,10 @@ void PlanningPage::setTreatmentComparisonFocusMode(bool enabled)
         m_currentMaximizeButton->setVisible(!enabled);
     }
     if (m_historyPreview != nullptr) {
-        m_historyPreview->setBackgroundImageStretchToFill(enabled);
+        m_historyPreview->setBackgroundImageStretchToFill(false);
     }
     if (m_preview != nullptr) {
-        m_preview->setBackgroundImageStretchToFill(enabled);
+        m_preview->setBackgroundImageStretchToFill(false);
     }
     setAnnotationEditingEnabled(m_imageAcquisitionCompleted);
 
@@ -4284,6 +4479,393 @@ void PlanningPage::updateSliceNavigationButtons()
     updateComparisonSyncState();
 }
 
+bool PlanningPage::prepareImageAcquisitionMotor(QString* errorMessage)
+{
+    if (!m_imageAcquisitionMotorGateway.isSdkLoaded()) {
+        const QString sdkPath = defaultImageAcquisitionSdkPath();
+        if (!m_imageAcquisitionMotorGateway.loadSdk(sdkPath, errorMessage)) {
+            return false;
+        }
+    }
+
+    if (!m_imageAcquisitionMotorGateway.isGatewayOpen()) {
+        m_imageAcquisitionMotorDevices = m_imageAcquisitionMotorGateway.searchGateways(errorMessage);
+        if (m_imageAcquisitionMotorDevices.isEmpty()) {
+            if (errorMessage != nullptr && errorMessage->trimmed().isEmpty()) {
+                *errorMessage = QStringLiteral("未搜索到 USB-CAN 网关");
+            }
+            return false;
+        }
+        QString openError;
+        if (!m_imageAcquisitionMotorGateway.openGateway(m_imageAcquisitionMotorDevices.first().deviceIndex, &openError)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("%1。请确认设备监控页没有打开同一个 USB-CAN 网关。").arg(openError);
+            }
+            return false;
+        }
+    }
+
+    m_imageAcquisitionMotorNodes = m_imageAcquisitionMotorGateway.nodes();
+    const bool hasAcquisitionAxis = std::any_of(
+        m_imageAcquisitionMotorNodes.cbegin(),
+        m_imageAcquisitionMotorNodes.cend(),
+        [](const diji::adapters::uim::UimNodeInfo& node) {
+            return static_cast<int>(node.nodeId) == kImageAcquisitionAxisNodeId;
+        });
+    if (!hasAcquisitionAxis) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("未发现 7 号左右电机节点");
+        }
+        return false;
+    }
+
+    return m_imageAcquisitionMotorGateway.selectNode(kImageAcquisitionAxisNodeId, errorMessage);
+}
+
+bool PlanningPage::armImageAcquisitionMotor(QString* errorMessage)
+{
+    if (!m_imageAcquisitionMotorGateway.selectNode(kImageAcquisitionAxisNodeId, errorMessage)) {
+        return false;
+    }
+    if (!m_imageAcquisitionMotorGateway.enableMotor(errorMessage)) {
+        return false;
+    }
+    return m_imageAcquisitionMotorGateway.setSpeed(kImageAcquisitionMotorSpeed, errorMessage);
+}
+
+bool PlanningPage::readImageAcquisitionAxisSnapshot(
+    diji::adapters::uim::UimMotorSnapshot* snapshot,
+    QString* errorMessage)
+{
+    if (snapshot == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("7号电机状态输出为空");
+        }
+        return false;
+    }
+    if (!m_imageAcquisitionMotorGateway.selectNode(kImageAcquisitionAxisNodeId, errorMessage)) {
+        return false;
+    }
+    if (!m_imageAcquisitionMotorGateway.refreshSnapshot(errorMessage)) {
+        return false;
+    }
+
+    *snapshot = m_imageAcquisitionMotorGateway.latestSnapshot();
+    return true;
+}
+
+bool PlanningPage::readImageAcquisitionAxisPosition(int* positionSteps, QString* errorMessage)
+{
+    if (positionSteps == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("7号电机位置输出为空");
+        }
+        return false;
+    }
+
+    diji::adapters::uim::UimMotorSnapshot snapshot;
+    if (!readImageAcquisitionAxisSnapshot(&snapshot, errorMessage)) {
+        return false;
+    }
+
+    QString positionError;
+    if (!imageAcquisitionSnapshotPosition(snapshot, positionSteps, &positionError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("%1。当前状态：%2")
+                .arg(positionError, imageAcquisitionAxisStatusText(snapshot));
+        }
+        return false;
+    }
+    return true;
+}
+
+bool PlanningPage::validateImageAcquisitionTravel(int startPositionSteps, int stepSteps, int layerCount, QString* errorMessage) const
+{
+    if (stepSteps <= 0 || layerCount <= 0) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("图像采集层数或步长无效");
+        }
+        return false;
+    }
+    if (startPositionSteps < kImageAcquisitionMinimumPositionSteps
+        || startPositionSteps > kImageAcquisitionMaximumPositionSteps) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("7号电机当前位置 %1 超出 S2(%2) 到 S1(%3) 的安全范围")
+                .arg(startPositionSteps)
+                .arg(kImageAcquisitionS2PositionSteps)
+                .arg(kImageAcquisitionS1PositionSteps);
+        }
+        return false;
+    }
+
+    const qint64 plannedEndPosition = static_cast<qint64>(startPositionSteps)
+        + (static_cast<qint64>(stepSteps) * layerCount);
+    if (plannedEndPosition > kImageAcquisitionS1PositionSteps) {
+        const int remainingSteps = std::max(0, kImageAcquisitionS1PositionSteps - startPositionSteps);
+        const int maxLayers = stepSteps > 0 ? remainingSteps / stepSteps : 0;
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("本次采集将到达 %1 步，超过 S1 绝对位置 %2。当前位置 %3，当前步长 %4 步，最多允许 %5 层。")
+                .arg(plannedEndPosition)
+                .arg(kImageAcquisitionS1PositionSteps)
+                .arg(startPositionSteps)
+                .arg(stepSteps)
+                .arg(maxLayers);
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool PlanningPage::validateImageAcquisitionTravelFromSnapshot(
+    const diji::adapters::uim::UimMotorSnapshot& snapshot,
+    int stepSteps,
+    int layerCount,
+    int* startPositionSteps,
+    QString* errorMessage) const
+{
+    int positionSteps = 0;
+    QString positionError;
+    if (!imageAcquisitionSnapshotPosition(snapshot, &positionSteps, &positionError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("%1。当前状态：%2")
+                .arg(positionError, imageAcquisitionAxisStatusText(snapshot));
+        }
+        return false;
+    }
+
+    if (startPositionSteps != nullptr) {
+        *startPositionSteps = positionSteps;
+    }
+    if (!validateImageAcquisitionTravel(positionSteps, stepSteps, layerCount, errorMessage)) {
+        return false;
+    }
+
+    if (!snapshot.hasSensorFeedback) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("7号电机未取到 S1/S2/S3 传感器状态，禁止向 S1 执行图像采集。当前状态：%1")
+                .arg(imageAcquisitionAxisStatusText(snapshot));
+        }
+        return false;
+    }
+    if (!snapshot.sensor1) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("7号电机 S1=0，已触发或处于 S1 限位，禁止继续向 S1 执行图像采集。当前状态：%1")
+                .arg(imageAcquisitionAxisStatusText(snapshot));
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool PlanningPage::moveImageAcquisitionAxisMm(double millimeters, QString* errorMessage)
+{
+    const int steps = static_cast<int>(std::lround(std::max(0.0, millimeters) * kImageAcquisitionStepsPerMillimeter));
+    if (steps <= 0) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("图像采集步长必须大于 0 mm");
+        }
+        return false;
+    }
+    diji::adapters::uim::UimMotorSnapshot snapshot;
+    QString travelError;
+    if (!readImageAcquisitionAxisSnapshot(&snapshot, &travelError)
+        || !validateImageAcquisitionTravelFromSnapshot(snapshot, steps, 1, nullptr, &travelError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = travelError.trimmed().isEmpty()
+                ? QStringLiteral("7号左右电机行程安全检查失败")
+                : travelError;
+        }
+        return false;
+    }
+    if (!armImageAcquisitionMotor(errorMessage)) {
+        return false;
+    }
+    return m_imageAcquisitionMotorGateway.setStep(steps, errorMessage);
+}
+
+bool PlanningPage::waitForImageAcquisitionAxisStop(int expectedPositionSteps, int* stoppedPositionSteps, QString* errorMessage)
+{
+    if (stoppedPositionSteps == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("7号电机停止位置输出为空");
+        }
+        return false;
+    }
+
+    diji::adapters::uim::UimMotorSnapshot startSnapshot;
+    if (!readImageAcquisitionAxisSnapshot(&startSnapshot, errorMessage)) {
+        stopImageAcquisitionMotorQuietly();
+        return false;
+    }
+
+    int latestPositionSteps = 0;
+    QString positionError;
+    if (!imageAcquisitionSnapshotPosition(startSnapshot, &latestPositionSteps, &positionError)) {
+        stopImageAcquisitionMotorQuietly();
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("%1。当前状态：%2")
+                .arg(positionError, imageAcquisitionAxisStatusText(startSnapshot));
+        }
+        return false;
+    }
+
+    const int startPositionSteps = latestPositionSteps;
+    bool hasObservedMovement =
+        std::abs(expectedPositionSteps - startPositionSteps) <= kImageAcquisitionStopStableToleranceSteps;
+    int stableSampleCount = 0;
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < kImageAcquisitionStopTimeoutMs) {
+        waitForImageAcquisitionSettle(kImageAcquisitionStopPollMs);
+        QCoreApplication::processEvents();
+
+        diji::adapters::uim::UimMotorSnapshot polledSnapshot;
+        QString readError;
+        if (!readImageAcquisitionAxisSnapshot(&polledSnapshot, &readError)) {
+            stopImageAcquisitionMotorQuietly();
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("等待 7号电机停止时无法读取绝对位置：%1").arg(readError);
+            }
+            return false;
+        }
+        int polledPositionSteps = imageAcquisitionMotionPosition(startSnapshot, polledSnapshot, latestPositionSteps);
+
+        if (polledPositionSteps < kImageAcquisitionMinimumPositionSteps
+            || polledPositionSteps > kImageAcquisitionMaximumPositionSteps) {
+            stopImageAcquisitionMotorQuietly();
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("等待 7号电机停止时位置 %1 超出安全范围 %2-%3。当前状态：%4")
+                    .arg(polledPositionSteps)
+                    .arg(kImageAcquisitionMinimumPositionSteps)
+                    .arg(kImageAcquisitionMaximumPositionSteps)
+                    .arg(imageAcquisitionAxisStatusText(polledSnapshot));
+            }
+            return false;
+        }
+        if (polledSnapshot.hasSensorFeedback
+            && !polledSnapshot.sensor1
+            && polledPositionSteps < expectedPositionSteps - kImageAcquisitionReturnHomeToleranceSteps) {
+            stopImageAcquisitionMotorQuietly();
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("7号电机已触发 S1 下降沿但尚未到达本层目标，已主动停止。当前位置 %1，目标 %2。当前状态：%3")
+                    .arg(polledPositionSteps)
+                    .arg(expectedPositionSteps)
+                    .arg(imageAcquisitionAxisStatusText(polledSnapshot));
+            }
+            return false;
+        }
+
+        if (imageAcquisitionSnapshotMoved(startSnapshot, polledSnapshot)) {
+            hasObservedMovement = true;
+        }
+        if (!hasObservedMovement && timer.elapsed() >= kImageAcquisitionMoveStartTimeoutMs) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral(
+                                    "7号电机运动命令已下发，但 %1 ms 内 POS/QEC 均未变化。请确认7号已上电、采集方向为 S2->S1、S1 传感器没有持续触发、设备监控页未占用 USB-CAN。当前状态：%2")
+                                    .arg(kImageAcquisitionMoveStartTimeoutMs)
+                                    .arg(imageAcquisitionAxisStatusText(polledSnapshot));
+            }
+            return false;
+        }
+        if (std::abs(polledPositionSteps - latestPositionSteps) <= kImageAcquisitionStopStableToleranceSteps) {
+            ++stableSampleCount;
+        } else {
+            stableSampleCount = 0;
+        }
+        latestPositionSteps = polledPositionSteps;
+
+        const bool reachedExpectedPosition =
+            std::abs(latestPositionSteps - expectedPositionSteps) <= kImageAcquisitionReturnHomeToleranceSteps;
+        const bool stoppedAfterMovement =
+            hasObservedMovement && stableSampleCount >= kImageAcquisitionStopStableSamples;
+        if (reachedExpectedPosition || stoppedAfterMovement) {
+            *stoppedPositionSteps = latestPositionSteps;
+            return true;
+        }
+    }
+
+    if (errorMessage != nullptr) {
+        stopImageAcquisitionMotorQuietly();
+        diji::adapters::uim::UimMotorSnapshot timeoutSnapshot;
+        QString timeoutStatus;
+        if (readImageAcquisitionAxisSnapshot(&timeoutSnapshot, nullptr)) {
+            timeoutStatus = imageAcquisitionAxisStatusText(timeoutSnapshot);
+        } else {
+            timeoutStatus = QStringLiteral("无法读取");
+        }
+        *errorMessage = QStringLiteral("等待 7号电机停止超时，目标 %1，当前位置 %2。当前状态：%3")
+            .arg(expectedPositionSteps)
+            .arg(latestPositionSteps)
+            .arg(timeoutStatus);
+    }
+    return false;
+}
+
+void PlanningPage::stopImageAcquisitionMotorQuietly()
+{
+    if (!m_imageAcquisitionMotorGateway.isGatewayOpen()) {
+        return;
+    }
+
+    QString ignoredError;
+    if (!m_imageAcquisitionMotorGateway.selectNode(kImageAcquisitionAxisNodeId, &ignoredError)) {
+        return;
+    }
+    ignoredError.clear();
+    m_imageAcquisitionMotorGateway.setSpeed(0, &ignoredError);
+    ignoredError.clear();
+    m_imageAcquisitionMotorGateway.setStep(0, &ignoredError);
+}
+
+void PlanningPage::waitForImageAcquisitionSettle(int milliseconds)
+{
+    if (milliseconds <= 0) {
+        return;
+    }
+
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timer.start(milliseconds);
+    loop.exec(QEventLoop::AllEvents);
+}
+
+bool PlanningPage::waitForLatestAcquisitionFrame(int timeoutMs) const
+{
+    if (m_context == nullptr) {
+        return false;
+    }
+    if (m_context->hasLatestTreatmentCameraFrame()) {
+        return true;
+    }
+    if (timeoutMs <= 0) {
+        return false;
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    while (!m_context->hasLatestTreatmentCameraFrame() && timer.elapsed() < timeoutMs) {
+        QEventLoop loop;
+        QTimer waitTimer;
+        waitTimer.setSingleShot(true);
+        connect(&waitTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
+        waitTimer.start(50);
+        loop.exec(QEventLoop::AllEvents);
+    }
+    return m_context->hasLatestTreatmentCameraFrame();
+}
+
+QPixmap PlanningPage::latestAcquisitionFramePixmap() const
+{
+    if (m_context != nullptr && m_context->hasLatestTreatmentCameraFrame()) {
+        return QPixmap::fromImage(m_context->latestTreatmentCameraFrame());
+    }
+    return {};
+}
+
 void PlanningPage::addPathItem()
 {
     activatePlanningWorkspace();
@@ -4335,6 +4917,14 @@ void PlanningPage::simulateImageAcquisition()
 {
     activatePlanningWorkspace();
     populateDefaultScanChannels();
+    if (m_imageAcquisitionRunning) {
+        updateAcquisitionSummary(
+            QStringLiteral("图像采集"),
+            {
+                QStringLiteral("当前已有一轮图像采集正在执行，请等待完成。")
+            });
+        return;
+    }
     if (!hasActivePathSelection()) {
         m_imageAcquisitionCompleted = false;
         setAnnotationEditingEnabled(false);
@@ -4349,11 +4939,104 @@ void PlanningPage::simulateImageAcquisition()
 
     const int layerCount = m_layerCountSpin->value();
     const int step = m_stepSpin->value();
+    const int stepMotorSteps = static_cast<int>(std::lround(step * kImageAcquisitionStepsPerMillimeter));
     const int channelIndex = std::max(0, m_pathList->currentRow());
     const QString channelLabel = currentChannelLabel();
     const QString channelCoordinate = currentChannelCoordinate();
     const QDateTime now = QDateTime::currentDateTime();
     const QString batchToken = now.toString(QStringLiteral("yyyyMMddhhmmss"));
+
+    m_imageAcquisitionRunning = true;
+    if (m_acquireImageButton != nullptr) {
+        m_acquireImageButton->setEnabled(false);
+    }
+    const auto finishAcquisition = [this]() {
+        m_imageAcquisitionRunning = false;
+        updatePathActionState();
+    };
+
+    {
+        ScopedSystemBeepMute muteSystemBeeps;
+
+        QString motorError;
+        if (!prepareImageAcquisitionMotor(&motorError)) {
+            const QString detail = motorError.trimmed().isEmpty() ? QStringLiteral("7号左右电机未准备好") : motorError;
+            updateAcquisitionSummary(
+                QStringLiteral("图像采集未启动"),
+                {
+                    QStringLiteral("7号左右电机未能进入采集安全检查状态。"),
+                    detail,
+                    QStringLiteral("请确认 UIM SDK 已部署、USB-CAN 已连接、7号节点存在，并且设备监控页没有占用同一个网关。")
+                });
+            finishAcquisition();
+            return;
+        }
+
+        updateAcquisitionSummary(
+            QStringLiteral("图像采集安全检查中"),
+            {
+                QStringLiteral("7号左右电机：正在读取当前位置并预判整轮采集终点。"),
+                QStringLiteral("层数：%1，步长：%2，每层 %3 步").arg(layerCount).arg(formatStepSize(step)).arg(stepMotorSteps),
+                QStringLiteral("请确认医生已通过三电机控制把探头移动到起始切片位置。")
+            });
+        QCoreApplication::processEvents();
+    }
+
+    int acquisitionStartPositionSteps = 0;
+    QString positionError;
+    diji::adapters::uim::UimMotorSnapshot acquisitionStartSnapshot;
+    if (!readImageAcquisitionAxisSnapshot(&acquisitionStartSnapshot, &positionError)
+        || !validateImageAcquisitionTravelFromSnapshot(
+            acquisitionStartSnapshot,
+            stepMotorSteps,
+            layerCount,
+            &acquisitionStartPositionSteps,
+            &positionError)) {
+        stopImageAcquisitionMotorQuietly();
+        const QString detail = positionError.trimmed().isEmpty() ? QStringLiteral("7号电机行程安全检查失败") : positionError;
+        updateAcquisitionSummary(
+            QStringLiteral("图像采集未启动"),
+            {
+                QStringLiteral("7号左右电机行程安全检查未通过。"),
+                detail,
+                QStringLiteral("采集方向固定为当前位置 -> S1，S2=0，S1=76119。请先通过三电机控制调整 7 号当前位置，或减少层数/步长。")
+            });
+        finishAcquisition();
+        return;
+    }
+
+    updateAcquisitionSummary(
+        QStringLiteral("图像采集准备中"),
+        {
+            QStringLiteral("7号左右电机：整轮行程预判通过，起点 %1 步，终点 %2 步。")
+                .arg(acquisitionStartPositionSteps)
+                .arg(acquisitionStartPositionSteps + stepMotorSteps * layerCount),
+            QStringLiteral("采集速度：%1").arg(kImageAcquisitionMotorSpeed),
+            QStringLiteral("每层运动前仍会重新读取位置和 S1 状态。")
+        });
+    QCoreApplication::processEvents();
+
+    const QString patientId = m_context->hasSelectedPatient() ? m_context->selectedPatient().id : QString();
+    if (m_context != nullptr && !m_context->hasLatestTreatmentCameraFrame()) {
+        waitForLatestAcquisitionFrame(kImageAcquisitionCameraWarmupTimeoutMs);
+    }
+    bool sawTreatmentCameraFrame = m_context != nullptr && m_context->hasLatestTreatmentCameraFrame();
+
+    const QString automaticStorageDirectory = imageAcquisitionStorageDirectory(patientId, batchToken);
+    QDir automaticStorageDir(automaticStorageDirectory);
+    if (!automaticStorageDir.exists() && !automaticStorageDir.mkpath(QStringLiteral("."))) {
+        const QString detail = QStringLiteral("无法创建图像采集存储目录：%1").arg(automaticStorageDirectory);
+        updateAcquisitionSummary(
+            QStringLiteral("图像采集未启动"),
+            {
+                detail,
+                QStringLiteral("请确认程序目录可写，或以有权限的用户重新启动软件。")
+            });
+        finishAcquisition();
+        return;
+    }
+
+    QString failureMessage;
 
     m_stagedImageSeries.clear();
     m_stagedSlices.clear();
@@ -4362,13 +5045,83 @@ void PlanningPage::simulateImageAcquisition()
     m_stagedImageSeries.reserve(layerCount);
     m_stagedSlices.reserve(layerCount);
     for (int layerIndex = 0; layerIndex < layerCount; ++layerIndex) {
+        const bool cameraReadyForLayer = m_context != nullptr && m_context->hasLatestTreatmentCameraFrame();
+        updateAcquisitionSummary(
+            QStringLiteral("图像采集中"),
+            {
+                QStringLiteral("当前通道：%1").arg(channelLabel),
+                QStringLiteral("进度：%1 / %2").arg(layerIndex + 1).arg(layerCount),
+                QStringLiteral("7号左右电机：当前位置 -> S1，准备移动 %1（%2 步）").arg(formatStepSize(step)).arg(stepMotorSteps),
+                cameraReadyForLayer
+                    ? QStringLiteral("治疗屏画面：电机停止后捕捉当前帧")
+                    : QStringLiteral("治疗屏画面：等待 USB 相机实时帧")
+            });
+        QCoreApplication::processEvents();
+
+        int currentPositionSteps = 0;
+        diji::adapters::uim::UimMotorSnapshot currentSnapshot;
+        QString travelError;
+        if (!readImageAcquisitionAxisSnapshot(&currentSnapshot, &travelError)
+            || !validateImageAcquisitionTravelFromSnapshot(
+                currentSnapshot,
+                stepMotorSteps,
+                layerCount - layerIndex,
+                &currentPositionSteps,
+                &travelError)) {
+            failureMessage = QStringLiteral("第 %1 层前安全检查失败：%2").arg(layerIndex + 1).arg(travelError);
+            break;
+        }
+
+        QString moveError;
+        if (!moveImageAcquisitionAxisMm(step, &moveError)) {
+            failureMessage = QStringLiteral("第 %1 层移动失败：%2").arg(layerIndex + 1).arg(moveError);
+            break;
+        }
+
+        int slicePositionSteps = -1;
+        QString stopError;
+        const int expectedPositionSteps = currentPositionSteps + stepMotorSteps;
+        if (!waitForImageAcquisitionAxisStop(expectedPositionSteps, &slicePositionSteps, &stopError)) {
+            failureMessage = QStringLiteral("第 %1 层等待 7 号电机停止失败：%2").arg(layerIndex + 1).arg(stopError);
+            break;
+        }
+        if (slicePositionSteps < kImageAcquisitionMinimumPositionSteps
+            || slicePositionSteps > kImageAcquisitionMaximumPositionSteps) {
+            failureMessage = QStringLiteral("第 %1 层 7 号绝对位置 %2 超出安全范围 %3-%4")
+                .arg(layerIndex + 1)
+                .arg(slicePositionSteps)
+                .arg(kImageAcquisitionMinimumPositionSteps)
+                .arg(kImageAcquisitionMaximumPositionSteps);
+            break;
+        }
+
+        waitForImageAcquisitionSettle(120);
+        if (m_context != nullptr && !m_context->hasLatestTreatmentCameraFrame()) {
+            waitForLatestAcquisitionFrame(kImageAcquisitionCameraWarmupTimeoutMs);
+        }
+        const bool capturedFromTreatmentScreen = m_context != nullptr && m_context->hasLatestTreatmentCameraFrame();
+        sawTreatmentCameraFrame = sawTreatmentCameraFrame || capturedFromTreatmentScreen;
+        const QPixmap capturedFrame = latestAcquisitionFramePixmap();
+        if (capturedFrame.isNull()) {
+            failureMessage = QStringLiteral("第 %1 层未捕捉到治疗屏实时画面，已中止采集").arg(layerIndex + 1);
+            break;
+        }
+
+        const QString sliceStoragePath = imageAcquisitionSliceStoragePath(
+            patientId,
+            batchToken,
+            channelIndex,
+            layerIndex,
+            slicePositionSteps);
+        if (!capturedFrame.save(sliceStoragePath, "PNG")) {
+            failureMessage = QStringLiteral("第 %1 层图像保存失败：%2").arg(layerIndex + 1).arg(sliceStoragePath);
+            break;
+        }
+
         ImageSeriesRecord stagedSlice;
-        stagedSlice.patientId = m_context->hasSelectedPatient() ? m_context->selectedPatient().id : QString();
+        stagedSlice.patientId = patientId;
         stagedSlice.type = QStringLiteral("\u8d85\u58f0\u626b\u63cf\u5207\u7247");
-        stagedSlice.storagePath = QStringLiteral("staging/%1/channel_%2_slice_%3.png")
-            .arg(batchToken)
-            .arg(channelIndex + 1, 2, 10, QChar('0'))
-            .arg(layerIndex + 1, 3, 10, QChar('0'));
+        stagedSlice.storagePath = QDir::toNativeSeparators(sliceStoragePath);
         stagedSlice.acquisitionDate = now.date();
         stagedSlice.notes = QStringLiteral("staged capture | channel: %1 | origin: %2 | slice: %3/%4 | step: %5")
             .arg(channelLabel)
@@ -4376,11 +5129,17 @@ void PlanningPage::simulateImageAcquisition()
             .arg(layerIndex + 1)
             .arg(layerCount)
             .arg(formatStepSize(step));
+        stagedSlice.notes += QStringLiteral(" | motor: %1 | axis7_abs_steps: %2 | image: %3")
+            .arg(QStringLiteral("axis7 current->S1 +%1 steps").arg(stepMotorSteps))
+            .arg(slicePositionSteps)
+            .arg(capturedFromTreatmentScreen ? QStringLiteral("treatment-screen") : QStringLiteral("usb-camera"));
         stagedSlice.createdAt = now;
         m_stagedImageSeries.push_back(stagedSlice);
 
         StagedSliceState stagedState;
         stagedState.image = stagedSlice;
+        stagedState.capturedFrame = capturedFrame;
+        stagedState.acquisitionAxis7PositionSteps = slicePositionSteps;
         stagedState.label = QStringLiteral("[S%1] \u6682\u5b58\u5207\u7247-%2")
             .arg(layerIndex + 1, 2, 10, QChar('0'))
             .arg(layerIndex + 1, 2, 10, QChar('0'));
@@ -4391,6 +5150,9 @@ void PlanningPage::simulateImageAcquisition()
         stagedState.respiratoryTrackingEnabled = m_respiratoryTrackingCheck->isChecked();
         stagedState.deliveryMode = m_segmentedTreatmentRadio->isChecked() ? QStringLiteral("\u5206\u6bb5\u6267\u884c") : QStringLiteral("\u76f4\u63a5\u6cbb\u7597");
         m_stagedSlices.push_back(stagedState);
+    }
+    if (!failureMessage.isEmpty()) {
+        stopImageAcquisitionMotorQuietly();
     }
 
     {
@@ -4414,24 +5176,54 @@ void PlanningPage::simulateImageAcquisition()
         m_preview->setCaption(QStringLiteral(""));
     }
 
-    m_lastAcquisitionAt = now;
+    m_lastAcquisitionAt = QDateTime::currentDateTime();
     updateAssessmentMetricsPanel(0.0, 0.0);
     if (m_previewOverlayLabel != nullptr) {
         m_previewOverlayLabel->setVisible(m_stagedSlices.isEmpty() && !m_context->hasActivePlan());
     }
-    updatePathActionState();
+
+    const int capturedFrameCount = std::count_if(m_stagedSlices.cbegin(), m_stagedSlices.cend(), [](const StagedSliceState& slice) {
+        return !slice.capturedFrame.isNull();
+    });
+    const int savedFrameCount = std::count_if(m_stagedImageSeries.cbegin(), m_stagedImageSeries.cend(), [](const ImageSeriesRecord& image) {
+        return QFileInfo::exists(image.storagePath);
+    });
+    QStringList summaryLines {
+        QStringLiteral("当前通道：%1").arg(channelLabel),
+        QStringLiteral("起始坐标：%1").arg(channelCoordinate),
+        QStringLiteral("层数：%1").arg(layerCount),
+        QStringLiteral("步长：%1").arg(formatStepSize(step)),
+        QStringLiteral("运动换算：1 mm = %1 步，当前每层 %2 步").arg(kImageAcquisitionStepsPerMillimeter, 0, 'f', 0).arg(stepMotorSteps),
+        QStringLiteral("7号左右电机：S2=%1，S1=%2，本次采集起点=%3")
+            .arg(kImageAcquisitionS2PositionSteps)
+            .arg(kImageAcquisitionS1PositionSteps)
+            .arg(acquisitionStartPositionSteps),
+        QStringLiteral("7号左右电机：已按每层 %1 移动，并在停止后捕捉治疗屏画面").arg(formatStepSize(step)),
+        QStringLiteral("暂存图像：%1 张").arg(m_stagedImageSeries.size()),
+        QStringLiteral("实时相机帧：%1 张").arg(capturedFrameCount),
+        QStringLiteral("已保存图像：%1 张").arg(savedFrameCount),
+        QStringLiteral("自动存储目录：%1").arg(QDir::toNativeSeparators(automaticStorageDirectory)),
+        QStringLiteral("采集结束后已显示到右侧当前治疗影像，可直接进行圈画。")
+    };
+    if (!sawTreatmentCameraFrame || capturedFrameCount == 0) {
+        summaryLines.insert(6, QStringLiteral("治疗屏画面：未取到实时帧，本次采集没有生成切片。"));
+    }
+    if (!failureMessage.isEmpty()) {
+        for (QString& line : summaryLines) {
+            if (line.startsWith(QStringLiteral("7号左右电机：已按每层"))) {
+                line = QStringLiteral("7号左右电机：采集中止，未完成全部层位移动。");
+            } else if (line.startsWith(QStringLiteral("采集结束后已显示"))) {
+                line = QStringLiteral("采集中止，未更新当前治疗影像。");
+            }
+        }
+    }
+    if (!failureMessage.isEmpty()) {
+        summaryLines.prepend(failureMessage);
+    }
 
     updateAcquisitionSummary(
-        QStringLiteral("\u56fe\u50cf\u91c7\u96c6\u5df2\u5b8c\u6210"),
-        {
-            QStringLiteral("\u5f53\u524d\u901a\u9053\uff1a%1").arg(channelLabel),
-            QStringLiteral("\u8d77\u59cb\u5750\u6807\uff1a%1").arg(channelCoordinate),
-            QStringLiteral("\u5c42\u6570\uff1a%1").arg(layerCount),
-            QStringLiteral("\u6b65\u957f\uff1a%1").arg(formatStepSize(step)),
-            QStringLiteral("\u6682\u5b58\u56fe\u50cf\uff1a%1 \u5f20").arg(m_stagedImageSeries.size()),
-            QStringLiteral("\u5f53\u524d\u4ec5\u5b8c\u6210\u6682\u5b58\uff0c\u8fd8\u6ca1\u6709\u5199\u5165\u8be5\u60a3\u8005\u7684\u5f71\u50cf\u6570\u636e\u3002"),
-            QStringLiteral("\u70b9\u51fb\u53f3\u4e0b\u89d2\u201c\u672c\u5730\u5b58\u50a8\u201d\u540e\uff0c\u624d\u4f1a\u628a\u8fd9\u6279\u56fe\u50cf\u4fdd\u5b58\u5230\u5f71\u50cf\u6570\u636e\u4e2d\u3002")
-        });
+        failureMessage.isEmpty() ? QStringLiteral("图像采集已完成") : QStringLiteral("图像采集中止"),
+        summaryLines);
 
     if (m_auditService != nullptr) {
         m_auditService->appendEntry(
@@ -4439,6 +5231,7 @@ void PlanningPage::simulateImageAcquisition()
             QStringLiteral("planning"),
             QStringLiteral("\u5b8c\u6210\u56fe\u50cf\u91c7\u96c6\u6682\u5b58\uff1a%1\uff0c\u5c42\u6570 %2\uff0c\u6b65\u957f %3").arg(channelLabel).arg(layerCount).arg(step));
     }
+    finishAcquisition();
 }
 
 void PlanningPage::generateThreeDimensionalImage()

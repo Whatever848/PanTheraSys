@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QImage>
 #include <QObject>
 
 #include "core/domain/system_types.h"
@@ -32,6 +33,10 @@ public:
     void setCurrentRole(RoleType role);
 
     void requestTreatmentLayerVisualization(const QString& planId, int layerIndex, bool treatmentActive);
+    void updateTreatmentCameraFrame(const QImage& frame, const QString& cameraDescription = {});
+    bool hasLatestTreatmentCameraFrame() const;
+    QImage latestTreatmentCameraFrame() const;
+    QString latestTreatmentCameraDescription() const;
 
 signals:
     void selectedPatientChanged(const panthera::core::PatientRecord& patient);
@@ -40,15 +45,19 @@ signals:
     void activePlanCleared();
     void currentRoleChanged(panthera::core::RoleType role);
     void treatmentLayerVisualizationRequested(const QString& planId, int layerIndex, bool treatmentActive);
+    void treatmentCameraFrameUpdated(const QImage& frame, const QString& cameraDescription);
 
 private:
     EventBus* m_eventBus {nullptr};
     AuditService* m_auditService {nullptr};
     PatientRecord m_selectedPatient;
     TherapyPlan m_activePlan;
+    QImage m_latestTreatmentCameraFrame;
+    QString m_latestTreatmentCameraDescription;
     RoleType m_currentRole {RoleType::Physician};
     bool m_hasSelectedPatient {false};
     bool m_hasActivePlan {false};
+    bool m_hasLatestTreatmentCameraFrame {false};
 };
 
 }  // panthera::core 命名空间

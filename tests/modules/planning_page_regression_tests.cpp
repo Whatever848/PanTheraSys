@@ -557,6 +557,22 @@ void PlanningPageRegressionTests::personalizationProfilesRestoreCollapseStates()
     QVERIFY(collapseButtons.at(1)->isChecked());
     QVERIFY(!collapseButtons.at(2)->isChecked());
 
+    collapseButtons.at(0)->click();
+    QCoreApplication::processEvents();
+    QCOMPARE(planningPage.activePersonalizationProfileName(), profileName);
+
+    planningPage.applyPersonalizationProfile(QStringLiteral("\u5168\u5c55\u5f00"));
+    QCoreApplication::processEvents();
+    for (QToolButton* button : collapseButtons) {
+        QVERIFY(button->isChecked());
+    }
+
+    planningPage.applyPersonalizationProfile(profileName);
+    QCoreApplication::processEvents();
+    QVERIFY(!collapseButtons.at(0)->isChecked());
+    QVERIFY(collapseButtons.at(1)->isChecked());
+    QVERIFY(!collapseButtons.at(2)->isChecked());
+
     QVERIFY(planningPage.deletePersonalizationProfile(profileName));
     QVERIFY(!planningPage.personalizationProfileNames().contains(profileName));
     QVERIFY(planningPage.activePersonalizationProfileName().isEmpty());

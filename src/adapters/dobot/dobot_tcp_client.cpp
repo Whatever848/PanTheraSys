@@ -2,6 +2,7 @@
 
 #include <QElapsedTimer>
 #include <QLocale>
+#include <QNetworkProxy>
 
 #include <cmath>
 #include <limits>
@@ -12,6 +13,56 @@ namespace panthera::adapters::dobot {
 namespace {
 
 constexpr int kRobotPoseValueCount = 6;
+
+int matchingBraceIndex(const QString& text, int openIndex)
+{
+    if (openIndex < 0 || openIndex >= text.size() || text.at(openIndex) != QLatin1Char('{')) {
+        return -1;
+    }
+
+    int depth = 0;
+    for (int index = openIndex; index < text.size(); ++index) {
+        const QChar ch = text.at(index);
+        if (ch == QLatin1Char('{')) {
+            ++depth;
+        } else if (ch == QLatin1Char('}')) {
+            --depth;
+            if (depth == 0) {
+                return index;
+            }
+        }
+    }
+    return -1;
+}
+
+QStringList splitTopLevelArguments(const QString& text)
+{
+    QStringList parts;
+    int depth = 0;
+    int start = 0;
+    for (int index = 0; index < text.size(); ++index) {
+        const QChar ch = text.at(index);
+        if (ch == QLatin1Char('{')) {
+            ++depth;
+        } else if (ch == QLatin1Char('}')) {
+            depth = qMax(0, depth - 1);
+        } else if (ch == QLatin1Char(',') && depth == 0) {
+            parts.push_back(text.mid(start, index - start).trimmed());
+            start = index + 1;
+        }
+    }
+    parts.push_back(text.mid(start).trimmed());
+    return parts;
+}
+
+QString withoutOuterBraces(const QString& text)
+{
+    const QString trimmed = text.trimmed();
+    if (trimmed.size() >= 2 && trimmed.startsWith(QLatin1Char('{')) && trimmed.endsWith(QLatin1Char('}'))) {
+        return trimmed.mid(1, trimmed.size() - 2).trimmed();
+    }
+    return trimmed;
+}
 
 QString stateText(QAbstractSocket::SocketState state)
 {
@@ -37,6 +88,18 @@ QString stateText(QAbstractSocket::SocketState state)
 QString boolArgument(bool value)
 {
     return value ? QStringLiteral("1") : QStringLiteral("0");
+}
+
+QString errorIdHint(int errorId)
+{
+    if (errorId <= -30000 && errorId > -40000) {
+        const int argumentIndex = qAbs(errorId) - 30000;
+        if (argumentIndex > 0) {
+            return QStringLiteral("parameter %1 type mismatch; DOBOT V4.6.6 motion commands expect P as pose={...} or joint={...}.")
+                .arg(argumentIndex);
+        }
+    }
+    return {};
 }
 
 QStringList poseValues(const DobotPose& pose)
@@ -65,8 +128,14 @@ QStringList jointValues(const DobotJointAngles& joints)
 
 bool payloadToBool(const QString& payload, bool* value)
 {
+    QString normalized = withoutOuterBraces(payload).trimmed();
+    const QStringList parts = splitTopLevelArguments(normalized);
+    if (!parts.isEmpty()) {
+        normalized = parts.last().trimmed();
+    }
+
     bool ok = false;
-    const int parsed = payload.trimmed().toInt(&ok);
+    const int parsed = normalized.toInt(&ok);
     if (!ok) {
         return false;
     }
@@ -172,6 +241,11 @@ QString formatDobotOption(const QString& key, double value)
     return QStringLiteral("%1=%2").arg(key.trimmed(), formatDobotNumber(value));
 }
 
+QString formatDobotFixedOption(const QString& key, double value, int precision)
+{
+    return QStringLiteral("%1=%2").arg(key.trimmed(), QLocale::c().toString(value, 'f', precision));
+}
+
 DobotCommandResult parseDobotResponse(const QString& response)
 {
     DobotCommandResult result;
@@ -184,7 +258,11 @@ DobotCommandResult parseDobotResponse(const QString& response)
 
     const int firstComma = result.raw.indexOf(QLatin1Char(','));
     if (firstComma <= 0) {
-        result.protocolError = QStringLiteral("DOBOT response does not contain an ErrorID separator.");
+        if (result.raw.contains(QStringLiteral("Control Mode Is Not Tcp"), Qt::CaseInsensitive)) {
+            result.protocolError = QStringLiteral("DOBOT controller is not in TCP control mode. Switch the robot to TCP/IP secondary development control mode before enabling.");
+        } else {
+            result.protocolError = QStringLiteral("DOBOT response does not contain an ErrorID separator: %1").arg(result.raw);
+        }
         return result;
     }
 
@@ -196,7 +274,7 @@ DobotCommandResult parseDobotResponse(const QString& response)
     }
 
     const int payloadOpen = result.raw.indexOf(QLatin1Char('{'), firstComma + 1);
-    const int payloadClose = result.raw.indexOf(QLatin1Char('}'), payloadOpen + 1);
+    const int payloadClose = matchingBraceIndex(result.raw, payloadOpen);
     if (payloadOpen < 0 || payloadClose < payloadOpen) {
         result.protocolError = QStringLiteral("DOBOT response payload braces are missing.");
         return result;
@@ -265,11 +343,69 @@ bool parseDobotJointPayload(const QString& payload, DobotJointAngles* joints)
     return true;
 }
 
+bool parseDobotStartPosePayload(const QString& payload, DobotStartPose* startPose)
+{
+    const QStringList parts = splitTopLevelArguments(payload);
+    if (parts.size() < 2) {
+        return false;
+    }
+
+    bool pointTypeOk = false;
+    const int pointType = parts.at(0).toInt(&pointTypeOk);
+    if (!pointTypeOk) {
+        return false;
+    }
+
+    DobotJointAngles joints;
+    DobotPose pose;
+    bool hasJoints = false;
+    bool hasPose = false;
+    int userIndex = 0;
+    int toolIndex = 0;
+
+    if (pointType == 0) {
+        if (parts.size() < 5) {
+            return false;
+        }
+        bool userOk = false;
+        bool toolOk = false;
+        userIndex = parts.at(2).toInt(&userOk);
+        toolIndex = parts.at(3).toInt(&toolOk);
+        if (!userOk || !toolOk) {
+            return false;
+        }
+        hasJoints = parseDobotJointPayload(withoutOuterBraces(parts.at(1)), &joints);
+        hasPose = parseDobotPosePayload(withoutOuterBraces(parts.at(4)), &pose);
+    } else if (pointType == 1) {
+        hasJoints = parseDobotJointPayload(withoutOuterBraces(parts.at(1)), &joints);
+    } else if (pointType == 2) {
+        hasPose = parseDobotPosePayload(withoutOuterBraces(parts.at(1)), &pose);
+    } else {
+        return false;
+    }
+
+    if (!hasJoints && !hasPose) {
+        return false;
+    }
+
+    if (startPose != nullptr) {
+        startPose->pointType = pointType;
+        startPose->joints = joints;
+        startPose->userIndex = userIndex;
+        startPose->toolIndex = toolIndex;
+        startPose->pose = pose;
+        startPose->hasJoints = hasJoints;
+        startPose->hasPose = hasPose;
+    }
+    return true;
+}
+
 DobotTcpClient::DobotTcpClient(DobotConnectionSettings settings, QObject* parent)
     : QObject(parent)
     , m_settings(std::move(settings))
     , m_socket(this)
 {
+    m_socket.setProxy(QNetworkProxy::NoProxy);
 }
 
 DobotConnectionSettings DobotTcpClient::settings() const
@@ -299,6 +435,7 @@ bool DobotTcpClient::connectToController(QString* errorMessage)
         m_socket.abort();
     }
 
+    m_socket.setProxy(QNetworkProxy::NoProxy);
     m_socket.connectToHost(m_settings.host, m_settings.commandPort);
     if (!m_socket.waitForConnected(m_settings.timeoutMs)) {
         return setError(
@@ -335,6 +472,16 @@ QString DobotTcpClient::lastError() const
     return m_lastError;
 }
 
+QTcpSocket* DobotTcpClient::socket()
+{
+    return &m_socket;
+}
+
+const QTcpSocket* DobotTcpClient::socket() const
+{
+    return &m_socket;
+}
+
 DobotCommandResult DobotTcpClient::sendCommand(const QString& command, QString* errorMessage)
 {
     const QString trimmedCommand = command.trimmed();
@@ -352,8 +499,7 @@ DobotCommandResult DobotTcpClient::sendCommand(const QString& command, QString* 
         m_socket.readAll();
     }
 
-    QByteArray bytes = trimmedCommand.toUtf8();
-    bytes.append('\n');
+    const QByteArray bytes = trimmedCommand.toUtf8();
 
     const qint64 written = m_socket.write(bytes);
     if (written != bytes.size()) {
@@ -395,7 +541,19 @@ DobotCommandResult DobotTcpClient::sendCommand(const QString& command, QString* 
     if (!result.protocolValid()) {
         setError(result.protocolError, errorMessage);
     } else if (!result.ok()) {
-        setError(QStringLiteral("DOBOT command returned ErrorID %1.").arg(result.errorId), errorMessage);
+        QString message = QStringLiteral("DOBOT command returned ErrorID %1").arg(result.errorId);
+        const QString hint = errorIdHint(result.errorId);
+        if (!hint.isEmpty()) {
+            message.append(QStringLiteral(" (%1)").arg(hint));
+        }
+        if (!result.payload.isEmpty()) {
+            message.append(QStringLiteral(": %1").arg(result.payload));
+        }
+        if (!result.command.isEmpty()) {
+            message.append(QStringLiteral(" [%1]").arg(result.command));
+        }
+        message.append(QLatin1Char('.'));
+        setError(message, errorMessage);
     } else {
         m_lastError.clear();
     }
@@ -438,7 +596,12 @@ bool DobotTcpClient::setError(const QString& message, QString* errorMessage)
 
 DobotControllerClient::DobotControllerClient(DobotConnectionSettings settings, QObject* parent)
     : QObject(parent)
-    , m_client(std::move(settings), this)
+    , m_client(settings, this)
+    , m_motionClient([settings]() {
+        DobotConnectionSettings motionSettings = settings;
+        motionSettings.commandPort = settings.motionPort;
+        return motionSettings;
+    }(), this)
 {
 }
 
@@ -450,6 +613,9 @@ DobotConnectionSettings DobotControllerClient::settings() const
 void DobotControllerClient::setSettings(const DobotConnectionSettings& settings)
 {
     m_client.setSettings(settings);
+    DobotConnectionSettings motionSettings = settings;
+    motionSettings.commandPort = settings.motionPort;
+    m_motionClient.setSettings(motionSettings);
 }
 
 bool DobotControllerClient::connectToController(QString* errorMessage)
@@ -460,6 +626,7 @@ bool DobotControllerClient::connectToController(QString* errorMessage)
 void DobotControllerClient::disconnectFromController()
 {
     m_client.disconnectFromController();
+    m_motionClient.disconnectFromController();
 }
 
 bool DobotControllerClient::isConnected() const
@@ -469,7 +636,17 @@ bool DobotControllerClient::isConnected() const
 
 QString DobotControllerClient::lastError() const
 {
-    return m_client.lastError();
+    return !m_client.lastError().isEmpty() ? m_client.lastError() : m_motionClient.lastError();
+}
+
+QTcpSocket* DobotControllerClient::dashboardSocket()
+{
+    return m_client.socket();
+}
+
+const QTcpSocket* DobotControllerClient::dashboardSocket() const
+{
+    return m_client.socket();
 }
 
 DobotCommandResult DobotControllerClient::rawCommand(const QString& command, QString* errorMessage)
@@ -541,6 +718,236 @@ DobotCommandResult DobotControllerClient::emergencyStop(bool pressed, QString* e
     return send(QStringLiteral("EmergencyStop"), {boolArgument(pressed)}, errorMessage);
 }
 
+DobotCommandResult DobotControllerClient::runScript(const QString& projectName, QString* errorMessage)
+{
+    const QString normalizedProjectName = projectName.trimmed();
+    if (!validatePlainArgument(QStringLiteral("RunScript projectName"), normalizedProjectName, errorMessage)) {
+        return makeLocalError(QStringLiteral("RunScript projectName is invalid."), errorMessage);
+    }
+
+    return send(QStringLiteral("RunScript"), {normalizedProjectName}, errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::stopScript(QString* errorMessage)
+{
+    return send(QStringLiteral("StopScript"), {}, errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::pauseScript(QString* errorMessage)
+{
+    return send(QStringLiteral("PauseScript"), {}, errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::continueScript(QString* errorMessage)
+{
+    return send(QStringLiteral("ContinueScript"), {}, errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::getStartPose(
+    const QString& traceName,
+    DobotStartPose* startPose,
+    QString* errorMessage)
+{
+    return getStartPose(traceName, 1, startPose, errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::getStartPose(
+    const QString& traceName,
+    int pathType,
+    DobotStartPose* startPose,
+    QString* errorMessage)
+{
+    const QString normalizedTraceName = traceName.trimmed();
+    if (!validatePlainArgument(QStringLiteral("GetStartPose traceName"), normalizedTraceName, errorMessage)) {
+        return makeLocalError(QStringLiteral("GetStartPose traceName is invalid."), errorMessage);
+    }
+    if (pathType != 1 && pathType != 2) {
+        return makeLocalError(QStringLiteral("GetStartPose pathType must be 1 or 2."), errorMessage);
+    }
+
+    DobotCommandResult result = send(QStringLiteral("GetStartPose"), {normalizedTraceName, QString::number(pathType)}, errorMessage);
+    if (result.ok() && !parseDobotStartPosePayload(result.payload, startPose)) {
+        setError(QStringLiteral("GetStartPose returned an invalid start pose payload."), errorMessage);
+    }
+    return result;
+}
+
+DobotCommandResult DobotControllerClient::startPath(const QString& traceName, QString* errorMessage)
+{
+    return startPath(traceName, DobotStartPathOptions {}, errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::startPath(
+    const QString& traceName,
+    const DobotStartPathOptions& options,
+    QString* errorMessage)
+{
+    const QString normalizedTraceName = traceName.trimmed();
+    if (!validatePlainArgument(QStringLiteral("StartPath traceName"), normalizedTraceName, errorMessage)) {
+        return makeLocalError(QStringLiteral("StartPath traceName is invalid."), errorMessage);
+    }
+    if (options.isConst != 0 && options.isConst != 1) {
+        return makeLocalError(QStringLiteral("StartPath isConst must be 0 or 1."), errorMessage);
+    }
+    if (!std::isfinite(options.multi) || options.multi < 0.1 || options.multi > 2.0) {
+        return makeLocalError(QStringLiteral("StartPath multi must be in [0.1, 2]."), errorMessage);
+    }
+    if (options.sample < 8 || options.sample > 1000) {
+        return makeLocalError(QStringLiteral("StartPath sample must be in [8, 1000]."), errorMessage);
+    }
+    if (!std::isfinite(options.freq) || options.freq <= 0.0 || options.freq > 1.0) {
+        return makeLocalError(QStringLiteral("StartPath freq must be in (0, 1]."), errorMessage);
+    }
+    if ((options.userIndex >= 0 && !validateIndex(QStringLiteral("StartPath user"), options.userIndex, errorMessage))
+        || (options.toolIndex >= 0 && !validateIndex(QStringLiteral("StartPath tool"), options.toolIndex, errorMessage))) {
+        return makeLocalError(QStringLiteral("StartPath user/tool indexes are invalid."), errorMessage);
+    }
+
+    QStringList arguments {
+        normalizedTraceName,
+        formatDobotOption(QStringLiteral("isConst"), options.isConst),
+        formatDobotFixedOption(QStringLiteral("multi"), options.multi, 2),
+        formatDobotOption(QStringLiteral("sample"), options.sample),
+        formatDobotFixedOption(QStringLiteral("freq"), options.freq, 3)
+    };
+    if (options.userIndex >= 0) {
+        arguments.push_back(formatDobotOption(QStringLiteral("user"), options.userIndex));
+    }
+    if (options.toolIndex >= 0) {
+        arguments.push_back(formatDobotOption(QStringLiteral("tool"), options.toolIndex));
+    }
+
+    return sendMotion(QStringLiteral("StartPath"), arguments, errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::pathRecovery(QString* errorMessage)
+{
+    return send(QStringLiteral("PathRecovery"), {}, errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::pathRecoveryStop(QString* errorMessage)
+{
+    return send(QStringLiteral("PathRecoveryStop"), {}, errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::pathRecoveryStatus(QString* statusPayload, QString* errorMessage)
+{
+    DobotCommandResult result = send(QStringLiteral("PathRecoveryStatus"), {}, errorMessage);
+    if (result.ok() && statusPayload != nullptr) {
+        *statusPayload = result.payload;
+    }
+    return result;
+}
+
+DobotCommandResult DobotControllerClient::sync(QString* errorMessage)
+{
+    return sendMotion(QStringLiteral("Sync"), {}, errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::offsetPara(
+    double x,
+    double y,
+    double z,
+    double rx,
+    double ry,
+    double rz,
+    QString* errorMessage)
+{
+    return send(
+        QStringLiteral("OffsetPara"),
+        {
+            formatDobotNumber(x),
+            formatDobotNumber(y),
+            formatDobotNumber(z),
+            formatDobotNumber(rx),
+            formatDobotNumber(ry),
+            formatDobotNumber(rz),
+        },
+        errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::runTo(
+    const DobotStartPose& startPose,
+    int accelerationPercent,
+    int velocityPercent,
+    QString* errorMessage)
+{
+    if (startPose.hasPose) {
+        return runTo(
+            startPose.pose,
+            startPose.userIndex,
+            startPose.toolIndex,
+            1,
+            accelerationPercent,
+            velocityPercent,
+            errorMessage);
+    }
+
+    if (startPose.hasJoints) {
+        return runTo(startPose.joints, 0, accelerationPercent, velocityPercent, errorMessage);
+    }
+
+    return makeLocalError(QStringLiteral("Start pose does not contain a runnable pose or joint target."), errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::runTo(
+    const DobotPose& pose,
+    int userIndex,
+    int toolIndex,
+    int moveType,
+    int accelerationPercent,
+    int velocityPercent,
+    QString* errorMessage)
+{
+    if (!validateIndex(QStringLiteral("RunTo user"), userIndex, errorMessage)
+        || !validateIndex(QStringLiteral("RunTo tool"), toolIndex, errorMessage)
+        || !validatePercent(QStringLiteral("RunTo acceleration"), accelerationPercent, errorMessage)
+        || !validatePercent(QStringLiteral("RunTo velocity"), velocityPercent, errorMessage)) {
+        return makeLocalError(QStringLiteral("RunTo pose options are invalid."), errorMessage);
+    }
+    if (moveType != 0 && moveType != 1) {
+        return makeLocalError(QStringLiteral("RunTo moveType must be 0 or 1."), errorMessage);
+    }
+
+    return sendMotion(
+        QStringLiteral("RunTo"),
+        {
+            formatDobotPoseArgument(pose),
+            formatDobotOption(QStringLiteral("user"), userIndex),
+            formatDobotOption(QStringLiteral("tool"), toolIndex),
+            formatDobotOption(QStringLiteral("moveType"), moveType),
+            formatDobotOption(QStringLiteral("a"), accelerationPercent),
+            formatDobotOption(QStringLiteral("v"), velocityPercent),
+        },
+        errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::runTo(
+    const DobotJointAngles& joints,
+    int moveType,
+    int accelerationPercent,
+    int velocityPercent,
+    QString* errorMessage)
+{
+    if (!validatePercent(QStringLiteral("RunTo acceleration"), accelerationPercent, errorMessage)
+        || !validatePercent(QStringLiteral("RunTo velocity"), velocityPercent, errorMessage)) {
+        return makeLocalError(QStringLiteral("RunTo joint options are invalid."), errorMessage);
+    }
+    if (moveType != 0 && moveType != 1) {
+        return makeLocalError(QStringLiteral("RunTo moveType must be 0 or 1."), errorMessage);
+    }
+
+    return sendMotion(
+        QStringLiteral("RunTo"),
+        {
+            formatDobotJointArgument(joints),
+            formatDobotOption(QStringLiteral("moveType"), moveType),
+            formatDobotOption(QStringLiteral("a"), accelerationPercent),
+            formatDobotOption(QStringLiteral("v"), velocityPercent),
+        },
+        errorMessage);
+}
+
 DobotCommandResult DobotControllerClient::speedFactor(int ratio, QString* errorMessage)
 {
     if (!validatePercent(QStringLiteral("SpeedFactor"), ratio, errorMessage)) {
@@ -581,6 +988,22 @@ DobotCommandResult DobotControllerClient::accL(int ratio, QString* errorMessage)
     return send(QStringLiteral("AccL"), {QString::number(ratio)}, errorMessage);
 }
 
+DobotCommandResult DobotControllerClient::speedJ(int ratio, QString* errorMessage)
+{
+    if (!validatePercent(QStringLiteral("SpeedJ"), ratio, errorMessage)) {
+        return makeLocalError(QStringLiteral("SpeedJ ratio must be in [1, 100]."), errorMessage);
+    }
+    return send(QStringLiteral("SpeedJ"), {QString::number(ratio)}, errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::speedL(int ratio, QString* errorMessage)
+{
+    if (!validatePercent(QStringLiteral("SpeedL"), ratio, errorMessage)) {
+        return makeLocalError(QStringLiteral("SpeedL ratio must be in [1, 100]."), errorMessage);
+    }
+    return send(QStringLiteral("SpeedL"), {QString::number(ratio)}, errorMessage);
+}
+
 DobotCommandResult DobotControllerClient::velJ(int ratio, QString* errorMessage)
 {
     if (!validatePercent(QStringLiteral("VelJ"), ratio, errorMessage)) {
@@ -602,6 +1025,15 @@ DobotCommandResult DobotControllerClient::robotMode(int* mode, QString* errorMes
     DobotCommandResult result = send(QStringLiteral("RobotMode"), {}, errorMessage);
     if (result.ok() && !payloadToInt(result.payload, mode)) {
         setError(QStringLiteral("RobotMode returned a non-integer payload."), errorMessage);
+    }
+    return result;
+}
+
+DobotCommandResult DobotControllerClient::getErrorId(QString* alarmPayload, QString* errorMessage)
+{
+    DobotCommandResult result = send(QStringLiteral("GetErrorID"), {}, errorMessage);
+    if (result.ok() && alarmPayload != nullptr) {
+        *alarmPayload = result.payload;
     }
     return result;
 }
@@ -719,7 +1151,7 @@ DobotCommandResult DobotControllerClient::movJ(
     const DobotMotionOptions& options,
     QString* errorMessage)
 {
-    return send(QStringLiteral("MovJ"), motionArguments(formatDobotPoseArgument(pose), options, false), errorMessage);
+    return sendMotion(QStringLiteral("MovJ"), motionArguments(formatDobotPoseArgument(pose), options), errorMessage);
 }
 
 DobotCommandResult DobotControllerClient::movJ(
@@ -727,7 +1159,7 @@ DobotCommandResult DobotControllerClient::movJ(
     const DobotMotionOptions& options,
     QString* errorMessage)
 {
-    return send(QStringLiteral("MovJ"), motionArguments(formatDobotJointArgument(joints), options, false), errorMessage);
+    return sendMotion(QStringLiteral("MovJ"), motionArguments(formatDobotJointArgument(joints), options), errorMessage);
 }
 
 DobotCommandResult DobotControllerClient::movL(
@@ -735,7 +1167,7 @@ DobotCommandResult DobotControllerClient::movL(
     const DobotMotionOptions& options,
     QString* errorMessage)
 {
-    return send(QStringLiteral("MovL"), motionArguments(formatDobotPoseArgument(pose), options, true), errorMessage);
+    return sendMotion(QStringLiteral("MovL"), motionArguments(formatDobotPoseArgument(pose), options), errorMessage);
 }
 
 DobotCommandResult DobotControllerClient::movL(
@@ -743,7 +1175,7 @@ DobotCommandResult DobotControllerClient::movL(
     const DobotMotionOptions& options,
     QString* errorMessage)
 {
-    return send(QStringLiteral("MovL"), motionArguments(formatDobotJointArgument(joints), options, true), errorMessage);
+    return sendMotion(QStringLiteral("MovL"), motionArguments(formatDobotJointArgument(joints), options), errorMessage);
 }
 
 DobotCommandResult DobotControllerClient::send(
@@ -752,6 +1184,18 @@ DobotCommandResult DobotControllerClient::send(
     QString* errorMessage)
 {
     return m_client.sendCommand(commandName, arguments, errorMessage);
+}
+
+DobotCommandResult DobotControllerClient::sendMotion(
+    const QString& commandName,
+    const QStringList& arguments,
+    QString* errorMessage)
+{
+    const DobotConnectionSettings settings = m_client.settings();
+    if (settings.motionPort == settings.commandPort) {
+        return m_client.sendCommand(commandName, arguments, errorMessage);
+    }
+    return m_motionClient.sendCommand(commandName, arguments, errorMessage);
 }
 
 DobotCommandResult DobotControllerClient::sendAndReadBool(
@@ -766,7 +1210,10 @@ DobotCommandResult DobotControllerClient::sendAndReadBool(
 
     DobotCommandResult result = send(commandName, {QString::number(index)}, errorMessage);
     if (result.ok() && !payloadToBool(result.payload, value)) {
-        setError(QStringLiteral("%1 returned a non-boolean payload.").arg(commandName), errorMessage);
+        const QString message = QStringLiteral("%1 returned a non-boolean payload: %2")
+                                    .arg(commandName, result.payload);
+        setError(message, errorMessage);
+        result.protocolError = message;
     }
     return result;
 }
@@ -781,26 +1228,28 @@ DobotCommandResult DobotControllerClient::makeLocalError(const QString& message,
 }
 
 QStringList DobotControllerClient::motionArguments(
-    const QString& target,
-    const DobotMotionOptions& options,
-    bool linearMotion) const
+    const QString& targetArgument,
+    const DobotMotionOptions& options) const
 {
-    QStringList args {target};
+    QStringList args {targetArgument};
     if (options.userIndex >= 0) {
         args.push_back(formatDobotOption(QStringLiteral("user"), options.userIndex));
     }
     if (options.toolIndex >= 0) {
         args.push_back(formatDobotOption(QStringLiteral("tool"), options.toolIndex));
     }
+
     if (options.accelerationPercent > 0) {
         args.push_back(formatDobotOption(QStringLiteral("a"), options.accelerationPercent));
     }
-    if (linearMotion && options.speedMmPerSecond > 0.0) {
-        args.push_back(formatDobotOption(QStringLiteral("speed"), options.speedMmPerSecond));
-    } else if (options.velocityPercent > 0) {
+    if (options.velocityPercent > 0) {
         args.push_back(formatDobotOption(QStringLiteral("v"), options.velocityPercent));
     }
-    if (linearMotion && options.radiusMm >= 0.0) {
+
+    if (options.speedMmPerSecond > 0.0) {
+        args.push_back(formatDobotOption(QStringLiteral("speed"), options.speedMmPerSecond));
+    }
+    if (options.radiusMm >= 0.0) {
         args.push_back(formatDobotOption(QStringLiteral("r"), options.radiusMm));
     } else if (options.smoothPercent >= 0) {
         args.push_back(formatDobotOption(QStringLiteral("cp"), options.smoothPercent));
@@ -821,6 +1270,25 @@ bool DobotControllerClient::validateIndex(const QString& commandName, int value,
     if (value < 0) {
         return setError(QStringLiteral("%1 index must be non-negative.").arg(commandName), errorMessage);
     }
+    return true;
+}
+
+bool DobotControllerClient::validatePlainArgument(
+    const QString& commandName,
+    const QString& value,
+    QString* errorMessage) const
+{
+    if (value.trimmed().isEmpty()) {
+        return setError(QStringLiteral("%1 must not be empty.").arg(commandName), errorMessage);
+    }
+
+    if (value.contains(QLatin1Char(',')) || value.contains(QLatin1Char('(')) || value.contains(QLatin1Char(')'))
+        || value.contains(QLatin1Char('\r')) || value.contains(QLatin1Char('\n'))) {
+        return setError(
+            QStringLiteral("%1 must not contain command separators or parentheses.").arg(commandName),
+            errorMessage);
+    }
+
     return true;
 }
 

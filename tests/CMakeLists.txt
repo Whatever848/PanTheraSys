@@ -62,6 +62,63 @@ set_tests_properties(
 )
 
 add_executable(
+    panthera_water_pump_modbus_client_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/water_pump_modbus_client_tests.cpp
+)
+
+target_link_libraries(
+    panthera_water_pump_modbus_client_tests
+    PRIVATE
+        panthera_adapters
+        Qt6::Test
+)
+
+add_test(NAME panthera_water_pump_modbus_client_tests COMMAND panthera_water_pump_modbus_client_tests)
+set_tests_properties(
+    panthera_water_pump_modbus_client_tests
+    PROPERTIES
+        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:Qt6::Core>;$ENV{PATH}"
+)
+
+add_executable(
+    panthera_lu926_temperature_modbus_client_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/lu926_temperature_modbus_client_tests.cpp
+)
+
+target_link_libraries(
+    panthera_lu926_temperature_modbus_client_tests
+    PRIVATE
+        panthera_adapters
+        Qt6::Test
+)
+
+add_test(NAME panthera_lu926_temperature_modbus_client_tests COMMAND panthera_lu926_temperature_modbus_client_tests)
+set_tests_properties(
+    panthera_lu926_temperature_modbus_client_tests
+    PROPERTIES
+        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:Qt6::Core>;$ENV{PATH}"
+)
+
+add_executable(
+    panthera_liquid_level_modbus_client_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/liquid_level_modbus_client_tests.cpp
+)
+
+target_link_libraries(
+    panthera_liquid_level_modbus_client_tests
+    PRIVATE
+        panthera_adapters
+        Qt6::Test
+)
+
+add_test(NAME panthera_liquid_level_modbus_client_tests COMMAND panthera_liquid_level_modbus_client_tests)
+set_tests_properties(
+    panthera_liquid_level_modbus_client_tests
+    PROPERTIES
+        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:Qt6::Core>;$ENV{PATH}"
+)
+
+add_executable(
     panthera_simulation_device_facade_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/adapters/simulation_device_facade_tests.cpp
 )

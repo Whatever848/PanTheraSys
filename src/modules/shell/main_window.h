@@ -59,6 +59,7 @@ private:
     panthera::adapters::SimulationDeviceFacade* m_simulationDevice {nullptr};
 
     QStackedWidget* m_stack {nullptr};
+    DeviceMonitorPage* m_dashboardPage {nullptr};
     PlanningPage* m_planningPage {nullptr};
     TreatmentPage* m_treatmentPage {nullptr};
     QToolButton* m_dashboardButton {nullptr};

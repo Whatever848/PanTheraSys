@@ -6,14 +6,15 @@ namespace panthera::adapters::anthone {
 
 struct Lu926TemperatureProtocol final {
     static constexpr int kChannelCount = 6;
-    static constexpr int kDefaultAddress = 1;
+    static constexpr int kDefaultAddress = 4;
     static constexpr int kDefaultBaudRate = 9600;
     static constexpr double kSamplePeriodSeconds = 0.5;
 
     static constexpr int kLocalAddressRegister = 0x0010;
     static constexpr int kBaudRateRegister = 0x0011;
     static constexpr int kDataModeRegister = 0x0012;
-    static constexpr int kSetpointBaseRegister = 0x0100;
+    static constexpr int kSetpointBaseRegister = 0x0000;
+    static constexpr int kCurrentSetpointBaseRegister = 0x0100;
     static constexpr int kOutputPercentBaseRegister = 0x0108;
     static constexpr int kProcessValueBaseRegister = 0x0110;
     static constexpr int kAlarmStateBaseRegister = 0x0116;

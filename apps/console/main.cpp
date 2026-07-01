@@ -3,14 +3,17 @@
 #include <QApplication>
 #include <QByteArray>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
+#include <QList>
 #include <QMainWindow>
 #include <QMenu>
+#include <QMessageBox>
 #include <QResource>
 #include <QScreen>
 #include <QSettings>
@@ -20,6 +23,8 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QWidget>
+#include <QWidgetAction>
 #include <QWindow>
 
 #include <algorithm>
@@ -37,6 +42,7 @@
 #include "modules/data/data_management_page.h"
 #include "modules/dashboard/device_monitor_page.h"
 #include "modules/planning/planning_page.h"
+#include "modules/shared/usb_camera_frame_source.h"
 #include "modules/shell/main_window.h"
 #include "modules/treatment/treatment_page.h"
 
@@ -418,11 +424,15 @@ public:
             m_planningHabitMenu = new QMenu(m_planningHabitButton);
             m_planningHabitMenu->setObjectName(QStringLiteral("navDropMenu"));
             m_planningHabitMenu->setMinimumWidth(190);
+            m_planningHabitActionGroup = new QActionGroup(m_planningHabitMenu);
+            m_planningHabitActionGroup->setExclusive(true);
             m_collapseAllAction = m_planningHabitMenu->addAction(QStringLiteral("\u5168\u6298\u53e0"));
             m_collapseAllAction->setCheckable(true);
+            m_planningHabitActionGroup->addAction(m_collapseAllAction);
             m_expandAllAction = m_planningHabitMenu->addAction(QStringLiteral("\u5168\u5c55\u5f00"));
             m_expandAllAction->setCheckable(true);
-            m_planningHabitMenu->addSeparator();
+            m_planningHabitActionGroup->addAction(m_expandAllAction);
+            m_saveHabitSeparator = m_planningHabitMenu->addSeparator();
             m_saveHabitAction = m_planningHabitMenu->addAction(QStringLiteral("\u4fdd\u5b58\u533b\u751f\u4e60\u60ef"));
             m_planningHabitButton->setMenu(m_planningHabitMenu);
             headerLayout->addWidget(m_planningHabitButton, 0, Qt::AlignVCenter);
@@ -620,6 +630,85 @@ private:
         refreshPlanningHabitMenu();
     }
 
+    void clearSavedPlanningHabitActions()
+    {
+        for (QAction* action : m_savedHabitActions) {
+            if (action == nullptr) {
+                continue;
+            }
+            if (m_planningHabitActionGroup != nullptr) {
+                m_planningHabitActionGroup->removeAction(action);
+            }
+            if (m_planningHabitMenu != nullptr) {
+                m_planningHabitMenu->removeAction(action);
+            }
+            delete action;
+        }
+        m_savedHabitActions.clear();
+    }
+
+    void rebuildSavedPlanningHabitActions(const QString& activeProfileName)
+    {
+        clearSavedPlanningHabitActions();
+        if (m_planningPage == nullptr || m_planningHabitMenu == nullptr || m_saveHabitSeparator == nullptr) {
+            return;
+        }
+
+        const QStringList profileNames = m_planningPage->personalizationProfileNames();
+        for (const QString& profileName : profileNames) {
+            auto* action = new QWidgetAction(m_planningHabitMenu);
+            auto* row = new QWidget(m_planningHabitMenu);
+            row->setMinimumWidth(184);
+            auto* rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(6, 2, 6, 2);
+            rowLayout->setSpacing(4);
+
+            auto* profileButton = new QToolButton(row);
+            profileButton->setText(profileName);
+            profileButton->setToolTip(profileName);
+            profileButton->setAutoRaise(true);
+            profileButton->setCheckable(true);
+            profileButton->setChecked(profileName == activeProfileName);
+            profileButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+            profileButton->setStyleSheet(QStringLiteral(
+                "QToolButton { border: none; background: transparent; color: #e9f6ff; padding: 6px 8px; text-align: left; }"
+                "QToolButton:hover { background: rgba(69, 137, 203, 0.18); }"
+                "QToolButton:checked { color: #24d7ff; font-weight: 600; }"));
+            rowLayout->addWidget(profileButton, 1);
+
+            auto* deleteButton = new QToolButton(row);
+            deleteButton->setText(QStringLiteral("×"));
+            deleteButton->setToolTip(QStringLiteral("删除该医生习惯"));
+            deleteButton->setAutoRaise(true);
+            deleteButton->setFixedWidth(24);
+            deleteButton->setStyleSheet(QStringLiteral(
+                "QToolButton { border: none; background: transparent; color: rgba(215, 230, 242, 110); padding: 0; font-size: 16px; }"
+                "QToolButton:hover { color: #ff7a7a; background: rgba(255, 96, 96, 0.12); }"));
+            rowLayout->addWidget(deleteButton, 0);
+
+            action->setDefaultWidget(row);
+            action->setData(profileName);
+            connect(profileButton, &QToolButton::clicked, this, [this, profileName]() {
+                if (m_planningHabitMenu != nullptr) {
+                    m_planningHabitMenu->hide();
+                }
+                QTimer::singleShot(0, this, [this, profileName]() {
+                    applyPlanningPersonalizationProfile(profileName);
+                });
+            });
+            connect(deleteButton, &QToolButton::clicked, this, [this, profileName]() {
+                if (m_planningHabitMenu != nullptr) {
+                    m_planningHabitMenu->hide();
+                }
+                QTimer::singleShot(0, this, [this, profileName]() {
+                    deletePlanningPersonalizationProfile(profileName);
+                });
+            });
+            m_planningHabitMenu->insertAction(m_saveHabitSeparator, action);
+            m_savedHabitActions.push_back(action);
+        }
+    }
+
     void refreshPlanningHabitMenu()
     {
         if (m_planningPage == nullptr) {
@@ -627,11 +716,18 @@ private:
         }
 
         const QString activeProfileName = m_planningPage->activePersonalizationProfileName();
+        rebuildSavedPlanningHabitActions(activeProfileName);
+        if (m_planningHabitActionGroup != nullptr) {
+            m_planningHabitActionGroup->setExclusive(false);
+        }
         if (m_expandAllAction != nullptr) {
             m_expandAllAction->setChecked(activeProfileName == QStringLiteral("\u5168\u5c55\u5f00"));
         }
         if (m_collapseAllAction != nullptr) {
             m_collapseAllAction->setChecked(activeProfileName == QStringLiteral("\u5168\u6298\u53e0"));
+        }
+        if (m_planningHabitActionGroup != nullptr) {
+            m_planningHabitActionGroup->setExclusive(true);
         }
     }
 
@@ -649,7 +745,35 @@ private:
             return;
         }
 
-        m_planningPage->saveCurrentPersonalizationProfile(profileName);
+        if (m_planningPage->saveCurrentPersonalizationProfile(profileName)) {
+            refreshPlanningHabitMenu();
+        }
+    }
+
+    void deletePlanningPersonalizationProfile(const QString& profileName)
+    {
+        if (m_planningPage == nullptr) {
+            return;
+        }
+
+        const QMessageBox::StandardButton choice = QMessageBox::question(
+            this,
+            QStringLiteral("删除医生习惯"),
+            QStringLiteral("确定删除医生习惯“%1”吗？").arg(profileName),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (choice != QMessageBox::Yes) {
+            return;
+        }
+
+        if (!m_planningPage->deletePersonalizationProfile(profileName)) {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("删除医生习惯"),
+                QStringLiteral("未能删除医生习惯“%1”。").arg(profileName));
+            return;
+        }
+        refreshPlanningHabitMenu();
     }
 
     void updateStatusSummary()
@@ -676,9 +800,12 @@ private:
     QAction* m_treatmentDataAction {nullptr};
     QToolButton* m_planningHabitButton {nullptr};
     QMenu* m_planningHabitMenu {nullptr};
+    QActionGroup* m_planningHabitActionGroup {nullptr};
     QAction* m_expandAllAction {nullptr};
     QAction* m_collapseAllAction {nullptr};
+    QAction* m_saveHabitSeparator {nullptr};
     QAction* m_saveHabitAction {nullptr};
+    QList<QAction*> m_savedHabitActions;
     QToolButton* m_exitButton {nullptr};
 };
 
@@ -808,6 +935,58 @@ int main(int argc, char* argv[])
     }
 
     simulationDevice.start();
+
+    panthera::modules::UsbCameraFrameSource treatmentCameraFrameSource(&application);
+    QElapsedTimer treatmentCameraStartTimer;
+    QElapsedTimer latestTreatmentCameraFrameTimer;
+    bool hasTreatmentCameraFrame = false;
+    QObject::connect(
+        &treatmentCameraFrameSource,
+        &panthera::modules::UsbCameraFrameSource::frameAvailable,
+        &context,
+        [&context, &treatmentCameraFrameSource, &latestTreatmentCameraFrameTimer, &hasTreatmentCameraFrame](const QImage& image) {
+            hasTreatmentCameraFrame = true;
+            latestTreatmentCameraFrameTimer.restart();
+            context.updateTreatmentCameraFrame(image, treatmentCameraFrameSource.activeCameraDescription());
+        });
+    QObject::connect(
+        &treatmentCameraFrameSource,
+        &panthera::modules::UsbCameraFrameSource::statusChanged,
+        &auditService,
+        [&auditService](const QString& status) {
+            auditService.appendEntry(QStringLiteral("system"), QStringLiteral("camera"), status);
+        });
+    QObject::connect(
+        &treatmentCameraFrameSource,
+        &panthera::modules::UsbCameraFrameSource::errorOccurred,
+        &auditService,
+        [&auditService](const QString& error) {
+            auditService.appendEntry(QStringLiteral("system"), QStringLiteral("camera"), error);
+        });
+    const auto startTreatmentCamera = [&treatmentCameraFrameSource, &treatmentCameraStartTimer, &hasTreatmentCameraFrame]() {
+        hasTreatmentCameraFrame = false;
+        treatmentCameraStartTimer.restart();
+        treatmentCameraFrameSource.start(QStringLiteral("USB3 PLUS Video"));
+    };
+    QTimer treatmentCameraWatchdog(&application);
+    treatmentCameraWatchdog.setInterval(5000);
+    QObject::connect(&treatmentCameraWatchdog, &QTimer::timeout, &application, [&]() {
+        const bool activeWithoutFirstFrame =
+            treatmentCameraFrameSource.isActive()
+            && !hasTreatmentCameraFrame
+            && treatmentCameraStartTimer.isValid()
+            && treatmentCameraStartTimer.elapsed() > 8000;
+        const bool activeWithStaleFrame =
+            treatmentCameraFrameSource.isActive()
+            && hasTreatmentCameraFrame
+            && latestTreatmentCameraFrameTimer.isValid()
+            && latestTreatmentCameraFrameTimer.elapsed() > 8000;
+        if (!treatmentCameraFrameSource.isActive() || activeWithoutFirstFrame || activeWithStaleFrame) {
+            startTreatmentCamera();
+        }
+    });
+    treatmentCameraWatchdog.start();
+    QTimer::singleShot(0, &application, startTreatmentCamera);
 
     QVector<QMainWindow*> topLevelWindows;
     const DisplaySettings displaySettings = loadDisplaySettings(defaultsIniPath);

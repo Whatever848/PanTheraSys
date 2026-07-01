@@ -7,6 +7,7 @@
 #include <QDoubleSpinBox>
 #include <QFrame>
 #include <QHash>
+#include <QImage>
 #include <QLabel>
 #include <QListWidget>
 #include <QPlainTextEdit>
@@ -25,6 +26,7 @@
 #include <QVector>
 #include <QWidget>
 
+#include "adapters/uim/uim_motor_gateway.h"
 #include "adapters/sim/simulation_device_facade.h"
 #include "core/application/application_context.h"
 #include "core/repositories/clinical_data_repository.h"
@@ -97,6 +99,8 @@ private slots:
 private:
     struct StagedSliceState {
         panthera::core::ImageSeriesRecord image;
+        QPixmap capturedFrame;
+        int acquisitionAxis7PositionSteps {-1};
         QVector<AnnotationStroke> annotations;
         QVector<panthera::core::TherapyPoint> targets;
         QString label;
@@ -164,6 +168,23 @@ private:
     void clearHistoricalComparison(const QString& overlayText);
     void updateHistoryMaximizeButtonState();
     void updateSliceNavigationButtons();
+    bool prepareImageAcquisitionMotor(QString* errorMessage);
+    bool armImageAcquisitionMotor(QString* errorMessage);
+    bool readImageAcquisitionAxisSnapshot(diji::adapters::uim::UimMotorSnapshot* snapshot, QString* errorMessage);
+    bool readImageAcquisitionAxisPosition(int* positionSteps, QString* errorMessage);
+    bool validateImageAcquisitionTravel(int startPositionSteps, int stepSteps, int layerCount, QString* errorMessage) const;
+    bool validateImageAcquisitionTravelFromSnapshot(
+        const diji::adapters::uim::UimMotorSnapshot& snapshot,
+        int stepSteps,
+        int layerCount,
+        int* startPositionSteps,
+        QString* errorMessage) const;
+    bool moveImageAcquisitionAxisMm(double millimeters, QString* errorMessage);
+    bool waitForImageAcquisitionAxisStop(int expectedPositionSteps, int* stoppedPositionSteps, QString* errorMessage);
+    void stopImageAcquisitionMotorQuietly();
+    void waitForImageAcquisitionSettle(int milliseconds);
+    bool waitForLatestAcquisitionFrame(int timeoutMs) const;
+    QPixmap latestAcquisitionFramePixmap() const;
     void persistCurrentSliceAnnotations();
     void loadStagedSlice(int row);
     QPixmap renderCurrentSlicePixmap(int row, const QSize& size) const;
@@ -200,6 +221,10 @@ private:
     panthera::core::IClinicalDataRepository* m_clinicalDataRepository {nullptr};
     panthera::core::ClinicalDataService m_clinicalDataService;
     panthera::adapters::SimulationDeviceFacade* m_simulationDevice {nullptr};
+    diji::adapters::uim::UimMotorGateway m_imageAcquisitionMotorGateway;
+    QVector<diji::adapters::uim::UimDeviceInfo> m_imageAcquisitionMotorDevices;
+    QVector<diji::adapters::uim::UimNodeInfo> m_imageAcquisitionMotorNodes;
+    bool m_imageAcquisitionRunning {false};
 
     QComboBox* m_patientCombo {nullptr};
     QListWidget* m_pathList {nullptr};

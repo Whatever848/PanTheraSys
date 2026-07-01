@@ -163,6 +163,9 @@ struct TherapySegment {
     QString label;
     double plannedDurationSeconds {0.0};
     QVector<TherapyPoint> points;
+    int sourceSliceIndex {-1};
+    int axis7PositionSteps {-1};
+    QString sourceImagePath;
 };
 
 struct TherapyPlan {

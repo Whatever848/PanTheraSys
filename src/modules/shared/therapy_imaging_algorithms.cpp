@@ -1,4 +1,5 @@
 #include "modules/shared/therapy_imaging_algorithms.h"
+#include "modules/shared/ultrasound_geometry.h"
 
 #include <algorithm>
 #include <cmath>
@@ -20,19 +21,10 @@ using namespace panthera::core;
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr double kLogicalCanvasSpanMm = 60.0;
-constexpr double kLogicalCanvasHalfSpanMm = kLogicalCanvasSpanMm * 0.5;
 constexpr double kMinimumAnnotationPointDistanceNormalized = 0.0015;
 constexpr double kSmoothingPreviousWeight = 0.18;
 constexpr double kSmoothingCurrentWeight = 0.64;
 constexpr double kSmoothingNextWeight = 0.18;
-
-QPointF normalizedPointToMillimeters(const QPointF& normalizedPoint)
-{
-    return QPointF(
-        (normalizedPoint.x() * kLogicalCanvasSpanMm) - kLogicalCanvasHalfSpanMm,
-        (normalizedPoint.y() * kLogicalCanvasSpanMm) - kLogicalCanvasHalfSpanMm);
-}
 
 bool pointsNearlyEqual(const QPointF& left, const QPointF& right, double epsilon = 1e-4)
 {
@@ -100,7 +92,7 @@ QVector<QPointF> annotationPointsInMillimeters(const AnnotationStroke& annotatio
     QVector<QPointF> points;
     points.reserve(annotation.normalizedPoints.size());
     for (const QPointF& normalizedPoint : annotation.normalizedPoints) {
-        points.push_back(normalizedPointToMillimeters(normalizedPoint));
+        points.push_back(normalizedUltrasoundPointToMillimeters(normalizedPoint));
     }
     return points;
 }
@@ -995,15 +987,15 @@ QVector<QPointF> buildFallbackLesionContourMm(int sliceIndex, int totalSliceCoun
         ? 0.5
         : std::clamp(static_cast<double>(sliceIndex) / static_cast<double>(totalSliceCount - 1), 0.0, 1.0);
     const double lateralShift = (ratio - 0.5) * 9.0;
-    const double depthShift = std::sin(ratio * kPi) * 4.0 - 1.5;
+    const double depthShift = std::sin(ratio * kPi) * 4.0;
 
     QVector<QPointF> contour;
-    contour << QPointF(-18.0 + lateralShift, -8.0 + depthShift)
-            << QPointF(-8.0 + lateralShift, -16.0 + depthShift * 0.9)
-            << QPointF(12.0 + lateralShift, -10.0 + depthShift * 0.75)
-            << QPointF(20.0 + lateralShift, 6.0 + depthShift)
-            << QPointF(6.0 + lateralShift, 18.0 + depthShift * 0.85)
-            << QPointF(-14.0 + lateralShift, 12.0 + depthShift);
+    contour << QPointF(-18.0 + lateralShift, 18.0 + depthShift)
+            << QPointF(-8.0 + lateralShift, 11.0 + depthShift * 0.9)
+            << QPointF(12.0 + lateralShift, 16.0 + depthShift * 0.75)
+            << QPointF(20.0 + lateralShift, 30.0 + depthShift)
+            << QPointF(6.0 + lateralShift, 41.0 + depthShift * 0.85)
+            << QPointF(-14.0 + lateralShift, 35.0 + depthShift);
     return contour;
 }
 

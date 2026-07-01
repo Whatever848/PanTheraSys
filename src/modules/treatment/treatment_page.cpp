@@ -1,22 +1,40 @@
 #include "modules/treatment/treatment_page.h"
 
+#include "adapters/anthone/lu926_temperature_protocol.h"
+#include "modules/shared/system_sound_guard.h"
 #include "modules/shared/therapy_imaging_algorithms.h"
+#include "modules/shared/ultrasound_geometry.h"
 
 #include <algorithm>
 #include <cmath>
 
+#include <QAbstractSpinBox>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QFileInfo>
 #include <QFont>
+#include <QFormLayout>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPen>
+#include <QPixmap>
 #include <QPolygonF>
+#include <QRectF>
 #include <QScrollArea>
+#include <QSerialPortInfo>
+#include <QSettings>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QStyle>
+#include <QThread>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -25,6 +43,166 @@ namespace panthera::modules {
 using namespace panthera::core;
 
 namespace {
+
+constexpr int kTreatmentSwingAxisNodeId = 6;
+constexpr int kTreatmentLayerAxisNodeId = 7;
+constexpr int kTreatmentVerticalAxisNodeId = 8;
+constexpr int kTreatmentLinearStepsPerTurn = 3200;
+constexpr double kTreatmentLinearMillimetersPerTurn = 2.0;
+constexpr double kTreatmentLinearStepsPerMillimeter =
+    kTreatmentLinearStepsPerTurn / kTreatmentLinearMillimetersPerTurn;
+constexpr int kTreatmentMotorSpeed = 2000;
+constexpr int kTreatmentLayerAxisMinimumSteps = 0;
+constexpr int kTreatmentLayerAxisMaximumSteps = 76119;
+constexpr int kTreatmentVerticalAxisMinimumSteps = 0;
+constexpr int kTreatmentVerticalAxisMaximumSteps = 145743;
+constexpr int kTreatmentSwingStepsPerDegree = 1778;
+constexpr double kTreatmentSwingMaximumDegrees = 10.0;
+constexpr double kTreatmentVerticalAxisMaximumMillimeters =
+    kTreatmentVerticalAxisMaximumSteps / kTreatmentLinearStepsPerMillimeter;
+constexpr int kTreatmentSwingMaximumSteps =
+    static_cast<int>(kTreatmentSwingStepsPerDegree * kTreatmentSwingMaximumDegrees);
+constexpr int kTreatmentMotorPositionToleranceSteps = 20;
+constexpr int kTreatmentMotorBoundaryToleranceSteps = 160;
+constexpr int kTreatmentMotorPollMs = 160;
+constexpr int kTreatmentMotorMoveTimeoutMs = 120000;
+constexpr int kTreatmentMotorMoveStartTimeoutMs = 3000;
+constexpr int kTank1UpperLimitNodeId = 6;
+constexpr int kTank1UpperLimitSensorIndex = 2;
+constexpr bool kTank1UpperLimitHighActive = true;
+constexpr int kTank1UpperLimitDebounceMs = 1000;
+constexpr int kFluidControlPollMs = 300;
+constexpr int kTemperatureRefreshMs = 3000;
+constexpr int kRobotPumpForwardDo = 13;
+constexpr int kRobotPumpReverseDo = 14;
+constexpr double kTankTransferFlowMlPerMin = 450.0;
+constexpr double kDefaultLoopFlowMlPerMin = 600.0;
+constexpr double kTank2DefaultTargetLevelMillimeters = 300.0;
+constexpr double kTank2MaximumTargetLevelMillimeters = 430.0;
+constexpr double kTank2CycleToleranceMillimeters = 10.0;
+constexpr double kTemperatureMinimumCelsius = 0.0;
+constexpr double kTemperatureMaximumCelsius = 45.0;
+
+QString treatmentOptionalIntText(bool hasValue, int value)
+{
+    return hasValue ? QString::number(value) : QStringLiteral("-");
+}
+
+QString treatmentBoolText(bool value)
+{
+    return value ? QStringLiteral("1") : QStringLiteral("0");
+}
+
+bool treatmentSnapshotPosition(
+    const diji::adapters::uim::UimMotorSnapshot& snapshot,
+    int* positionSteps,
+    QString* errorMessage)
+{
+    if (snapshot.hasPosition) {
+        if (positionSteps != nullptr) {
+            *positionSteps = snapshot.position;
+        }
+        return true;
+    }
+    if (snapshot.hasEncoderPosition) {
+        if (positionSteps != nullptr) {
+            *positionSteps = snapshot.encoderPosition;
+        }
+        return true;
+    }
+
+    if (errorMessage != nullptr) {
+        *errorMessage = QStringLiteral("POS/QEC 均无反馈");
+    }
+    return false;
+}
+
+bool treatmentSnapshotMoved(
+    const diji::adapters::uim::UimMotorSnapshot& startSnapshot,
+    const diji::adapters::uim::UimMotorSnapshot& currentSnapshot)
+{
+    if (startSnapshot.hasPosition && currentSnapshot.hasPosition
+        && std::abs(currentSnapshot.position - startSnapshot.position) > kTreatmentMotorPositionToleranceSteps) {
+        return true;
+    }
+    if (startSnapshot.hasEncoderPosition && currentSnapshot.hasEncoderPosition
+        && std::abs(currentSnapshot.encoderPosition - startSnapshot.encoderPosition) > kTreatmentMotorPositionToleranceSteps) {
+        return true;
+    }
+    return false;
+}
+
+int treatmentMotionPosition(
+    const diji::adapters::uim::UimMotorSnapshot& startSnapshot,
+    const diji::adapters::uim::UimMotorSnapshot& currentSnapshot,
+    int fallbackPositionSteps)
+{
+    if (startSnapshot.hasPosition && currentSnapshot.hasPosition
+        && std::abs(currentSnapshot.position - startSnapshot.position) > kTreatmentMotorPositionToleranceSteps) {
+        return currentSnapshot.position;
+    }
+    if (startSnapshot.hasEncoderPosition && currentSnapshot.hasEncoderPosition
+        && std::abs(currentSnapshot.encoderPosition - startSnapshot.encoderPosition) > kTreatmentMotorPositionToleranceSteps) {
+        return currentSnapshot.encoderPosition;
+    }
+    int positionSteps = fallbackPositionSteps;
+    treatmentSnapshotPosition(currentSnapshot, &positionSteps, nullptr);
+    return positionSteps;
+}
+
+QString treatmentMotorStatusText(const diji::adapters::uim::UimMotorSnapshot& snapshot)
+{
+    QString sensorText = QStringLiteral("S1/S2/S3=-");
+    if (snapshot.hasSensorFeedback) {
+        sensorText = QStringLiteral("S1/S2/S3=%1/%2/%3")
+            .arg(treatmentBoolText(snapshot.sensor1))
+            .arg(treatmentBoolText(snapshot.sensor2))
+            .arg(treatmentBoolText(snapshot.sensor3));
+    }
+
+    return QStringLiteral("ENA=%1, SPD=%2, STEP=%3, POS=%4, QEC=%5, %6")
+        .arg(treatmentBoolText(snapshot.enabled))
+        .arg(snapshot.speed)
+        .arg(snapshot.step)
+        .arg(treatmentOptionalIntText(snapshot.hasPosition, snapshot.position))
+        .arg(treatmentOptionalIntText(snapshot.hasEncoderPosition, snapshot.encoderPosition))
+        .arg(sensorText);
+}
+
+bool treatmentPositionOutsideHardRange(int positionSteps, int minimumPositionSteps, int maximumPositionSteps)
+{
+    return positionSteps < minimumPositionSteps - kTreatmentMotorBoundaryToleranceSteps
+        || positionSteps > maximumPositionSteps + kTreatmentMotorBoundaryToleranceSteps;
+}
+
+int treatmentClampPositionToSafetyRange(int positionSteps, int minimumPositionSteps, int maximumPositionSteps)
+{
+    if (positionSteps < minimumPositionSteps && positionSteps >= minimumPositionSteps - kTreatmentMotorBoundaryToleranceSteps) {
+        return minimumPositionSteps;
+    }
+    if (positionSteps > maximumPositionSteps && positionSteps <= maximumPositionSteps + kTreatmentMotorBoundaryToleranceSteps) {
+        return maximumPositionSteps;
+    }
+    return positionSteps;
+}
+
+QString defaultTreatmentMotorSdkPath()
+{
+    const QStringList candidates {
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral("UISimCanFunc.dll")),
+        QStringLiteral("D:/PanSoftware/UIMDemo/UISimCanFunc.dll"),
+        QStringLiteral("D:/PanSoftware/DIANJIDEMO2/build/mingw/apps/three_axis_motor/UISimCanFunc.dll"),
+        QStringLiteral("D:/PanSoftware/DianJi/电机控制/UIMDemoNew/UIMDemo20170523/example/VC/UIMVCDemo/DLL/UISimCanFunc.dll"),
+        QStringLiteral("D:/PanSoftware/DianJi/电机控制/UIMDemo20170523/example/VC/UIMVCDemo/DLL/UISimCanFunc.dll")
+    };
+
+    for (const QString& candidate : candidates) {
+        if (QFileInfo::exists(candidate)) {
+            return QDir::toNativeSeparators(QFileInfo(candidate).absoluteFilePath());
+        }
+    }
+    return QDir::toNativeSeparators(candidates.first());
+}
 
 bool isSeedPlanId(const QString& planId)
 {
@@ -402,6 +580,138 @@ QToolButton* createLayerNavButton(const QString& text, const QString& tooltip)
     return button;
 }
 
+QString treatmentResolveRuntimePath(const QString& relativePath)
+{
+    const QString projectDefaultsPath = QStringLiteral("D:/PanSoftware/PanTheraSys/config/defaults.ini");
+    if (relativePath == QStringLiteral("config/defaults.ini") && QFileInfo::exists(projectDefaultsPath)) {
+        return QDir::cleanPath(projectDefaultsPath);
+    }
+
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QList<QDir> baseDirectories {
+        QDir::current(),
+        QDir(appDir)
+    };
+    const QStringList relativeCandidates {
+        relativePath,
+        QStringLiteral("../%1").arg(relativePath),
+        QStringLiteral("../../%1").arg(relativePath),
+        QStringLiteral("../../../%1").arg(relativePath),
+        QStringLiteral("../../../../%1").arg(relativePath),
+        QStringLiteral("../../../../../%1").arg(relativePath)
+    };
+
+    for (const QDir& baseDirectory : baseDirectories) {
+        for (const QString& relativeCandidate : relativeCandidates) {
+            const QString candidate = baseDirectory.absoluteFilePath(relativeCandidate);
+            if (QFileInfo::exists(candidate)) {
+                return QDir::cleanPath(candidate);
+            }
+        }
+    }
+
+    return QDir::cleanPath(QDir::current().absoluteFilePath(relativePath));
+}
+
+int treatmentSafePort(int value, int fallback)
+{
+    return value >= 1 && value <= 65535 ? value : fallback;
+}
+
+QString selectedSerialPortName(QComboBox* combo)
+{
+    if (combo == nullptr) {
+        return {};
+    }
+
+    QVariant selectedPort = combo->currentData();
+    QString portName = selectedPort.isValid() ? selectedPort.toString() : combo->currentText();
+    if (portName.contains(QStringLiteral(" - "))) {
+        portName = portName.section(QStringLiteral(" - "), 0, 0);
+    }
+    return portName.trimmed();
+}
+
+void refreshSerialPortCombo(QComboBox* combo)
+{
+    if (combo == nullptr) {
+        return;
+    }
+
+    const QString previousPort = combo->currentText().trimmed();
+    QSignalBlocker blocker(combo);
+    combo->clear();
+
+    const QList<QSerialPortInfo> ports = QSerialPortInfo::availablePorts();
+    for (const QSerialPortInfo& port : ports) {
+        const QString label = port.description().trimmed().isEmpty()
+            ? port.portName()
+            : QStringLiteral("%1 - %2").arg(port.portName(), port.description().trimmed());
+        combo->addItem(label, port.portName());
+    }
+
+    if (!previousPort.isEmpty()) {
+        const int index = combo->findData(previousPort);
+        if (index >= 0) {
+            combo->setCurrentIndex(index);
+        } else {
+            combo->setEditText(previousPort);
+        }
+    } else if (combo->count() == 0) {
+        combo->setEditText(QString());
+    }
+}
+
+void addBaudRates(QComboBox* combo, const QList<int>& baudRates, int defaultBaudRate)
+{
+    if (combo == nullptr) {
+        return;
+    }
+    for (int baudRate : baudRates) {
+        combo->addItem(QString::number(baudRate), baudRate);
+    }
+    const int defaultIndex = combo->findData(defaultBaudRate);
+    if (defaultIndex >= 0) {
+        combo->setCurrentIndex(defaultIndex);
+    }
+}
+
+int selectedBaudRate(QComboBox* combo, int fallback)
+{
+    if (combo == nullptr) {
+        return fallback;
+    }
+    int baudRate = combo->currentData().toInt();
+    if (baudRate <= 0) {
+        baudRate = combo->currentText().toInt();
+    }
+    return baudRate > 0 ? baudRate : fallback;
+}
+
+QString compactStatusStyle(bool ok)
+{
+    return ok
+        ? QStringLiteral(
+              "QLabel { padding: 10px 12px; border: 1px solid #1e5d91; border-radius: 6px; "
+              "background: #0e2943; color: #ffffff; font-weight: 600; }")
+        : QStringLiteral(
+              "QLabel { padding: 10px 12px; border: 1px solid #d94a4a; border-radius: 6px; "
+              "background: #3a1014; color: #ffd7d7; font-weight: 700; }");
+}
+
+bool tankLimitSensorActive(const diji::adapters::uim::UimMotorSnapshot& snapshot, int sensorIndex)
+{
+    bool rawHigh = false;
+    if (sensorIndex == 1) {
+        rawHigh = snapshot.sensor1;
+    } else if (sensorIndex == 2) {
+        rawHigh = snapshot.sensor2;
+    } else if (sensorIndex == 3) {
+        rawHigh = snapshot.sensor3;
+    }
+    return kTank1UpperLimitHighActive ? rawHigh : !rawHigh;
+}
+
 }  // namespace
 
 TreatmentPage::TreatmentPage(
@@ -419,6 +729,9 @@ TreatmentPage::TreatmentPage(
     , m_clinicalDataService(clinicalDataRepository)
     , m_simulationDevice(simulationDevice)
 {
+    loadTreatmentRobotPumpSettings();
+    applyTreatmentRobotPumpSettings();
+
     auto* rootLayout = new QHBoxLayout(this);
     rootLayout->setContentsMargins(16, 16, 16, 16);
     rootLayout->setSpacing(12);
@@ -427,6 +740,7 @@ TreatmentPage::TreatmentPage(
     auto* imageLayout = new QVBoxLayout(imageCard);
     m_preview = new MockUltrasoundView();
     m_preview->setCaption(QStringLiteral("\u6cbb\u7597\u6267\u884c\u76d1\u89c6 / \u7126\u70b9\u8986\u76d6\u793a\u610f"));
+    m_preview->setBackgroundImageStretchToFill(false);
     imageLayout->addWidget(m_preview);
     rootLayout->addWidget(imageCard, 3);
 
@@ -544,6 +858,8 @@ TreatmentPage::TreatmentPage(
     rootLayout->addWidget(controlCard, 1);
 
     m_progressTimer.setInterval(450);
+    m_fluidControlTimer.setInterval(kFluidControlPollMs);
+    m_temperatureRefreshTimer.setInterval(kTemperatureRefreshMs);
 
     connect(m_startButton, &QPushButton::clicked, this, &TreatmentPage::startTreatment);
     connect(m_pauseButton, &QPushButton::clicked, this, [this]() {
@@ -556,6 +872,8 @@ TreatmentPage::TreatmentPage(
     connect(m_stopButton, &QPushButton::clicked, this, &TreatmentPage::stopTreatment);
     connect(m_generate3dButton, &QPushButton::clicked, this, &TreatmentPage::generateThreeDimensionalImage);
     connect(&m_progressTimer, &QTimer::timeout, this, &TreatmentPage::advanceProgress);
+    connect(&m_fluidControlTimer, &QTimer::timeout, this, &TreatmentPage::onFluidControlTick);
+    connect(&m_temperatureRefreshTimer, &QTimer::timeout, this, &TreatmentPage::onTemperatureRefreshTick);
     connect(m_context, &ApplicationContext::activePlanChanged, this, &TreatmentPage::onActivePlanChanged);
     connect(m_context, &ApplicationContext::activePlanCleared, this, &TreatmentPage::onActivePlanCleared);
     connect(m_context, &ApplicationContext::selectedPatientChanged, this, &TreatmentPage::onPatientChanged);
@@ -579,8 +897,1579 @@ TreatmentPage::TreatmentPage(
     });
     connect(m_safetyKernel, &SafetyKernel::treatmentAbortRequested, this, &TreatmentPage::onAbortRequested);
 
+    connect(m_context, &ApplicationContext::treatmentCameraFrameUpdated, this, [this](const QImage& image, const QString&) {
+        if (image.isNull()) {
+            return;
+        }
+
+        if (m_preview == nullptr) {
+            return;
+        }
+        m_preview->setSyntheticImageEnabled(false);
+        m_preview->setBackgroundImageStretchToFill(false);
+        m_preview->setBackgroundImage(QPixmap::fromImage(image));
+    });
+    if (m_context != nullptr && m_context->hasLatestTreatmentCameraFrame()) {
+        m_preview->setSyntheticImageEnabled(false);
+        m_preview->setBackgroundImageStretchToFill(false);
+        m_preview->setBackgroundImage(QPixmap::fromImage(m_context->latestTreatmentCameraFrame()));
+    }
+
     setButtonState(false, false, false, false);
     refreshAvailablePlans(!m_context->hasActivePlan());
+}
+
+TreatmentPage::~TreatmentPage()
+{
+    QString ignoredSummary;
+    stopAllFluidDevices(true, true, &ignoredSummary);
+}
+
+QWidget* TreatmentPage::createFluidControlCard()
+{
+    auto* groupBox = new QGroupBox(QStringLiteral("水路与温控"));
+    groupBox->setMinimumWidth(380);
+    groupBox->setMaximumWidth(520);
+    groupBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+
+    auto* layout = new QVBoxLayout(groupBox);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(10);
+
+    m_fluidStatusLabel = new QLabel(QStringLiteral("水路待命"), groupBox);
+    m_fluidStatusLabel->setWordWrap(true);
+    m_fluidStatusLabel->setMinimumHeight(58);
+    m_fluidStatusLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    layout->addWidget(m_fluidStatusLabel);
+
+    auto* refreshPortsButton = new QPushButton(QStringLiteral("刷新串口"), groupBox);
+
+    auto configurePortCombo = [](QComboBox* combo) {
+        combo->setEditable(true);
+        combo->setMinimumWidth(110);
+        combo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    };
+
+    auto* connectionGrid = new QGridLayout();
+    connectionGrid->setHorizontalSpacing(8);
+    connectionGrid->setVerticalSpacing(8);
+    connectionGrid->setColumnStretch(1, 1);
+    connectionGrid->setColumnStretch(2, 0);
+    connectionGrid->setColumnStretch(3, 0);
+
+    m_waterPumpPortCombo = new QComboBox(groupBox);
+    configurePortCombo(m_waterPumpPortCombo);
+    m_waterPumpBaudCombo = new QComboBox(groupBox);
+    addBaudRates(m_waterPumpBaudCombo, {9600, 19200, 38400, 57600, 115200}, 9600);
+    m_waterPumpConnectionButton = new QPushButton(QStringLiteral("连接水泵"), groupBox);
+
+    m_liquidLevelPortCombo = new QComboBox(groupBox);
+    configurePortCombo(m_liquidLevelPortCombo);
+    m_liquidLevelBaudCombo = new QComboBox(groupBox);
+    addBaudRates(m_liquidLevelBaudCombo, {9600, 19200, 38400, 57600, 115200}, 9600);
+    m_liquidLevelConnectionButton = new QPushButton(QStringLiteral("连接液位"), groupBox);
+
+    m_temperaturePortCombo = new QComboBox(groupBox);
+    configurePortCombo(m_temperaturePortCombo);
+    m_temperatureBaudCombo = new QComboBox(groupBox);
+    addBaudRates(
+        m_temperatureBaudCombo,
+        {1200, 2400, 4800, 9600, 19200, 38400},
+        panthera::adapters::anthone::Lu926TemperatureProtocol::kDefaultBaudRate);
+    m_temperatureConnectionButton = new QPushButton(QStringLiteral("连接温控"), groupBox);
+
+    connectionGrid->addWidget(new QLabel(QStringLiteral("水泵485"), groupBox), 0, 0);
+    connectionGrid->addWidget(m_waterPumpPortCombo, 0, 1);
+    connectionGrid->addWidget(m_waterPumpBaudCombo, 0, 2);
+    connectionGrid->addWidget(m_waterPumpConnectionButton, 0, 3);
+    connectionGrid->addWidget(new QLabel(QStringLiteral("液位485"), groupBox), 1, 0);
+    connectionGrid->addWidget(m_liquidLevelPortCombo, 1, 1);
+    connectionGrid->addWidget(m_liquidLevelBaudCombo, 1, 2);
+    connectionGrid->addWidget(m_liquidLevelConnectionButton, 1, 3);
+    connectionGrid->addWidget(new QLabel(QStringLiteral("温控485"), groupBox), 2, 0);
+    connectionGrid->addWidget(m_temperaturePortCombo, 2, 1);
+    connectionGrid->addWidget(m_temperatureBaudCombo, 2, 2);
+    connectionGrid->addWidget(m_temperatureConnectionButton, 2, 3);
+    connectionGrid->addWidget(refreshPortsButton, 3, 3);
+    layout->addLayout(connectionGrid);
+
+    auto* levelGrid = new QGridLayout();
+    levelGrid->setHorizontalSpacing(8);
+    levelGrid->setVerticalSpacing(8);
+    levelGrid->setColumnStretch(1, 1);
+    m_liquidLevelAddressEdit = new QLineEdit(QStringLiteral("01"), groupBox);
+    m_liquidLevelAddressEdit->setReadOnly(true);
+    m_tank2TargetLevelSpin = new QDoubleSpinBox(groupBox);
+    m_tank2TargetLevelSpin->setRange(0.0, kTank2MaximumTargetLevelMillimeters);
+    m_tank2TargetLevelSpin->setDecimals(1);
+    m_tank2TargetLevelSpin->setSingleStep(5.0);
+    m_tank2TargetLevelSpin->setValue(kTank2DefaultTargetLevelMillimeters);
+    m_tank2TargetLevelSpin->setSuffix(QStringLiteral(" mm"));
+    m_tank2TargetLevelSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_tank2LevelLabel = new QLabel(QStringLiteral("-- mm"), groupBox);
+    m_tank2LevelLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+    levelGrid->addWidget(new QLabel(QStringLiteral("液位地址"), groupBox), 0, 0);
+    levelGrid->addWidget(m_liquidLevelAddressEdit, 0, 1);
+    levelGrid->addWidget(new QLabel(QStringLiteral("当前液位"), groupBox), 1, 0);
+    levelGrid->addWidget(m_tank2LevelLabel, 1, 1);
+    levelGrid->addWidget(new QLabel(QStringLiteral("目标液位"), groupBox), 2, 0);
+    levelGrid->addWidget(m_tank2TargetLevelSpin, 2, 1);
+    layout->addLayout(levelGrid);
+
+    auto* robotPumpGrid = new QGridLayout();
+    robotPumpGrid->setHorizontalSpacing(8);
+    robotPumpGrid->setVerticalSpacing(8);
+    m_robotPumpFillButton = new QPushButton(QStringLiteral("RO注水"), groupBox);
+    m_robotPumpDrainButton = new QPushButton(QStringLiteral("RO出水"), groupBox);
+    m_robotPumpStopButton = new QPushButton(QStringLiteral("停止RO"), groupBox);
+    m_confirmTank2FillButton = new QPushButton(QStringLiteral("确认03加水"), groupBox);
+    robotPumpGrid->addWidget(m_robotPumpFillButton, 0, 0);
+    robotPumpGrid->addWidget(m_robotPumpDrainButton, 0, 1);
+    robotPumpGrid->addWidget(m_robotPumpStopButton, 0, 2);
+    robotPumpGrid->addWidget(m_confirmTank2FillButton, 1, 0, 1, 3);
+    layout->addLayout(robotPumpGrid);
+
+    auto* cycleGrid = new QGridLayout();
+    cycleGrid->setHorizontalSpacing(8);
+    cycleGrid->setVerticalSpacing(8);
+    m_startCycleButton = new QPushButton(QStringLiteral("启动循环"), groupBox);
+    m_stopCycleButton = new QPushButton(QStringLiteral("停止循环"), groupBox);
+    m_stopFluidDevicesButton = new QPushButton(QStringLiteral("停止水路"), groupBox);
+    cycleGrid->addWidget(m_startCycleButton, 0, 0);
+    cycleGrid->addWidget(m_stopCycleButton, 0, 1);
+    cycleGrid->addWidget(m_stopFluidDevicesButton, 0, 2);
+    layout->addLayout(cycleGrid);
+
+    auto* temperatureGrid = new QGridLayout();
+    temperatureGrid->setHorizontalSpacing(8);
+    temperatureGrid->setVerticalSpacing(8);
+    temperatureGrid->setColumnStretch(1, 1);
+    m_temperatureChannelCombo = new QComboBox(groupBox);
+    for (int channelIndex = 1; channelIndex <= panthera::adapters::anthone::Lu926TemperatureProtocol::kChannelCount; ++channelIndex) {
+        m_temperatureChannelCombo->addItem(QStringLiteral("CH%1").arg(channelIndex), channelIndex);
+    }
+    m_temperatureSetpointSpin = new QDoubleSpinBox(groupBox);
+    m_temperatureSetpointSpin->setRange(kTemperatureMinimumCelsius, kTemperatureMaximumCelsius);
+    m_temperatureSetpointSpin->setDecimals(1);
+    m_temperatureSetpointSpin->setSingleStep(0.5);
+    m_temperatureSetpointSpin->setValue(37.0);
+    m_temperatureSetpointSpin->setSuffix(QStringLiteral(" °C"));
+    m_temperatureSetpointSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_temperatureStartButton = new QPushButton(QStringLiteral("开始加热"), groupBox);
+    m_temperatureStopButton = new QPushButton(QStringLiteral("停止加热"), groupBox);
+
+    temperatureGrid->addWidget(new QLabel(QStringLiteral("温控通道"), groupBox), 0, 0);
+    temperatureGrid->addWidget(m_temperatureChannelCombo, 0, 1);
+    temperatureGrid->addWidget(new QLabel(QStringLiteral("目标温度"), groupBox), 1, 0);
+    temperatureGrid->addWidget(m_temperatureSetpointSpin, 1, 1);
+    temperatureGrid->addWidget(m_temperatureStartButton, 1, 2);
+    temperatureGrid->addWidget(m_temperatureStopButton, 2, 2);
+    layout->addLayout(temperatureGrid);
+
+    m_temperatureStatusLabel = new QLabel(QStringLiteral("温控待连接"), groupBox);
+    m_temperatureStatusLabel->setWordWrap(true);
+    m_temperatureStatusLabel->setMinimumHeight(58);
+    m_temperatureStatusLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    layout->addWidget(m_temperatureStatusLabel);
+    layout->addStretch();
+
+    connect(refreshPortsButton, &QPushButton::clicked, this, &TreatmentPage::refreshFluidSerialPorts);
+    connect(m_waterPumpConnectionButton, &QPushButton::clicked, this, &TreatmentPage::toggleWaterPumpConnection);
+    connect(m_liquidLevelConnectionButton, &QPushButton::clicked, this, &TreatmentPage::toggleLiquidLevelConnection);
+    connect(m_temperatureConnectionButton, &QPushButton::clicked, this, &TreatmentPage::toggleTemperatureConnection);
+    connect(m_robotPumpFillButton, &QPushButton::clicked, this, &TreatmentPage::startRobotPumpFill);
+    connect(m_robotPumpDrainButton, &QPushButton::clicked, this, &TreatmentPage::startRobotPumpDrain);
+    connect(m_robotPumpStopButton, &QPushButton::clicked, this, &TreatmentPage::stopRobotPumpFromUi);
+    connect(m_confirmTank2FillButton, &QPushButton::clicked, this, &TreatmentPage::confirmTank2Fill);
+    connect(m_startCycleButton, &QPushButton::clicked, this, &TreatmentPage::startWaterCycle);
+    connect(m_stopCycleButton, &QPushButton::clicked, this, &TreatmentPage::stopWaterCycle);
+    connect(m_stopFluidDevicesButton, &QPushButton::clicked, this, &TreatmentPage::stopFluidDevicesFromUi);
+    connect(m_temperatureStartButton, &QPushButton::clicked, this, &TreatmentPage::startHeating);
+    connect(m_temperatureStopButton, &QPushButton::clicked, this, &TreatmentPage::stopHeating);
+
+    return groupBox;
+}
+
+bool TreatmentPage::prepareTreatmentMotorGateway(QString* errorMessage)
+{
+    if (!m_treatmentMotorGateway.isSdkLoaded()) {
+        const QString sdkPath = defaultTreatmentMotorSdkPath();
+        if (!m_treatmentMotorGateway.loadSdk(sdkPath, errorMessage)) {
+            return false;
+        }
+    }
+
+    if (!m_treatmentMotorGateway.isGatewayOpen()) {
+        m_treatmentMotorDevices = m_treatmentMotorGateway.searchGateways(errorMessage);
+        if (m_treatmentMotorDevices.isEmpty()) {
+            if (errorMessage != nullptr && errorMessage->trimmed().isEmpty()) {
+                *errorMessage = QStringLiteral("未搜索到 USB-CAN 网关");
+            }
+            return false;
+        }
+
+        QString openError;
+        if (!m_treatmentMotorGateway.openGateway(m_treatmentMotorDevices.first().deviceIndex, &openError)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("%1。请确认设备监控页没有打开同一个 USB-CAN 网关。").arg(openError);
+            }
+            return false;
+        }
+    }
+
+    m_treatmentMotorNodes = m_treatmentMotorGateway.nodes();
+    const QVector<int> requiredNodeIds {
+        kTreatmentSwingAxisNodeId,
+        kTreatmentLayerAxisNodeId,
+        kTreatmentVerticalAxisNodeId
+    };
+    for (int requiredNodeId : requiredNodeIds) {
+        const bool nodeExists = std::any_of(
+            m_treatmentMotorNodes.cbegin(),
+            m_treatmentMotorNodes.cend(),
+            [requiredNodeId](const diji::adapters::uim::UimNodeInfo& node) {
+                return static_cast<int>(node.nodeId) == requiredNodeId;
+            });
+        if (!nodeExists) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("未发现 %1 号治疗电机节点").arg(requiredNodeId);
+            }
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool TreatmentPage::selectTreatmentMotor(quint32 nodeId, QString* errorMessage)
+{
+    if (!m_treatmentMotorGateway.selectNode(nodeId, errorMessage)) {
+        return false;
+    }
+    if (!m_treatmentMotorGateway.enableMotor(errorMessage)) {
+        return false;
+    }
+    return m_treatmentMotorGateway.setSpeed(kTreatmentMotorSpeed, errorMessage);
+}
+
+bool TreatmentPage::readTreatmentMotorSnapshot(
+    quint32 nodeId,
+    diji::adapters::uim::UimMotorSnapshot* snapshot,
+    QString* errorMessage)
+{
+    if (snapshot == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("%1 号电机状态输出为空").arg(nodeId);
+        }
+        return false;
+    }
+    if (!prepareTreatmentMotorGateway(errorMessage)) {
+        return false;
+    }
+    if (!m_treatmentMotorGateway.selectNode(nodeId, errorMessage)) {
+        return false;
+    }
+    if (!m_treatmentMotorGateway.refreshSnapshot(errorMessage)) {
+        return false;
+    }
+
+    *snapshot = m_treatmentMotorGateway.latestSnapshot();
+    return true;
+}
+
+bool TreatmentPage::readTreatmentMotorPosition(quint32 nodeId, int* positionSteps, QString* errorMessage)
+{
+    if (positionSteps == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("%1 号电机位置输出为空").arg(nodeId);
+        }
+        return false;
+    }
+
+    diji::adapters::uim::UimMotorSnapshot snapshot;
+    if (!readTreatmentMotorSnapshot(nodeId, &snapshot, errorMessage)) {
+        return false;
+    }
+
+    QString positionError;
+    if (!treatmentSnapshotPosition(snapshot, positionSteps, &positionError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("无法读取 %1 号电机绝对位置：%2。当前状态：%3")
+                .arg(nodeId)
+                .arg(positionError, treatmentMotorStatusText(snapshot));
+        }
+        return false;
+    }
+    return true;
+}
+
+bool TreatmentPage::moveTreatmentMotorToAbsolute(
+    quint32 nodeId,
+    int targetPositionSteps,
+    int minimumPositionSteps,
+    int maximumPositionSteps,
+    const QString& axisLabel,
+    QString* errorMessage)
+{
+    if (treatmentPositionOutsideHardRange(targetPositionSteps, minimumPositionSteps, maximumPositionSteps)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("%1 目标位置 %2 超出安全范围 %3-%4（边界允许误差 ±%5 步）")
+                .arg(axisLabel)
+                .arg(targetPositionSteps)
+                .arg(minimumPositionSteps)
+                .arg(maximumPositionSteps)
+                .arg(kTreatmentMotorBoundaryToleranceSteps);
+        }
+        return false;
+    }
+    const int effectiveTargetPositionSteps = treatmentClampPositionToSafetyRange(
+        targetPositionSteps,
+        minimumPositionSteps,
+        maximumPositionSteps);
+    if (effectiveTargetPositionSteps != targetPositionSteps) {
+        appendLog(QStringLiteral("%1 目标边界误差允许：目标 %2 步，按 %3 步执行")
+            .arg(axisLabel)
+            .arg(targetPositionSteps)
+            .arg(effectiveTargetPositionSteps));
+    }
+
+    diji::adapters::uim::UimMotorSnapshot startSnapshot;
+    if (!readTreatmentMotorSnapshot(nodeId, &startSnapshot, errorMessage)) {
+        return false;
+    }
+    int rawCurrentPositionSteps = 0;
+    QString startPositionError;
+    if (!treatmentSnapshotPosition(startSnapshot, &rawCurrentPositionSteps, &startPositionError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("%1 无法读取当前位置：%2。当前状态：%3")
+                .arg(axisLabel, startPositionError, treatmentMotorStatusText(startSnapshot));
+        }
+        return false;
+    }
+    if (treatmentPositionOutsideHardRange(rawCurrentPositionSteps, minimumPositionSteps, maximumPositionSteps)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("%1 当前位置 %2 超出安全范围 %3-%4（边界允许误差 ±%5 步），拒绝运动。当前状态：%6")
+                .arg(axisLabel)
+                .arg(rawCurrentPositionSteps)
+                .arg(minimumPositionSteps)
+                .arg(maximumPositionSteps)
+                .arg(kTreatmentMotorBoundaryToleranceSteps)
+                .arg(treatmentMotorStatusText(startSnapshot));
+        }
+        return false;
+    }
+    const int currentPositionSteps = treatmentClampPositionToSafetyRange(
+        rawCurrentPositionSteps,
+        minimumPositionSteps,
+        maximumPositionSteps);
+    if (currentPositionSteps != rawCurrentPositionSteps) {
+        appendLog(QStringLiteral("%1 边界误差允许：读取 %2 步，按 %3 步参与治疗运动")
+            .arg(axisLabel)
+            .arg(rawCurrentPositionSteps)
+            .arg(currentPositionSteps));
+    }
+    if (std::abs(currentPositionSteps - effectiveTargetPositionSteps) <= kTreatmentMotorPositionToleranceSteps) {
+        appendLog(QStringLiteral("%1 已在目标附近：当前 %2 步，目标 %3 步，未重复运动")
+            .arg(axisLabel)
+            .arg(currentPositionSteps)
+            .arg(effectiveTargetPositionSteps));
+        return true;
+    }
+
+    if (!selectTreatmentMotor(nodeId, errorMessage)) {
+        return false;
+    }
+
+    const int relativeSteps = effectiveTargetPositionSteps - currentPositionSteps;
+    appendLog(QStringLiteral("%1 下发运动：当前 %2 步，目标 %3 步，相对 %4 步")
+        .arg(axisLabel)
+        .arg(currentPositionSteps)
+        .arg(effectiveTargetPositionSteps)
+        .arg(relativeSteps));
+    if (!m_treatmentMotorGateway.setStep(relativeSteps, errorMessage)) {
+        return false;
+    }
+
+    int latestPositionSteps = currentPositionSteps;
+    bool hasObservedMovement = false;
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < kTreatmentMotorMoveTimeoutMs) {
+        waitForTreatmentMotor(kTreatmentMotorPollMs);
+        QCoreApplication::processEvents();
+
+        if (m_safetyKernel != nullptr && m_safetyKernel->mode() == SystemMode::Alarm) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("%1 运动过程中安全联锁进入报警态").arg(axisLabel);
+            }
+            return false;
+        }
+
+        QString readError;
+        diji::adapters::uim::UimMotorSnapshot polledSnapshot;
+        if (!readTreatmentMotorSnapshot(nodeId, &polledSnapshot, &readError)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("%1 运动过程中无法读取绝对位置：%2").arg(axisLabel, readError);
+            }
+            return false;
+        }
+        const int rawPolledPositionSteps = treatmentMotionPosition(startSnapshot, polledSnapshot, latestPositionSteps);
+
+        if (treatmentPositionOutsideHardRange(rawPolledPositionSteps, minimumPositionSteps, maximumPositionSteps)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("%1 运动过程中位置 %2 超出安全范围 %3-%4（边界允许误差 ±%5 步）。当前状态：%6")
+                    .arg(axisLabel)
+                    .arg(rawPolledPositionSteps)
+                    .arg(minimumPositionSteps)
+                    .arg(maximumPositionSteps)
+                    .arg(kTreatmentMotorBoundaryToleranceSteps)
+                    .arg(treatmentMotorStatusText(polledSnapshot));
+            }
+            return false;
+        }
+        latestPositionSteps = treatmentClampPositionToSafetyRange(
+            rawPolledPositionSteps,
+            minimumPositionSteps,
+            maximumPositionSteps);
+
+        if (treatmentSnapshotMoved(startSnapshot, polledSnapshot)) {
+            hasObservedMovement = true;
+        }
+        if (!hasObservedMovement && timer.elapsed() >= kTreatmentMotorMoveStartTimeoutMs) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("%1 运动命令已下发，但 %2 ms 内 POS/QEC 均未变化。当前状态：%3")
+                    .arg(axisLabel)
+                    .arg(kTreatmentMotorMoveStartTimeoutMs)
+                    .arg(treatmentMotorStatusText(polledSnapshot));
+            }
+            return false;
+        }
+
+        if (std::abs(latestPositionSteps - effectiveTargetPositionSteps) <= kTreatmentMotorPositionToleranceSteps) {
+            appendLog(QStringLiteral("%1 到位：%2 步").arg(axisLabel).arg(latestPositionSteps));
+            return true;
+        }
+    }
+
+    if (errorMessage != nullptr) {
+        diji::adapters::uim::UimMotorSnapshot timeoutSnapshot;
+        const QString timeoutStatus = readTreatmentMotorSnapshot(nodeId, &timeoutSnapshot, nullptr)
+            ? treatmentMotorStatusText(timeoutSnapshot)
+            : QStringLiteral("无法读取");
+        *errorMessage = QStringLiteral("%1 运动超时，目标 %2，当前位置 %3。当前状态：%4")
+            .arg(axisLabel)
+            .arg(effectiveTargetPositionSteps)
+            .arg(latestPositionSteps)
+            .arg(timeoutStatus);
+    }
+    return false;
+}
+
+bool TreatmentPage::prepareSelectedLayerTreatmentMotors(
+    const TherapyPlan& plan,
+    const TherapySegment& segment,
+    QString* errorMessage)
+{
+    Q_UNUSED(plan)
+    if (!prepareTreatmentMotorGateway(errorMessage)) {
+        return false;
+    }
+    if (treatmentPositionOutsideHardRange(
+            segment.axis7PositionSteps,
+            kTreatmentLayerAxisMinimumSteps,
+            kTreatmentLayerAxisMaximumSteps)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("当前治疗层缺少有效的 7 号采集绝对位置，请重新执行图像采集并生成治疗方案");
+        }
+        return false;
+    }
+
+    int beforePositionSteps = 0;
+    if (!readTreatmentMotorPosition(kTreatmentLayerAxisNodeId, &beforePositionSteps, errorMessage)) {
+        return false;
+    }
+    appendLog(
+        QStringLiteral("7号层位定位：当前 %1 步，目标 %2 步，层 %3")
+            .arg(beforePositionSteps)
+            .arg(segment.axis7PositionSteps)
+            .arg(segment.sourceSliceIndex >= 0 ? segment.sourceSliceIndex + 1 : segment.orderIndex + 1));
+
+    if (!moveTreatmentMotorToAbsolute(
+            kTreatmentLayerAxisNodeId,
+            segment.axis7PositionSteps,
+            kTreatmentLayerAxisMinimumSteps,
+            kTreatmentLayerAxisMaximumSteps,
+            QStringLiteral("7号左右层位电机"),
+            errorMessage)) {
+        return false;
+    }
+
+    int afterPositionSteps = segment.axis7PositionSteps;
+    QString readError;
+    if (readTreatmentMotorPosition(kTreatmentLayerAxisNodeId, &afterPositionSteps, &readError)) {
+        appendLog(QStringLiteral("7号层位到位：%1 -> %2 步").arg(beforePositionSteps).arg(afterPositionSteps));
+    }
+
+    if (!readTreatmentMotorPosition(kTreatmentSwingAxisNodeId, &m_treatmentSwingCenterSteps, errorMessage)) {
+        m_hasTreatmentSwingCenter = false;
+        return false;
+    }
+    m_hasTreatmentSwingCenter = true;
+    appendLog(
+        QStringLiteral("6号摆动中心：当前 %1 步，治疗过程限制在左右 %2°（±%3 步）")
+            .arg(m_treatmentSwingCenterSteps)
+            .arg(kTreatmentSwingMaximumDegrees, 0, 'f', 0)
+            .arg(kTreatmentSwingMaximumSteps));
+    return true;
+}
+
+bool TreatmentPage::moveTreatmentPointMotors(const TherapySegment& segment, int pointIndex, QString* errorMessage)
+{
+    if (pointIndex < 0 || pointIndex >= segment.points.size()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("治疗靶点序号无效：%1").arg(pointIndex + 1);
+        }
+        return false;
+    }
+
+    const TherapyPoint& point = segment.points.at(pointIndex);
+    const double verticalMillimeters = std::clamp(
+        point.positionMm.y(),
+        0.0,
+        kTreatmentVerticalAxisMaximumMillimeters);
+    const qint64 verticalTargetSteps64 = std::llround(verticalMillimeters * kTreatmentLinearStepsPerMillimeter);
+    if (verticalTargetSteps64 > kTreatmentVerticalAxisMaximumSteps) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("8号上下电机目标 %1 步超过 S2=%2，请校准像素到毫米比例")
+                .arg(verticalTargetSteps64)
+                .arg(kTreatmentVerticalAxisMaximumSteps);
+        }
+        return false;
+    }
+    const int verticalTargetSteps = static_cast<int>(verticalTargetSteps64);
+
+    const double swingDegrees = ultrasoundLateralMillimetersToSwingDegrees(point.positionMm.x());
+    const int swingOffsetSteps = static_cast<int>(std::llround(swingDegrees * kTreatmentSwingStepsPerDegree));
+    if (!m_hasTreatmentSwingCenter) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("6号摆动中心尚未记录，请重新开始当前层治疗");
+        }
+        return false;
+    }
+    const int swingTargetSteps = m_treatmentSwingCenterSteps + swingOffsetSteps;
+
+    int beforeVerticalSteps = 0;
+    int beforeSwingSteps = 0;
+    if (!readTreatmentMotorPosition(kTreatmentVerticalAxisNodeId, &beforeVerticalSteps, errorMessage)
+        || !readTreatmentMotorPosition(kTreatmentSwingAxisNodeId, &beforeSwingSteps, errorMessage)) {
+        return false;
+    }
+
+    appendLog(
+        QStringLiteral("靶点 %1 定位：8号 %2 mm/%3 步，6号 %4°/%5 步，目标 %6 步")
+            .arg(pointIndex + 1)
+            .arg(verticalMillimeters, 0, 'f', 2)
+            .arg(verticalTargetSteps)
+            .arg(swingDegrees, 0, 'f', 2)
+            .arg(swingOffsetSteps)
+            .arg(swingTargetSteps));
+
+    if (!moveTreatmentMotorToAbsolute(
+            kTreatmentVerticalAxisNodeId,
+            verticalTargetSteps,
+            kTreatmentVerticalAxisMinimumSteps,
+            kTreatmentVerticalAxisMaximumSteps,
+            QStringLiteral("8号上下电机"),
+            errorMessage)) {
+        return false;
+    }
+    if (!moveTreatmentMotorToAbsolute(
+            kTreatmentSwingAxisNodeId,
+            swingTargetSteps,
+            m_treatmentSwingCenterSteps - kTreatmentSwingMaximumSteps,
+            m_treatmentSwingCenterSteps + kTreatmentSwingMaximumSteps,
+            QStringLiteral("6号摆动电机"),
+            errorMessage)) {
+        return false;
+    }
+
+    int afterVerticalSteps = verticalTargetSteps;
+    int afterSwingSteps = swingTargetSteps;
+    QString readError;
+    readTreatmentMotorPosition(kTreatmentVerticalAxisNodeId, &afterVerticalSteps, &readError);
+    readTreatmentMotorPosition(kTreatmentSwingAxisNodeId, &afterSwingSteps, &readError);
+    appendLog(
+        QStringLiteral("靶点 %1 到位：8号 %2 -> %3 步，6号 %4 -> %5 步")
+            .arg(pointIndex + 1)
+            .arg(beforeVerticalSteps)
+            .arg(afterVerticalSteps)
+            .arg(beforeSwingSteps)
+            .arg(afterSwingSteps));
+    return true;
+}
+
+void TreatmentPage::waitForTreatmentMotor(int milliseconds)
+{
+    if (milliseconds <= 0) {
+        return;
+    }
+
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timer.start(milliseconds);
+    loop.exec(QEventLoop::AllEvents);
+}
+
+void TreatmentPage::loadTreatmentRobotPumpSettings()
+{
+    m_robotPumpSettings = panthera::adapters::dobot::DobotConnectionSettings {};
+    m_robotPumpSettings.host = QStringLiteral("192.168.5.1");
+    m_robotPumpSettings.commandPort = 29999;
+    m_robotPumpSettings.motionPort = 29999;
+    m_robotPumpSettings.timeoutMs = 3000;
+
+    const QString defaultsIniPath = treatmentResolveRuntimePath(QStringLiteral("config/defaults.ini"));
+    if (!QFileInfo::exists(defaultsIniPath)) {
+        return;
+    }
+
+    QSettings settings(defaultsIniPath, QSettings::IniFormat);
+    const QString configuredHost = settings.value(QStringLiteral("dobot/host"), m_robotPumpSettings.host).toString().trimmed();
+    if (!configuredHost.isEmpty()) {
+        m_robotPumpSettings.host = configuredHost;
+    }
+    m_robotPumpSettings.commandPort = static_cast<quint16>(
+        treatmentSafePort(
+            settings.value(QStringLiteral("dobot/dashboard_port"), static_cast<int>(m_robotPumpSettings.commandPort)).toInt(),
+            m_robotPumpSettings.commandPort));
+    m_robotPumpSettings.motionPort = static_cast<quint16>(
+        treatmentSafePort(
+            settings.value(QStringLiteral("dobot/motion_port"), static_cast<int>(m_robotPumpSettings.motionPort)).toInt(),
+            m_robotPumpSettings.motionPort));
+    m_robotPumpSettings.timeoutMs =
+        qBound(1000, settings.value(QStringLiteral("dobot/timeout_ms"), m_robotPumpSettings.timeoutMs).toInt(), 10000);
+}
+
+void TreatmentPage::applyTreatmentRobotPumpSettings()
+{
+    m_robotPumpClient.setSettings(m_robotPumpSettings);
+}
+
+bool TreatmentPage::ensureRobotPumpControl(QString* errorMessage)
+{
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+
+    if (!m_robotPumpClient.isConnected()) {
+        QString connectError;
+        if (!m_robotPumpClient.connectToController(&connectError)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = connectError;
+            }
+            return false;
+        }
+        appendLog(QStringLiteral("RO 第三泵已连接机械臂 %1:%2").arg(m_robotPumpSettings.host).arg(m_robotPumpSettings.commandPort));
+    }
+
+    QString controlError;
+    const panthera::adapters::dobot::DobotCommandResult controlResult = m_robotPumpClient.requestControl(&controlError);
+    if (!controlResult.ok()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = controlError.isEmpty() ? controlResult.protocolError : controlError;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool TreatmentPage::sendRobotPumpDo(int index, bool on, const QString& action, QString* errorMessage)
+{
+    QString commandError;
+    const panthera::adapters::dobot::DobotCommandResult result =
+        m_robotPumpClient.setDigitalOutputInstant(index, on, &commandError);
+    appendLog(QStringLiteral("%1：DOInstant(%2,%3) -> ErrorID=%4")
+                  .arg(action)
+                  .arg(index)
+                  .arg(on ? 1 : 0)
+                  .arg(result.errorId));
+    if (!result.ok()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = commandError.isEmpty() ? result.protocolError : commandError;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool TreatmentPage::setRobotPumpMode(bool do13On, bool do14On, const QString& action, QString* errorMessage)
+{
+    if (!ensureRobotPumpControl(errorMessage)) {
+        return false;
+    }
+
+    if (do13On && do14On) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("禁止同时打开 DO13 和 DO14");
+        }
+        return false;
+    }
+
+    if (do13On) {
+        if (!sendRobotPumpDo(kRobotPumpReverseDo, false, action, errorMessage)) {
+            return false;
+        }
+        QCoreApplication::processEvents();
+        QThread::msleep(80);
+        return sendRobotPumpDo(kRobotPumpForwardDo, true, action, errorMessage);
+    }
+
+    if (do14On) {
+        if (!sendRobotPumpDo(kRobotPumpForwardDo, false, action, errorMessage)) {
+            return false;
+        }
+        QCoreApplication::processEvents();
+        QThread::msleep(80);
+        return sendRobotPumpDo(kRobotPumpReverseDo, true, action, errorMessage);
+    }
+
+    return sendRobotPumpDo(kRobotPumpForwardDo, false, action, errorMessage)
+        && sendRobotPumpDo(kRobotPumpReverseDo, false, action, errorMessage);
+}
+
+void TreatmentPage::refreshFluidSerialPorts()
+{
+    if (!m_waterPumpClient.isOpen()) {
+        refreshSerialPortCombo(m_waterPumpPortCombo);
+    }
+    if (!m_liquidLevelClient.isOpen()) {
+        refreshSerialPortCombo(m_liquidLevelPortCombo);
+    }
+    if (!m_temperatureClient.isOpen()) {
+        refreshSerialPortCombo(m_temperaturePortCombo);
+    }
+}
+
+void TreatmentPage::toggleWaterPumpConnection()
+{
+    if (m_waterPumpClient.isOpen()) {
+        const QString port = m_waterPumpClient.portName();
+        m_waterPumpClient.close();
+        setFluidStatus(QStringLiteral("水泵 485 已断开：%1").arg(port), false);
+        refreshFluidUi();
+        return;
+    }
+
+    panthera::adapters::waterpump::WaterPumpSerialSettings settings;
+    settings.portName = selectedSerialPortName(m_waterPumpPortCombo);
+    settings.baudRate = selectedBaudRate(m_waterPumpBaudCombo, 9600);
+
+    QString errorMessage;
+    if (!m_waterPumpClient.open(settings, &errorMessage)) {
+        setFluidStatus(errorMessage, false);
+        refreshFluidUi();
+        return;
+    }
+
+    setFluidStatus(QStringLiteral("水泵 485 连接成功：%1 @ %2 bps")
+                       .arg(m_waterPumpClient.portName())
+                       .arg(m_waterPumpClient.baudRate()),
+                   true);
+    refreshFluidUi();
+}
+
+void TreatmentPage::toggleTemperatureConnection()
+{
+    if (m_temperatureClient.isOpen()) {
+        const QString port = m_temperatureClient.portName();
+        m_temperatureClient.close();
+        m_temperatureRefreshTimer.stop();
+        setTemperatureStatus(QStringLiteral("温控 485 已断开：%1").arg(port), false);
+        refreshTemperatureUi();
+        return;
+    }
+
+    panthera::adapters::anthone::Lu926TemperatureSerialSettings settings;
+    settings.portName = selectedSerialPortName(m_temperaturePortCombo);
+    settings.baudRate = selectedBaudRate(
+        m_temperatureBaudCombo,
+        panthera::adapters::anthone::Lu926TemperatureProtocol::kDefaultBaudRate);
+
+    QString errorMessage;
+    if (!m_temperatureClient.open(settings, &errorMessage)) {
+        setTemperatureStatus(errorMessage, false);
+        refreshTemperatureUi();
+        return;
+    }
+
+    setTemperatureStatus(QStringLiteral("温控 485 连接成功：%1 @ %2 bps，地址 04")
+                             .arg(m_temperatureClient.portName())
+                             .arg(m_temperatureClient.baudRate()),
+                         true);
+    refreshTemperatureUi();
+    m_temperatureRefreshTimer.start();
+    onTemperatureRefreshTick();
+}
+
+void TreatmentPage::toggleLiquidLevelConnection()
+{
+    if (m_liquidLevelClient.isOpen()) {
+        const QString port = m_liquidLevelClient.portName();
+        m_liquidLevelClient.close();
+        setFluidStatus(QStringLiteral("液位传感器 485 已断开：%1").arg(port), false);
+        refreshFluidUi();
+        return;
+    }
+
+    panthera::adapters::liquidlevel::LiquidLevelSerialSettings settings;
+    settings.portName = selectedSerialPortName(m_liquidLevelPortCombo);
+    settings.baudRate = selectedBaudRate(m_liquidLevelBaudCombo, 9600);
+
+    QString errorMessage;
+    if (!m_liquidLevelClient.open(settings, &errorMessage)) {
+        setFluidStatus(errorMessage, false);
+        refreshFluidUi();
+        return;
+    }
+
+    setFluidStatus(QStringLiteral("液位传感器 485 连接成功：%1 @ %2 bps，地址 01")
+                       .arg(m_liquidLevelClient.portName())
+                       .arg(m_liquidLevelClient.baudRate()),
+                   true);
+    refreshFluidUi();
+}
+
+bool TreatmentPage::ensureWaterPumpConnection()
+{
+    if (m_waterPumpClient.isOpen()) {
+        return true;
+    }
+    setFluidStatus(QStringLiteral("请先连接 02/03 水泵 485 串口"), false);
+    refreshFluidUi();
+    return false;
+}
+
+bool TreatmentPage::ensureTemperatureConnection()
+{
+    if (m_temperatureClient.isOpen()) {
+        return true;
+    }
+    setTemperatureStatus(QStringLiteral("请先连接温控 485 串口"), false);
+    refreshTemperatureUi();
+    return false;
+}
+
+bool TreatmentPage::ensureLiquidLevelConnection()
+{
+    if (m_liquidLevelClient.isOpen()) {
+        return true;
+    }
+    setFluidStatus(QStringLiteral("请先连接液位传感器 485 串口"), false);
+    refreshFluidUi();
+    return false;
+}
+
+bool TreatmentPage::setWaterPumpFlow(quint8 address, double flowMlPerMin, QString* errorMessage, QByteArray* response)
+{
+    return m_waterPumpClient.setFlowMlPerMin(address, flowMlPerMin, errorMessage, response);
+}
+
+bool TreatmentPage::startWaterPump(quint8 address, QString* errorMessage, QByteArray* response)
+{
+    return m_waterPumpClient.startPump(address, errorMessage, response);
+}
+
+bool TreatmentPage::stopWaterPump(quint8 address, QString* errorMessage, QByteArray* response)
+{
+    return m_waterPumpClient.stopPump(address, errorMessage, response);
+}
+
+void TreatmentPage::startRobotPumpFill()
+{
+    resetTank1UpperLimitDebounce();
+    m_robotPumpFillingTank1 = false;
+    setFluidWorkflowState(FluidWorkflowState::FillingTank1);
+    setFluidStatus(QStringLiteral("RO 注水流程启动：检测水箱1上限位"), true);
+    if (!m_fluidControlTimer.isActive()) {
+        m_fluidControlTimer.start();
+    }
+    onFluidControlTick();
+}
+
+void TreatmentPage::startRobotPumpDrain()
+{
+    QString errorMessage;
+    if (!setRobotPumpMode(false, true, QStringLiteral("RO 第三泵出水"), &errorMessage)) {
+        setFluidStatus(QStringLiteral("RO 出水启动失败：%1").arg(errorMessage), false);
+        return;
+    }
+    m_robotPumpFillingTank1 = false;
+    setFluidStatus(QStringLiteral("RO 出水已启动：DO13=OFF / DO14=ON"), true);
+}
+
+void TreatmentPage::stopRobotPumpFromUi()
+{
+    QString errorMessage;
+    if (!setRobotPumpMode(false, false, QStringLiteral("RO 第三泵停止"), &errorMessage)) {
+        setFluidStatus(QStringLiteral("RO 停止失败：%1").arg(errorMessage), false);
+        return;
+    }
+    m_robotPumpFillingTank1 = false;
+    setFluidStatus(QStringLiteral("RO 第三泵已停止"), true);
+}
+
+void TreatmentPage::confirmTank2Fill()
+{
+    if (m_fluidWorkflowState != FluidWorkflowState::WaitingTank2Confirm
+        && m_fluidWorkflowState != FluidWorkflowState::ReadyToCycle) {
+        setFluidStatus(QStringLiteral("当前阶段不需要确认 03 加水"), false);
+        return;
+    }
+    startTank2FillInternal();
+}
+
+void TreatmentPage::startWaterCycle()
+{
+    if (!ensureWaterPumpConnection() || !ensureLiquidLevelConnection()) {
+        return;
+    }
+
+    QString errorMessage;
+    QByteArray response;
+    if (!setWaterPumpFlow(
+            panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress,
+            kDefaultLoopFlowMlPerMin,
+            &errorMessage,
+            &response)) {
+        setFluidStatus(QStringLiteral("启动循环失败：03 流速设置失败：%1").arg(errorMessage), false);
+        return;
+    }
+    if (!setWaterPumpFlow(
+            panthera::adapters::waterpump::WaterPumpModbusClient::kReturnPumpAddress,
+            kDefaultLoopFlowMlPerMin,
+            &errorMessage,
+            &response)) {
+        setFluidStatus(QStringLiteral("启动循环失败：02 流速设置失败：%1").arg(errorMessage), false);
+        return;
+    }
+
+    m_cycleBalanceMode = CycleBalanceMode::Unknown;
+    setFluidWorkflowState(FluidWorkflowState::Cycling);
+    setCycleBalanceMode(CycleBalanceMode::BothPumps);
+    if (!m_fluidControlTimer.isActive()) {
+        m_fluidControlTimer.start();
+    }
+    setFluidStatus(QStringLiteral("循环已启动：03 与 02 同步运行，目标液位 %1 mm")
+                       .arg(m_tank2TargetLevelSpin != nullptr ? m_tank2TargetLevelSpin->value() : 0.0, 0, 'f', 1),
+                   true);
+}
+
+void TreatmentPage::stopWaterCycle()
+{
+    if (!m_waterPumpClient.isOpen()) {
+        setFluidStatus(QStringLiteral("水泵 485 未连接，循环停止命令未发送"), false);
+        return;
+    }
+
+    QStringList failures;
+    QString errorMessage;
+    QByteArray response;
+    if (!stopWaterPump(panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress, &errorMessage, &response)) {
+        failures.push_back(QStringLiteral("03：%1").arg(errorMessage));
+    }
+    if (!stopWaterPump(panthera::adapters::waterpump::WaterPumpModbusClient::kReturnPumpAddress, &errorMessage, &response)) {
+        failures.push_back(QStringLiteral("02：%1").arg(errorMessage));
+    }
+
+    m_cycleBalanceMode = CycleBalanceMode::Unknown;
+    if (m_fluidWorkflowState == FluidWorkflowState::Cycling) {
+        setFluidWorkflowState(FluidWorkflowState::ReadyToCycle);
+    }
+    if (m_fluidWorkflowState != FluidWorkflowState::FillingTank1
+        && m_fluidWorkflowState != FluidWorkflowState::FillingTank2) {
+        m_fluidControlTimer.stop();
+    }
+
+    if (!failures.isEmpty()) {
+        setFluidStatus(QStringLiteral("停止循环未全部成功：%1").arg(failures.join(QStringLiteral("；"))), false);
+        return;
+    }
+    setFluidStatus(QStringLiteral("循环已停止，流程阶段保持为：%1").arg(fluidWorkflowStateText()), true);
+}
+
+void TreatmentPage::stopFluidDevicesFromUi()
+{
+    QString summary;
+    stopAllFluidDevices(false, true, &summary);
+    setFluidStatus(QStringLiteral("水路已手动停止，流程阶段保持为：%1\n%2")
+                       .arg(fluidWorkflowStateText(), summary),
+                   true);
+}
+
+bool TreatmentPage::stopAllFluidDevices(bool resetWorkflow, bool stopHeatingDevice, QString* summary)
+{
+    QStringList messages;
+    QStringList failures;
+    QString errorMessage;
+    QByteArray response;
+
+    m_fluidControlTimer.stop();
+    m_robotPumpFillingTank1 = false;
+    m_cycleBalanceMode = CycleBalanceMode::Unknown;
+
+    if (m_waterPumpClient.isOpen()) {
+        if (stopWaterPump(panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress, &errorMessage, &response)) {
+            messages.push_back(QStringLiteral("03 已停止"));
+        } else {
+            failures.push_back(QStringLiteral("03：%1").arg(errorMessage));
+        }
+        if (stopWaterPump(panthera::adapters::waterpump::WaterPumpModbusClient::kReturnPumpAddress, &errorMessage, &response)) {
+            messages.push_back(QStringLiteral("02 已停止"));
+        } else {
+            failures.push_back(QStringLiteral("02：%1").arg(errorMessage));
+        }
+    }
+
+    if (m_robotPumpClient.isConnected() || m_robotPumpFillingTank1) {
+        errorMessage.clear();
+        if (setRobotPumpMode(false, false, QStringLiteral("RO 第三泵安全停止"), &errorMessage)) {
+            messages.push_back(QStringLiteral("RO 已停止"));
+        } else if (!errorMessage.trimmed().isEmpty()) {
+            failures.push_back(QStringLiteral("RO：%1").arg(errorMessage));
+        }
+    }
+
+    if (stopHeatingDevice) {
+        m_temperatureRefreshTimer.stop();
+        if (m_temperatureClient.isOpen()) {
+            errorMessage.clear();
+            if (setTemperatureSetpoint(0.0, &errorMessage, &response)) {
+                m_activeTemperatureTargetCelsius = 0.0;
+                messages.push_back(QStringLiteral("加热目标已置 0°C"));
+            } else {
+                failures.push_back(QStringLiteral("温控：%1").arg(errorMessage));
+            }
+        }
+    }
+
+    if (resetWorkflow) {
+        setFluidWorkflowState(FluidWorkflowState::Idle);
+    }
+    refreshFluidUi();
+    refreshTemperatureUi();
+
+    if (summary != nullptr) {
+        QStringList parts = messages;
+        for (const QString& failure : failures) {
+            parts.push_back(QStringLiteral("失败 %1").arg(failure));
+        }
+        *summary = parts.isEmpty() ? QStringLiteral("没有已连接设备需要停止") : parts.join(QStringLiteral("；"));
+    }
+    return failures.isEmpty();
+}
+
+bool TreatmentPage::readTank1UpperLimit(bool* active, QString* errorMessage)
+{
+    if (active != nullptr) {
+        *active = false;
+    }
+    if (!prepareTreatmentMotorGateway(errorMessage)) {
+        return false;
+    }
+    if (!selectTreatmentMotor(static_cast<quint32>(kTank1UpperLimitNodeId), errorMessage)) {
+        return false;
+    }
+    if (!m_treatmentMotorGateway.refreshSensorFeedback(errorMessage)) {
+        return false;
+    }
+
+    const diji::adapters::uim::UimMotorSnapshot snapshot = m_treatmentMotorGateway.latestSnapshot();
+    if (!snapshot.hasSensorFeedback) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("水箱1上限位未返回 S1/S2/S3 反馈");
+        }
+        return false;
+    }
+
+    if (active != nullptr) {
+        *active = tankLimitSensorActive(snapshot, kTank1UpperLimitSensorIndex);
+    }
+    return true;
+}
+
+bool TreatmentPage::tank1UpperLimitDebounced(bool active)
+{
+    if (!active) {
+        resetTank1UpperLimitDebounce();
+        return false;
+    }
+
+    if (!m_tank1UpperLimitRawActive) {
+        m_tank1UpperLimitRawActive = true;
+        m_tank1UpperLimitDebounceTimer.start();
+        return false;
+    }
+
+    return m_tank1UpperLimitDebounceTimer.isValid()
+        && m_tank1UpperLimitDebounceTimer.elapsed() >= kTank1UpperLimitDebounceMs;
+}
+
+void TreatmentPage::resetTank1UpperLimitDebounce()
+{
+    m_tank1UpperLimitRawActive = false;
+    m_tank1UpperLimitDebounceTimer.invalidate();
+}
+
+bool TreatmentPage::readTank2Level(double* millimeters, QString* errorMessage, QByteArray* response)
+{
+    if (!m_liquidLevelClient.readLevelMillimeters(
+            panthera::adapters::liquidlevel::LiquidLevelModbusClient::kDefaultAddress,
+            millimeters,
+            errorMessage,
+            response)) {
+        return false;
+    }
+    if (millimeters != nullptr) {
+        updateTank2LevelDisplay(*millimeters);
+    }
+    return true;
+}
+
+int TreatmentPage::selectedTemperatureChannel() const
+{
+    if (m_temperatureChannelCombo == nullptr) {
+        return 1;
+    }
+    const QVariant value = m_temperatureChannelCombo->currentData();
+    return value.isValid() ? value.toInt() : m_temperatureChannelCombo->currentIndex() + 1;
+}
+
+bool TreatmentPage::setTemperatureSetpoint(double celsius, QString* errorMessage, QByteArray* response)
+{
+    return m_temperatureClient.setChannelSetpoint(
+        panthera::adapters::anthone::Lu926TemperatureProtocol::kDefaultAddress,
+        selectedTemperatureChannel(),
+        celsius,
+        errorMessage,
+        response);
+}
+
+void TreatmentPage::startHeating()
+{
+    if (!ensureTemperatureConnection() || m_temperatureSetpointSpin == nullptr) {
+        return;
+    }
+
+    const double celsius = m_temperatureSetpointSpin->value();
+    if (celsius < kTemperatureMinimumCelsius || celsius > kTemperatureMaximumCelsius) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("温控设定异常"),
+            QStringLiteral("目标温度需在 %1 - %2 °C。")
+                .arg(kTemperatureMinimumCelsius, 0, 'f', 1)
+                .arg(kTemperatureMaximumCelsius, 0, 'f', 1));
+        return;
+    }
+
+    QString errorMessage;
+    QByteArray response;
+    if (!setTemperatureSetpoint(celsius, &errorMessage, &response)) {
+        setTemperatureStatus(QStringLiteral("开始加热失败：%1").arg(errorMessage), false);
+        QMessageBox::warning(this, QStringLiteral("温控通信异常"), QStringLiteral("开始加热失败：%1").arg(errorMessage));
+        return;
+    }
+
+    m_activeTemperatureTargetCelsius = celsius;
+    m_temperatureAlarmDisplayed = false;
+    setTemperatureStatus(QStringLiteral("已设定目标温度 %1 °C，温控模块将自动加热\n响应：%2")
+                             .arg(celsius, 0, 'f', 1)
+                             .arg(panthera::adapters::anthone::Lu926TemperatureModbusClient::frameToHex(response)),
+                         true);
+    refreshTemperatureUi();
+    if (!m_temperatureRefreshTimer.isActive()) {
+        m_temperatureRefreshTimer.start();
+    }
+    onTemperatureRefreshTick();
+}
+
+void TreatmentPage::stopHeating()
+{
+    if (!ensureTemperatureConnection()) {
+        return;
+    }
+
+    QString errorMessage;
+    QByteArray response;
+    if (!setTemperatureSetpoint(0.0, &errorMessage, &response)) {
+        setTemperatureStatus(QStringLiteral("停止加热失败：%1").arg(errorMessage), false);
+        QMessageBox::warning(this, QStringLiteral("温控通信异常"), QStringLiteral("停止加热失败：%1").arg(errorMessage));
+        return;
+    }
+
+    m_activeTemperatureTargetCelsius = 0.0;
+    setTemperatureStatus(QStringLiteral("已停止加热：目标温度置 0 °C\n响应：%1")
+                             .arg(panthera::adapters::anthone::Lu926TemperatureModbusClient::frameToHex(response)),
+                         true);
+    refreshTemperatureUi();
+}
+
+void TreatmentPage::stopHeatingForAlarm(const QString& reason)
+{
+    QString errorMessage;
+    QByteArray response;
+    if (m_temperatureClient.isOpen()) {
+        setTemperatureSetpoint(0.0, &errorMessage, &response);
+    }
+    m_activeTemperatureTargetCelsius = 0.0;
+    m_temperatureRefreshTimer.stop();
+    setTemperatureStatus(QStringLiteral("温控异常，已尝试将目标温度置 0 °C：%1").arg(reason), false);
+    if (!m_temperatureAlarmDisplayed) {
+        m_temperatureAlarmDisplayed = true;
+        QMessageBox::warning(this, QStringLiteral("温控异常"), QStringLiteral("温控异常，已尝试停止加热：%1").arg(reason));
+    }
+}
+
+void TreatmentPage::onTemperatureRefreshTick()
+{
+    if (!m_temperatureClient.isOpen()) {
+        m_temperatureRefreshTimer.stop();
+        refreshTemperatureUi();
+        return;
+    }
+
+    const int channelIndex = selectedTemperatureChannel();
+    QString errorMessage;
+    QByteArray response;
+    double celsius = 0.0;
+    if (!m_temperatureClient.readChannelTemperature(
+            panthera::adapters::anthone::Lu926TemperatureProtocol::kDefaultAddress,
+            channelIndex,
+            &celsius,
+            &errorMessage,
+            &response)) {
+        stopHeatingForAlarm(QStringLiteral("CH%1 读取温度失败：%2").arg(channelIndex).arg(errorMessage));
+        return;
+    }
+
+    const QString heatState = m_activeTemperatureTargetCelsius <= 0.0
+        ? QStringLiteral("已停止")
+        : (celsius < m_activeTemperatureTargetCelsius ? QStringLiteral("加热中") : QStringLiteral("目标附近"));
+    setTemperatureStatus(QStringLiteral("CH%1 当前温度：%2 °C\n目标：%3 °C；状态：%4\n响应：%5")
+                             .arg(channelIndex)
+                             .arg(celsius, 0, 'f', 1)
+                             .arg(m_activeTemperatureTargetCelsius, 0, 'f', 1)
+                             .arg(heatState)
+                             .arg(panthera::adapters::anthone::Lu926TemperatureModbusClient::frameToHex(response)),
+                         true);
+}
+
+void TreatmentPage::onFluidControlTick()
+{
+    if (m_fluidWorkflowState == FluidWorkflowState::FillingTank1) {
+        bool upperLimitActive = false;
+        QString errorMessage;
+        if (!readTank1UpperLimit(&upperLimitActive, &errorMessage)) {
+            if (m_robotPumpFillingTank1) {
+                QString stopError;
+                setRobotPumpMode(false, false, QStringLiteral("水箱1上限位读取失败，停止 RO"), &stopError);
+                m_robotPumpFillingTank1 = false;
+            }
+            setFluidStatus(QStringLiteral("水箱1上限位读取失败，已停止 RO：%1").arg(errorMessage), false);
+            return;
+        }
+
+        if (upperLimitActive) {
+            if (m_robotPumpFillingTank1) {
+                QString stopError;
+                setRobotPumpMode(false, false, QStringLiteral("水箱1上限位触发，停止 RO"), &stopError);
+                m_robotPumpFillingTank1 = false;
+            }
+            if (tank1UpperLimitDebounced(true)) {
+                handleTank1UpperLimitReached();
+                return;
+            }
+            setFluidStatus(QStringLiteral("水箱1上限位已触发，正在防抖确认"), true);
+            return;
+        }
+
+        resetTank1UpperLimitDebounce();
+        if (!m_robotPumpFillingTank1) {
+            QString pumpError;
+            if (!setRobotPumpMode(true, false, QStringLiteral("RO 第三泵注水"), &pumpError)) {
+                setFluidStatus(QStringLiteral("RO 注水启动失败：%1").arg(pumpError), false);
+                return;
+            }
+            m_robotPumpFillingTank1 = true;
+        }
+        setFluidStatus(QStringLiteral("RO 注水中：等待水箱1上限位"), true);
+        return;
+    }
+
+    if (m_fluidWorkflowState == FluidWorkflowState::FillingTank2) {
+        if (!ensureLiquidLevelConnection()) {
+            return;
+        }
+        double level = 0.0;
+        QString errorMessage;
+        QByteArray response;
+        if (!readTank2Level(&level, &errorMessage, &response)) {
+            stopWaterPump(panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress, nullptr, nullptr);
+            setFluidStatus(QStringLiteral("读取水箱2液位失败，已停止03水泵：%1").arg(errorMessage), false);
+            return;
+        }
+
+        const double target = m_tank2TargetLevelSpin != nullptr ? m_tank2TargetLevelSpin->value() : 0.0;
+        if (level >= target) {
+            QString stopError;
+            QByteArray stopResponse;
+            stopWaterPump(
+                panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress,
+                &stopError,
+                &stopResponse);
+            setFluidWorkflowState(FluidWorkflowState::ReadyToCycle);
+            m_fluidControlTimer.stop();
+            setFluidStatus(QStringLiteral("水箱2已达到目标液位：%1 / %2 mm，03水泵已停止")
+                               .arg(level, 0, 'f', 1)
+                               .arg(target, 0, 'f', 1),
+                           true);
+            return;
+        }
+
+        setFluidStatus(QStringLiteral("03 向水箱2加水中：%1 / %2 mm")
+                           .arg(level, 0, 'f', 1)
+                           .arg(target, 0, 'f', 1),
+                       true);
+        return;
+    }
+
+    if (m_fluidWorkflowState == FluidWorkflowState::Cycling) {
+        if (!ensureLiquidLevelConnection()) {
+            return;
+        }
+
+        double level = 0.0;
+        QString errorMessage;
+        if (!readTank2Level(&level, &errorMessage)) {
+            stopWaterCycle();
+            setFluidStatus(QStringLiteral("循环中读取液位失败，已停止循环：%1").arg(errorMessage), false);
+            return;
+        }
+
+        const double target = m_tank2TargetLevelSpin != nullptr ? m_tank2TargetLevelSpin->value() : 0.0;
+        if (level > target + kTank2CycleToleranceMillimeters) {
+            setCycleBalanceMode(CycleBalanceMode::DrainingTank2);
+            setFluidStatus(QStringLiteral("循环中：水箱2偏高 %1 mm，02 开 / 03 关")
+                               .arg(level, 0, 'f', 1),
+                           true);
+        } else if (level < target - kTank2CycleToleranceMillimeters) {
+            setCycleBalanceMode(CycleBalanceMode::FillingTank2);
+            setFluidStatus(QStringLiteral("循环中：水箱2偏低 %1 mm，03 开 / 02 关")
+                               .arg(level, 0, 'f', 1),
+                           true);
+        } else {
+            setCycleBalanceMode(CycleBalanceMode::BothPumps);
+            setFluidStatus(QStringLiteral("循环中：水箱2液位 %1 mm，03/02 同步运行")
+                               .arg(level, 0, 'f', 1),
+                           true);
+        }
+    }
+}
+
+void TreatmentPage::handleTank1UpperLimitReached()
+{
+    QString stopError;
+    setRobotPumpMode(false, false, QStringLiteral("水箱1上限位确认，停止 RO"), &stopError);
+    m_robotPumpFillingTank1 = false;
+    setFluidWorkflowState(FluidWorkflowState::WaitingTank2Confirm);
+    m_fluidControlTimer.stop();
+    setFluidStatus(QStringLiteral("水箱1上限位已确认，等待确认启动03向水箱2加水"), true);
+
+    const QMessageBox::StandardButton button = QMessageBox::question(
+        this,
+        QStringLiteral("确认03加水"),
+        QStringLiteral("水箱1已达到上限位，是否启动03水泵向水箱2加水？"),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::Yes);
+    if (button == QMessageBox::Yes) {
+        startTank2FillInternal();
+    }
+}
+
+void TreatmentPage::startTank2FillInternal()
+{
+    if (!ensureWaterPumpConnection() || !ensureLiquidLevelConnection()) {
+        return;
+    }
+    const double target = m_tank2TargetLevelSpin != nullptr ? m_tank2TargetLevelSpin->value() : 0.0;
+    if (target <= 0.0 || target > kTank2MaximumTargetLevelMillimeters) {
+        QMessageBox::warning(this, QStringLiteral("目标液位异常"), QStringLiteral("请设置 0 - %1 mm 内的水箱2目标液位。")
+            .arg(kTank2MaximumTargetLevelMillimeters, 0, 'f', 1));
+        return;
+    }
+
+    QString errorMessage;
+    QByteArray response;
+    if (!setWaterPumpFlow(
+            panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress,
+            kTankTransferFlowMlPerMin,
+            &errorMessage,
+            &response)) {
+        setFluidStatus(QStringLiteral("03 加水启动失败：流速设置失败：%1").arg(errorMessage), false);
+        return;
+    }
+    if (!startWaterPump(
+            panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress,
+            &errorMessage,
+            &response)) {
+        setFluidStatus(QStringLiteral("03 加水启动失败：%1").arg(errorMessage), false);
+        return;
+    }
+
+    setFluidWorkflowState(FluidWorkflowState::FillingTank2);
+    if (!m_fluidControlTimer.isActive()) {
+        m_fluidControlTimer.start();
+    }
+    setFluidStatus(QStringLiteral("03 已启动，正在从水箱1向水箱2加水，目标 %1 mm").arg(target, 0, 'f', 1), true);
+}
+
+void TreatmentPage::setCycleBalanceMode(CycleBalanceMode mode)
+{
+    if (mode == m_cycleBalanceMode || !m_waterPumpClient.isOpen()) {
+        return;
+    }
+
+    QString errorMessage;
+    QByteArray response;
+    bool ok = true;
+    if (mode == CycleBalanceMode::BothPumps) {
+        ok = startWaterPump(panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress, &errorMessage, &response)
+            && startWaterPump(panthera::adapters::waterpump::WaterPumpModbusClient::kReturnPumpAddress, &errorMessage, &response);
+    } else if (mode == CycleBalanceMode::FillingTank2) {
+        ok = stopWaterPump(panthera::adapters::waterpump::WaterPumpModbusClient::kReturnPumpAddress, &errorMessage, &response)
+            && startWaterPump(panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress, &errorMessage, &response);
+    } else if (mode == CycleBalanceMode::DrainingTank2) {
+        ok = stopWaterPump(panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress, &errorMessage, &response)
+            && startWaterPump(panthera::adapters::waterpump::WaterPumpModbusClient::kReturnPumpAddress, &errorMessage, &response);
+    }
+
+    if (!ok) {
+        setFluidStatus(QStringLiteral("循环液位调节失败：%1").arg(errorMessage), false);
+        return;
+    }
+    m_cycleBalanceMode = mode;
+}
+
+void TreatmentPage::setFluidStatus(const QString& message, bool ok)
+{
+    if (m_fluidStatusLabel == nullptr) {
+        return;
+    }
+    m_fluidStatusLabel->setText(QStringLiteral("%1\n阶段：%2").arg(message, fluidWorkflowStateText()));
+    m_fluidStatusLabel->setStyleSheet(compactStatusStyle(ok));
+    appendLog(QStringLiteral("水路：%1").arg(message));
+}
+
+void TreatmentPage::setTemperatureStatus(const QString& message, bool ok)
+{
+    if (m_temperatureStatusLabel == nullptr) {
+        return;
+    }
+    m_temperatureStatusLabel->setText(message);
+    m_temperatureStatusLabel->setStyleSheet(compactStatusStyle(ok));
+    appendLog(QStringLiteral("温控：%1").arg(message));
+}
+
+void TreatmentPage::refreshFluidUi()
+{
+    const bool waterPumpConnected = m_waterPumpClient.isOpen();
+    const bool liquidLevelConnected = m_liquidLevelClient.isOpen();
+    if (m_waterPumpPortCombo != nullptr) {
+        m_waterPumpPortCombo->setEnabled(!waterPumpConnected);
+    }
+    if (m_waterPumpBaudCombo != nullptr) {
+        m_waterPumpBaudCombo->setEnabled(!waterPumpConnected);
+    }
+    if (m_waterPumpConnectionButton != nullptr) {
+        m_waterPumpConnectionButton->setText(waterPumpConnected ? QStringLiteral("断开水泵") : QStringLiteral("连接水泵"));
+    }
+    if (m_liquidLevelPortCombo != nullptr) {
+        m_liquidLevelPortCombo->setEnabled(!liquidLevelConnected);
+    }
+    if (m_liquidLevelBaudCombo != nullptr) {
+        m_liquidLevelBaudCombo->setEnabled(!liquidLevelConnected);
+    }
+    if (m_liquidLevelConnectionButton != nullptr) {
+        m_liquidLevelConnectionButton->setText(liquidLevelConnected ? QStringLiteral("断开液位") : QStringLiteral("连接液位"));
+    }
+    if (m_liquidLevelAddressEdit != nullptr) {
+        m_liquidLevelAddressEdit->setText(QStringLiteral("01"));
+    }
+    if (m_confirmTank2FillButton != nullptr) {
+        m_confirmTank2FillButton->setEnabled(m_fluidWorkflowState == FluidWorkflowState::WaitingTank2Confirm);
+    }
+    if (m_startCycleButton != nullptr) {
+        m_startCycleButton->setEnabled(waterPumpConnected && liquidLevelConnected);
+    }
+    if (m_stopCycleButton != nullptr) {
+        m_stopCycleButton->setEnabled(waterPumpConnected);
+    }
+}
+
+void TreatmentPage::refreshTemperatureUi()
+{
+    const bool connected = m_temperatureClient.isOpen();
+    if (m_temperaturePortCombo != nullptr) {
+        m_temperaturePortCombo->setEnabled(!connected);
+    }
+    if (m_temperatureBaudCombo != nullptr) {
+        m_temperatureBaudCombo->setEnabled(!connected);
+    }
+    if (m_temperatureConnectionButton != nullptr) {
+        m_temperatureConnectionButton->setText(connected ? QStringLiteral("断开温控") : QStringLiteral("连接温控"));
+    }
+    if (m_temperatureStartButton != nullptr) {
+        m_temperatureStartButton->setEnabled(connected);
+    }
+    if (m_temperatureStopButton != nullptr) {
+        m_temperatureStopButton->setEnabled(connected);
+    }
+}
+
+void TreatmentPage::updateTank2LevelDisplay(double millimeters)
+{
+    m_hasTank2Level = true;
+    m_lastTank2LevelMillimeters = millimeters;
+    if (m_tank2LevelLabel != nullptr) {
+        m_tank2LevelLabel->setText(QStringLiteral("%1 mm").arg(millimeters, 0, 'f', 1));
+    }
+}
+
+void TreatmentPage::setFluidWorkflowState(FluidWorkflowState state)
+{
+    m_fluidWorkflowState = state;
+    refreshFluidUi();
+}
+
+QString TreatmentPage::fluidWorkflowStateText() const
+{
+    switch (m_fluidWorkflowState) {
+    case FluidWorkflowState::Idle:
+        return QStringLiteral("待命");
+    case FluidWorkflowState::FillingTank1:
+        return QStringLiteral("RO注水到水箱1");
+    case FluidWorkflowState::WaitingTank2Confirm:
+        return QStringLiteral("等待确认03加水");
+    case FluidWorkflowState::FillingTank2:
+        return QStringLiteral("03加水到水箱2");
+    case FluidWorkflowState::ReadyToCycle:
+        return QStringLiteral("等待启动循环");
+    case FluidWorkflowState::Cycling:
+        return QStringLiteral("循环中");
+    }
+    return QStringLiteral("未知");
 }
 
 void TreatmentPage::startTreatment()
@@ -612,16 +2501,32 @@ void TreatmentPage::startTreatment()
         updateLayerPreview();
     }
 
-    QString reason;
-    if (!m_safetyKernel->requestTreatmentStart(&reason)) {
-        appendLog(QStringLiteral("\u62d2\u7edd\u5f00\u59cb\u6cbb\u7597\uff1a%1").arg(reason));
-        return;
-    }
+    {
+        ScopedSystemBeepMute muteSystemBeeps;
 
-    if (m_simulationDevice != nullptr && !m_simulationDevice->setTreatmentOutputEnabled(true, &reason)) {
-        appendLog(QStringLiteral("\u529f\u7387\u94fe\u8def\u672a\u5c31\u7eea\uff1a%1").arg(reason));
-        m_safetyKernel->stopTreatment();
-        return;
+        QString reason;
+        if (!m_safetyKernel->requestTreatmentStart(&reason)) {
+            appendLog(QStringLiteral("\u62d2\u7edd\u5f00\u59cb\u6cbb\u7597\uff1a%1").arg(reason));
+            return;
+        }
+
+        const TherapyPlan& selectedPlan = m_context->activePlan();
+        const TherapySegment* selectedSegment = selectedLayerSegment();
+        if (selectedSegment == nullptr) {
+            appendLog(QStringLiteral("当前治疗层无效，无法定位 7 号电机"));
+            m_safetyKernel->stopTreatment();
+            return;
+        }
+
+        QString motorError;
+        if (!prepareSelectedLayerTreatmentMotors(selectedPlan, *selectedSegment, &motorError)) {
+            appendLog(QStringLiteral("治疗前电机定位失败：%1").arg(motorError));
+            m_safetyKernel->stopTreatment();
+            return;
+        }
+    }
+    if (m_simulationDevice != nullptr) {
+        m_simulationDevice->setTreatmentOutputEnabled(false);
     }
 
     const TherapyPlan& plan = m_context->activePlan();
@@ -675,9 +2580,8 @@ void TreatmentPage::resumeTreatment()
         return;
     }
 
-    if (m_simulationDevice != nullptr && !m_simulationDevice->setTreatmentOutputEnabled(true, &reason)) {
-        appendLog(QStringLiteral("\u529f\u7387\u94fe\u8def\u672a\u5c31\u7eea\uff1a%1").arg(reason));
-        return;
+    if (m_simulationDevice != nullptr) {
+        m_simulationDevice->setTreatmentOutputEnabled(false);
     }
 
     m_progressTimer.start();
@@ -706,20 +2610,40 @@ void TreatmentPage::advanceProgress()
         return;
     }
 
-    ++m_completedPointCount;
     const TherapyPlan& plan = m_context->activePlan();
     ensureLayerProgressStorage(plan);
-    if (m_selectedLayerIndex >= 0 && m_selectedLayerIndex < m_layerCompletedPointCounts.size()) {
-        m_layerCompletedPointCounts[m_selectedLayerIndex] = std::min(m_completedPointCount, totalPoints);
-    }
     const TherapySegment* segment = selectedLayerSegment();
     const int maximumPointIndex = segment == nullptr || segment->points.isEmpty()
         ? -1
         : static_cast<int>(segment->points.size()) - 1;
     const int pointIndex = segment == nullptr || segment->points.isEmpty()
         ? -1
-        : std::clamp(m_completedPointCount - 1, 0, maximumPointIndex);
+        : std::clamp(m_completedPointCount, 0, maximumPointIndex);
     const TherapyPoint* point = pointIndex >= 0 ? &segment->points.at(pointIndex) : nullptr;
+    if (m_simulationDevice != nullptr) {
+        m_simulationDevice->setTreatmentOutputEnabled(false);
+    }
+
+    if (segment != nullptr && pointIndex >= 0) {
+        QString motionError;
+        if (!moveTreatmentPointMotors(*segment, pointIndex, &motionError)) {
+            appendLog(QStringLiteral("靶点定位失败：%1").arg(motionError));
+            finalizeTreatment(QStringLiteral("运动失败"));
+            return;
+        }
+    }
+
+    QString outputReason;
+    if (m_simulationDevice != nullptr && !m_simulationDevice->setTreatmentOutputEnabled(true, &outputReason)) {
+        appendLog(QStringLiteral("\u529f\u7387\u94fe\u8def\u672a\u5c31\u7eea\uff1a%1").arg(outputReason));
+        finalizeTreatment(QStringLiteral("功率链路失败"));
+        return;
+    }
+
+    ++m_completedPointCount;
+    if (m_selectedLayerIndex >= 0 && m_selectedLayerIndex < m_layerCompletedPointCounts.size()) {
+        m_layerCompletedPointCounts[m_selectedLayerIndex] = std::min(m_completedPointCount, totalPoints);
+    }
     const double dwellSeconds = point != nullptr ? pointDwellSeconds(*point, plan) : (plan.dwellSeconds > 0.0 ? plan.dwellSeconds : 0.3);
     const double powerWatts = point != nullptr && point->powerWatts > 0.0
         ? point->powerWatts
@@ -809,6 +2733,11 @@ void TreatmentPage::onPatientChanged(const PatientRecord& patient)
 void TreatmentPage::onSafetyChanged(const SafetySnapshot& snapshot)
 {
     m_safetyLabel->setText(QStringLiteral("\u5b89\u5168\u72b6\u6001\uff1a%1").arg(snapshot.message));
+    if (snapshot.state == SafetyState::Red) {
+        QString summary;
+        stopAllFluidDevices(true, true, &summary);
+        setFluidStatus(QStringLiteral("安全联锁触发，水路与加热已停止：%1").arg(summary), false);
+    }
     if (m_progressTimer.isActive()) {
         setButtonState(false, snapshot.state != SafetyState::Red, false, true);
         return;
@@ -830,6 +2759,9 @@ void TreatmentPage::onSafetyChanged(const SafetySnapshot& snapshot)
 void TreatmentPage::onAbortRequested(const QString& reason)
 {
     appendLog(QStringLiteral("\u8054\u9501\u89e6\u53d1\u81ea\u52a8\u4e2d\u6b62\uff1a%1").arg(reason));
+    QString summary;
+    stopAllFluidDevices(true, true, &summary);
+    setFluidStatus(QStringLiteral("治疗中止，水路与加热已停止：%1").arg(summary), false);
     finalizeTreatment(QStringLiteral("\u8054\u9501\u4e2d\u6b62"));
 }
 
@@ -1156,7 +3088,8 @@ int TreatmentPage::visualizationSliceIndexForSelectedLayer(const TherapyPlan& pl
         return 0;
     }
 
-    const int sourceSliceIndex = plan.segments.at(selectedIndex).orderIndex;
+    const TherapySegment& segment = plan.segments.at(selectedIndex);
+    const int sourceSliceIndex = segment.sourceSliceIndex >= 0 ? segment.sourceSliceIndex : segment.orderIndex;
     return sourceSliceIndex >= 0 ? sourceSliceIndex : selectedIndex;
 }
 
@@ -1181,8 +3114,44 @@ TherapyPlan TreatmentPage::selectedLayerPlan(const TherapyPlan& plan) const
     TherapySegment layerSegment = plan.segments.at(normalizedLayerIndex(plan));
     layerSegment.orderIndex = 0;
     layerPlan.segments.push_back(layerSegment);
-    applySerpentinePointExecutionOrder(&layerPlan);
     return layerPlan;
+}
+
+bool TreatmentPage::selectedLayerHasSourceImage(const TherapyPlan& plan) const
+{
+    if (plan.segments.isEmpty()) {
+        return false;
+    }
+
+    const TherapySegment& segment = plan.segments.at(normalizedLayerIndex(plan));
+    const QString sourceImagePath = segment.sourceImagePath.trimmed();
+    return !sourceImagePath.isEmpty() && QFileInfo::exists(sourceImagePath);
+}
+
+bool TreatmentPage::applySelectedLayerPreviewImage(const TherapyPlan& plan)
+{
+    if (m_preview == nullptr || plan.segments.isEmpty()) {
+        return false;
+    }
+
+    const TherapySegment& segment = plan.segments.at(normalizedLayerIndex(plan));
+    const QString sourceImagePath = segment.sourceImagePath.trimmed();
+    if (!sourceImagePath.isEmpty()) {
+        QPixmap sourcePixmap;
+        if (sourcePixmap.load(sourceImagePath)) {
+            m_preview->setBackgroundImageStretchToFill(false);
+            m_preview->setBackgroundImage(sourcePixmap);
+            m_preview->setSyntheticImageEnabled(false);
+            return true;
+        }
+    }
+
+    if (m_context != nullptr && m_context->hasLatestTreatmentCameraFrame()) {
+        m_preview->setBackgroundImageStretchToFill(false);
+        m_preview->setBackgroundImage(QPixmap::fromImage(m_context->latestTreatmentCameraFrame()));
+        m_preview->setSyntheticImageEnabled(false);
+    }
+    return false;
 }
 
 QString TreatmentPage::planComboText(const TherapyPlan& plan) const
@@ -1369,6 +3338,9 @@ void TreatmentPage::configureLayerSelector(const TherapyPlan* plan)
     const QString layerText = segment.label.trimmed().isEmpty()
         ? QStringLiteral("\u7b2c%1\u5c42").arg(m_selectedLayerIndex + 1)
         : segment.label.trimmed();
+    const QString axis7Text = segment.axis7PositionSteps >= 0
+        ? QStringLiteral("\u30007\u53f7%1\u6b65").arg(segment.axis7PositionSteps)
+        : QStringLiteral("\u30007\u53f7\u672a\u8bb0\u5f55");
 
     const QSignalBlocker blocker(m_layerSlider);
     m_layerSlider->setRange(0, layers - 1);
@@ -1379,11 +3351,12 @@ void TreatmentPage::configureLayerSelector(const TherapyPlan* plan)
     m_layerSlider->setValue(m_selectedLayerIndex);
     m_layerSlider->setEnabled(layers > 1 && !m_progressTimer.isActive() && m_safetyKernel->mode() != SystemMode::Paused);
     m_layerLabel->setText(
-        QStringLiteral("\u6cbb\u7597\u5c42\uff1a%1 / %2\u3000%3\u3000%4\u4e2a\u9776\u70b9")
+        QStringLiteral("\u6cbb\u7597\u5c42\uff1a%1 / %2\u3000%3\u3000%4\u4e2a\u9776\u70b9%5")
             .arg(m_selectedLayerIndex + 1)
             .arg(layers)
             .arg(layerText)
-            .arg(static_cast<int>(segment.points.size())));
+            .arg(static_cast<int>(segment.points.size()))
+            .arg(axis7Text));
     updateLayerNavigationButtons();
 }
 
@@ -1418,6 +3391,7 @@ void TreatmentPage::updateLayerPreview()
     ensureLayerProgressStorage(plan);
     configureLayerSelector(&plan);
     m_preview->setSliceContext(normalizedLayerIndex(plan), layerCount(&plan));
+    applySelectedLayerPreviewImage(plan);
     m_preview->setPlan(selectedLayerPlan(plan));
     m_preview->setCompletedPointCount(m_completedPointCount);
     m_preview->setCaption(
@@ -1532,6 +3506,7 @@ void TreatmentPage::finalizeTreatment(const QString& status)
     if (m_simulationDevice != nullptr) {
         m_simulationDevice->setTreatmentOutputEnabled(false);
     }
+    m_hasTreatmentSwingCenter = false;
     if (m_safetyKernel->mode() != SystemMode::Alarm) {
         m_safetyKernel->stopTreatment();
     }

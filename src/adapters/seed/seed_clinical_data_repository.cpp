@@ -577,7 +577,10 @@ SeedClinicalDataRepository::SeedPatientBundle SeedClinicalDataRepository::buildF
                     {
                         TherapyPoint {0, QPointF(20.0, -5.23), 0.3, 400.0},
                         TherapyPoint {1, QPointF(23.0, -5.23), 0.3, 400.0}
-                    }
+                    },
+                    -1,
+                    -1,
+                    QString()
                 }
             },
             400.0,
@@ -678,7 +681,10 @@ SeedClinicalDataRepository::SeedPatientBundle SeedClinicalDataRepository::buildS
                     {
                         TherapyPoint {0, QPointF(18.0, -4.2), 0.4, 320.0},
                         TherapyPoint {1, QPointF(21.0, -4.2), 0.4, 320.0}
-                    }
+                    },
+                    -1,
+                    -1,
+                    QString()
                 }
             },
             320.0,

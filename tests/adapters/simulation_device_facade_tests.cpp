@@ -109,8 +109,8 @@ void SimulationDeviceFacadeTests::blocksInfusionPumpWhenWaterLoopFaulted()
 
 void SimulationDeviceFacadeTests::mapsLu926TemperatureRegisters()
 {
-    QCOMPARE(Lu926TemperatureProtocol::setpointRegister(1), 0x0100);
-    QCOMPARE(Lu926TemperatureProtocol::setpointRegister(6), 0x0105);
+    QCOMPARE(Lu926TemperatureProtocol::setpointRegister(1), 0x0000);
+    QCOMPARE(Lu926TemperatureProtocol::setpointRegister(6), 0x0005);
     QCOMPARE(Lu926TemperatureProtocol::outputPercentRegister(1), 0x0108);
     QCOMPARE(Lu926TemperatureProtocol::processValueRegister(6), 0x0115);
     QCOMPARE(Lu926TemperatureProtocol::alarmStateRegister(6), 0x011B);
@@ -132,7 +132,7 @@ void SimulationDeviceFacadeTests::exposesTemperatureTelemetryDefaults()
     QVERIFY(telemetry.dataValid);
     QVERIFY(!telemetry.dataStale);
     QVERIFY(telemetry.safetyLimitsOk);
-    QCOMPARE(telemetry.modbusAddress, 1);
+    QCOMPARE(telemetry.modbusAddress, 4);
     QCOMPARE(telemetry.baudRate, 9600);
     QCOMPARE(telemetry.samplePeriodSeconds, 0.5);
     QCOMPARE(static_cast<int>(telemetry.channels.size()), 6);

@@ -7,29 +7,35 @@
   },
   "configurePresets": [
     {
-      "name": "msvc2019-debug",
-      "displayName": "PanTheraSys Qt MinGW Debug",
-      "description": "Configure the PanTheraSys desktop application with the Qt 6.2 MinGW toolchain installed under D:/PanSoftware/QT.",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/mingw",
+      "name": "mingw-vcpkg-debug",
+      "displayName": "PanTheraConsole MinGW vcpkg Debug",
+      "description": "Configure PanTheraConsole with Qt 6.2, MinGW, and vcpkg.",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build/mingw_vcpkg",
       "environment": {
-        "PATH": "D:/PanSoftware/QT/Tools/mingw810_64/bin;D:/PanSoftware/QT/6.2.0/mingw81_64/bin;$penv{PATH}"
+        "PATH": "D:/PanSoftware/QT/6.2.0/mingw81_64/bin;D:/PanSoftware/QT/Tools/mingw810_64/bin;D:/PanSoftware/vcpkg/installed/x64-mingw-dynamic/bin;$penv{PATH}"
       },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "D:/PanSoftware/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic",
+        "VCPKG_HOST_TRIPLET": "x64-mingw-dynamic",
         "CMAKE_PREFIX_PATH": "D:/PanSoftware/QT/6.2.0/mingw81_64",
+        "Qt6_DIR": "D:/PanSoftware/QT/6.2.0/mingw81_64/lib/cmake/Qt6",
+        "CMAKE_C_COMPILER": "D:/PanSoftware/QT/Tools/mingw810_64/bin/gcc.exe",
         "CMAKE_CXX_COMPILER": "D:/PanSoftware/QT/Tools/mingw810_64/bin/g++.exe",
-        "CMAKE_MAKE_PROGRAM": "D:/PanSoftware/QT/Tools/Ninja/ninja.exe",
-        "PANTHERA_BUILD_TESTS": "ON"
+        "CMAKE_MAKE_PROGRAM": "D:/PanSoftware/QT/Tools/mingw810_64/bin/mingw32-make.exe",
+        "PANTHERA_BUILD_TESTS": "OFF"
       }
     }
   ],
   "buildPresets": [
     {
-      "name": "msvc2019-debug",
-      "displayName": "Build PanTheraConsole",
-      "configurePreset": "msvc2019-debug",
+      "name": "mingw-vcpkg-debug",
+      "displayName": "PanTheraConsole",
+      "configurePreset": "mingw-vcpkg-debug",
+      "jobs": 8,
       "targets": [
         "PanTheraConsole"
       ]
@@ -37,9 +43,9 @@
   ],
   "testPresets": [
     {
-      "name": "msvc2019-debug",
+      "name": "mingw-vcpkg-debug",
       "displayName": "Run PanTheraSys tests",
-      "configurePreset": "msvc2019-debug",
+      "configurePreset": "mingw-vcpkg-debug",
       "output": {
         "outputOnFailure": true
       }
