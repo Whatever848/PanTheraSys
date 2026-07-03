@@ -47,16 +47,13 @@ namespace {
 constexpr int kTreatmentSwingAxisNodeId = 6;
 constexpr int kTreatmentLayerAxisNodeId = 7;
 constexpr int kTreatmentVerticalAxisNodeId = 8;
-constexpr int kTreatmentLinearStepsPerTurn = 3200;
-constexpr double kTreatmentLinearMillimetersPerTurn = 2.0;
-constexpr double kTreatmentLinearStepsPerMillimeter =
-    kTreatmentLinearStepsPerTurn / kTreatmentLinearMillimetersPerTurn;
-constexpr int kTreatmentMotorSpeed = 2000;
+constexpr double kTreatmentLinearStepsPerMillimeter = 640.0;
+constexpr int kTreatmentMotorSpeed = 2400;
 constexpr int kTreatmentLayerAxisMinimumSteps = 0;
-constexpr int kTreatmentLayerAxisMaximumSteps = 76119;
+constexpr int kTreatmentLayerAxisMaximumSteps = 74461;
 constexpr int kTreatmentVerticalAxisMinimumSteps = 0;
-constexpr int kTreatmentVerticalAxisMaximumSteps = 145743;
-constexpr int kTreatmentSwingStepsPerDegree = 1778;
+constexpr int kTreatmentVerticalAxisMaximumSteps = 152314;
+constexpr double kTreatmentSwingStepsPerDegree = 1777.8;
 constexpr double kTreatmentSwingMaximumDegrees = 10.0;
 constexpr double kTreatmentVerticalAxisMaximumMillimeters =
     kTreatmentVerticalAxisMaximumSteps / kTreatmentLinearStepsPerMillimeter;
@@ -1441,7 +1438,7 @@ bool TreatmentPage::moveTreatmentPointMotors(const TherapySegment& segment, int 
     const qint64 verticalTargetSteps64 = std::llround(verticalMillimeters * kTreatmentLinearStepsPerMillimeter);
     if (verticalTargetSteps64 > kTreatmentVerticalAxisMaximumSteps) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("8号上下电机目标 %1 步超过 S2=%2，请校准像素到毫米比例")
+            *errorMessage = QStringLiteral("8号上下电机目标 %1 步超过 S1=%2，请校准像素到毫米比例")
                 .arg(verticalTargetSteps64)
                 .arg(kTreatmentVerticalAxisMaximumSteps);
         }

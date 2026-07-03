@@ -150,6 +150,8 @@ private:
     void refreshTemperatureUi();
     void setTemperatureSetpoint();
     void readTemperatureValue();
+    bool readCurrentPv1Temperature(double& temperature, QString& errorMessage, bool verboseLog);
+    void updateRealtimeTemperature();
     bool ensureLiquidLevelConnection();
     void setLiquidLevelStatus(const QString& message, bool ok);
     void refreshLiquidLevelUi();
@@ -159,20 +161,21 @@ private:
     QString setTemperatureSetpointsToZeroForWaterTankAlarm();
     void moveThreeAxisMotor(int axisIndex, int direction);
     void moveThreeAxisMotorToAbsolute(int axisIndex);
-    void setThreeAxisMotorSpeed(int axisIndex);
     void enableThreeAxisMotor(int axisIndex);
     void disableThreeAxisMotor(int axisIndex);
     bool configureThreeAxisMotorParameters();
     bool cancelThreeAxisMotorMotion(int axisIndex, QString* errorMessage);
-    void setThreeAxisSpeedSpinValue(int axisIndex, int speed);
     bool runThreeAxisCommand(int axisIndex, const QString& action, const std::function<bool(QString*)>& command);
     bool selectThreeAxisNode(int axisIndex, QString* errorMessage);
     bool threeAxisNodeAvailable(int axisIndex) const;
+    int threeAxisMinimumSteps(int axisIndex) const;
+    int threeAxisMaximumSteps(int axisIndex) const;
     int threeAxisMoveSteps(int axisIndex, double amount) const;
     double threeAxisStepsToDisplayUnits(int axisIndex, int steps) const;
     int threeAxisDisplayUnitsToSteps(int axisIndex, double value) const;
     double threeAxisMinimumDisplayUnits(int axisIndex) const;
     double threeAxisMaximumDisplayUnits(int axisIndex) const;
+    int threeAxisDisplayDecimals(int axisIndex) const;
     int threeAxisSpeedForAxis(int axisIndex) const;
     double threeAxisJogAmountForAxis(int axisIndex) const;
     QString threeAxisJogActionTitle(int axisIndex, int direction) const;
@@ -247,6 +250,7 @@ private:
     QVector<diji::adapters::uim::UimDeviceInfo> m_threeAxisDevices;
     QVector<diji::adapters::uim::UimNodeInfo> m_threeAxisNodes;
     std::array<int, 3> m_threeAxisSoftPositionSteps {0, 0, 0};
+    std::array<bool, 3> m_threeAxisPositionKnown {false, false, false};
     std::array<int, 3> m_threeAxisPreEmergencySpeeds {0, 0, 0};
     bool m_threeAxisEmergencyStopActive {false};
     QHash<QString, QLabel*> m_valueLabels;
@@ -287,6 +291,7 @@ private:
     QPushButton* m_temperatureConnectionButton {nullptr};
     QComboBox* m_temperatureChannelCombo {nullptr};
     QDoubleSpinBox* m_temperatureSetpointSpin {nullptr};
+    QLineEdit* m_temperatureCurrentDisplay {nullptr};
     QPushButton* m_temperatureSetButton {nullptr};
     QPushButton* m_temperatureReadButton {nullptr};
     QLabel* m_liquidLevelResultLabel {nullptr};
@@ -301,6 +306,8 @@ private:
     QTimer m_robotArmSafetyWallTimer;
     QTimer m_robotPhysicalDragPollTimer;
     QTimer m_tank2FillTimer;
+    QTimer m_temperatureRealtimeTimer;
+    bool m_temperatureRequestBusy {false};
     bool m_tank2FillActive {false};
     double m_tank2FillTargetLevelCentimeters {0.0};
     QLineEdit* m_threeAxisSdkPathEdit {nullptr};
@@ -314,8 +321,6 @@ private:
     QPushButton* m_threeAxisReleaseEmergencyStopButton {nullptr};
     std::array<QLabel*, 3> m_threeAxisNodeLabels {nullptr, nullptr, nullptr};
     std::array<QLabel*, 3> m_threeAxisSoftPositionLabels {nullptr, nullptr, nullptr};
-    std::array<QSpinBox*, 3> m_threeAxisSpeedSpins {nullptr, nullptr, nullptr};
-    std::array<QPushButton*, 3> m_threeAxisSetSpeedButtons {nullptr, nullptr, nullptr};
     std::array<QDoubleSpinBox*, 3> m_threeAxisTargetPositionSpins {nullptr, nullptr, nullptr};
     std::array<QDoubleSpinBox*, 3> m_threeAxisJogDistanceSpins {nullptr, nullptr, nullptr};
     std::array<QPushButton*, 3> m_threeAxisMoveToButtons {nullptr, nullptr, nullptr};

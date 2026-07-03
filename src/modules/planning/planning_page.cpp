@@ -44,13 +44,10 @@ namespace {
 
 constexpr int kPathStateKeyRole = Qt::UserRole + 1;
 constexpr int kImageAcquisitionAxisNodeId = 7;
-constexpr int kImageAcquisitionStepsPerTurn = 3200;
-constexpr double kImageAcquisitionMillimetersPerTurn = 2.0;
-constexpr double kImageAcquisitionStepsPerMillimeter =
-    kImageAcquisitionStepsPerTurn / kImageAcquisitionMillimetersPerTurn;
-constexpr int kImageAcquisitionMotorSpeed = 2000;
+constexpr double kImageAcquisitionStepsPerMillimeter = 640.0;
+constexpr int kImageAcquisitionMotorSpeed = 2400;
 constexpr int kImageAcquisitionS2PositionSteps = 0;
-constexpr int kImageAcquisitionS1PositionSteps = 76119;
+constexpr int kImageAcquisitionS1PositionSteps = 74461;
 constexpr int kImageAcquisitionMinimumPositionSteps = kImageAcquisitionS2PositionSteps;
 constexpr int kImageAcquisitionMaximumPositionSteps = kImageAcquisitionS1PositionSteps;
 constexpr int kImageAcquisitionReturnHomeToleranceSteps = 20;
@@ -4999,7 +4996,9 @@ void PlanningPage::simulateImageAcquisition()
             {
                 QStringLiteral("7号左右电机行程安全检查未通过。"),
                 detail,
-                QStringLiteral("采集方向固定为当前位置 -> S1，S2=0，S1=76119。请先通过三电机控制调整 7 号当前位置，或减少层数/步长。")
+                QStringLiteral("采集方向固定为当前位置 -> S1，S2=%1，S1=%2。请先通过三电机控制调整 7 号当前位置，或减少层数/步长。")
+                    .arg(kImageAcquisitionS2PositionSteps)
+                    .arg(kImageAcquisitionS1PositionSteps)
             });
         finishAcquisition();
         return;

@@ -60,20 +60,20 @@ constexpr double kRobotDefaultZAxisAlignRz = 0.0;
 constexpr double kRobotDefaultZAxisAlignMaxJointDeltaDeg = 180.0;
 constexpr double kRobotZAxisAlignJointToleranceDeg = 1.0;
 constexpr int kThreeAxisStepsPerTurn = 3200;
-constexpr double kThreeAxisMillimetersPerTurn = 2.0;
-constexpr double kThreeAxisStepsPerMillimeter = kThreeAxisStepsPerTurn / kThreeAxisMillimetersPerTurn;
-constexpr int kThreeAxisSwingStepsPerDegree = 1778;
-constexpr double kThreeAxisSwingMaximumDegrees = 10.0;
-constexpr int kThreeAxisSwingLimitSteps = kThreeAxisSwingStepsPerDegree * 10;
+constexpr double kThreeAxisLinearStepsPerCentimeter = 6400.0;
+constexpr double kThreeAxisSwingStepsPerDegree = 1777.8;
+constexpr int kThreeAxisAxis6MinimumSteps = -19290;
+constexpr int kThreeAxisAxis6MaximumSteps = 19062;
 constexpr int kThreeAxisAxis7MinimumSteps = 0;
-constexpr int kThreeAxisAxis7MaximumSteps = 76119;
+constexpr int kThreeAxisAxis7MaximumSteps = 74461;
 constexpr int kThreeAxisAxis8MinimumSteps = 0;
-constexpr int kThreeAxisAxis8MaximumSteps = 145743;
+constexpr int kThreeAxisAxis8MaximumSteps = 152314;
 constexpr int kThreeAxisLargeMoveConfirmSteps = kThreeAxisStepsPerTurn * 5;
-constexpr int kThreeAxisDefaultSpeed = 800;
+constexpr int kThreeAxisDefaultSpeed = 2400;
 constexpr int kThreeAxisRefreshIntervalMs = 1000;
 constexpr int kThreeAxisSensorDecelerateToStopAction = 3;
 constexpr int kTank2FillPollIntervalMs = 1000;
+constexpr int kTemperatureRealtimeIntervalMs = 2000;
 constexpr double kTank2FillDefaultTargetCentimeters = 30.0;
 constexpr double kTank2FillMaximumTargetCentimeters = 43.0;
 constexpr const char* kSharedRs485PortName = "COM3";
@@ -85,12 +85,12 @@ constexpr int kWaterTankLowLevelAxisIndex = 1;   // 7号电机下限位
 constexpr int kWaterTankUpperLimitSensorIndex = 3;  // Node 6 S3
 constexpr int kWaterTankLowerLimitSensorIndex = 3;  // Node 7 S3
 constexpr int kWaterTankLimitActiveDebounceSamples = 3;
-const std::array<double, 3> kThreeAxisCurrentAmps {0.5, 0.5, 0.8};
+const std::array<double, 3> kThreeAxisCurrentAmps {1.0, 1.0, 1.0};
 const std::array<const char*, 3> kThreeAxisTitles {"6号", "7号", "8号"};
 const std::array<const char*, 3> kThreeAxisNegativeActions {"左摆", "左移", "上移"};
 const std::array<const char*, 3> kThreeAxisPositiveActions {"右摆", "右移", "下移"};
-const std::array<int, 3> kThreeAxisNegativeButtonDirections {-1, -1, -1};
-const std::array<int, 3> kThreeAxisPositiveButtonDirections {1, 1, 1};
+const std::array<int, 3> kThreeAxisNegativeButtonDirections {1, -1, -1};
+const std::array<int, 3> kThreeAxisPositiveButtonDirections {-1, 1, 1};
 const adapters::dobot::DobotPose kRobotDefaultSafeOriginPose {
     568.4855,
     -652.5055,
@@ -154,6 +154,26 @@ QLineEdit* createFixedSerialText(const QString& text, QWidget* parent)
     edit->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     return edit;
 }
+
+class ScopedBusyFlag final {
+public:
+    explicit ScopedBusyFlag(bool& flag)
+        : m_flag(flag)
+    {
+        m_flag = true;
+    }
+
+    ~ScopedBusyFlag()
+    {
+        m_flag = false;
+    }
+
+    ScopedBusyFlag(const ScopedBusyFlag&) = delete;
+    ScopedBusyFlag& operator=(const ScopedBusyFlag&) = delete;
+
+private:
+    bool& m_flag;
+};
 
 QString secondsText(double seconds)
 {
@@ -482,6 +502,8 @@ DeviceMonitorPage::DeviceMonitorPage(adapters::SimulationDeviceFacade* simulatio
     connect(&m_robotPhysicalDragPollTimer, &QTimer::timeout, this, &DeviceMonitorPage::pollRobotArmPhysicalDragButton);
     m_tank2FillTimer.setInterval(kTank2FillPollIntervalMs);
     connect(&m_tank2FillTimer, &QTimer::timeout, this, &DeviceMonitorPage::pollTank2FillLevel);
+    m_temperatureRealtimeTimer.setInterval(kTemperatureRealtimeIntervalMs);
+    connect(&m_temperatureRealtimeTimer, &QTimer::timeout, this, &DeviceMonitorPage::updateRealtimeTemperature);
 
     auto* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(18, 18, 18, 18);
@@ -858,6 +880,12 @@ QWidget* DeviceMonitorPage::createTemperatureControlCard()
     m_temperatureSetpointSpin->setValue(20.0);
     m_temperatureSetpointSpin->setSuffix(QStringLiteral(" °C"));
     m_temperatureSetpointSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_temperatureCurrentDisplay = new QLineEdit(QStringLiteral("--.- \u2103"), groupBox);
+    m_temperatureCurrentDisplay->setReadOnly(true);
+    m_temperatureCurrentDisplay->setClearButtonEnabled(false);
+    m_temperatureCurrentDisplay->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_temperatureCurrentDisplay->setMinimumWidth(110);
+    m_temperatureCurrentDisplay->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_temperatureSetButton = new QPushButton(QStringLiteral("设定温度"), groupBox);
     m_temperatureReadButton = new QPushButton(QStringLiteral("读取温度"), groupBox);
 
@@ -866,6 +894,8 @@ QWidget* DeviceMonitorPage::createTemperatureControlCard()
     commandLayout->addWidget(new QLabel(QStringLiteral("设定温度"), groupBox), 1, 0);
     commandLayout->addWidget(m_temperatureSetpointSpin, 1, 1);
     commandLayout->addWidget(m_temperatureSetButton, 1, 2);
+    commandLayout->addWidget(new QLabel(QStringLiteral("当前温度"), groupBox), 2, 0);
+    commandLayout->addWidget(m_temperatureCurrentDisplay, 2, 1);
     commandLayout->addWidget(m_temperatureReadButton, 2, 2);
     layout->addLayout(commandLayout);
 
@@ -1134,16 +1164,14 @@ QWidget* DeviceMonitorPage::createThreeAxisMotorControlCard()
     axisLayout->setHorizontalSpacing(6);
     axisLayout->setVerticalSpacing(6);
     axisLayout->setColumnStretch(1, 0);
-    axisLayout->setColumnStretch(4, 1);
-    axisLayout->setColumnMinimumWidth(4, 330);
+    axisLayout->setColumnStretch(2, 1);
+    axisLayout->setColumnMinimumWidth(2, 330);
     axisLayout->addWidget(new QLabel(QStringLiteral("电机名称"), groupBox), 0, 0);
     axisLayout->addWidget(new QLabel(QStringLiteral("节点"), groupBox), 0, 1);
-    axisLayout->addWidget(new QLabel(QStringLiteral("期望速度"), groupBox), 0, 2);
-    axisLayout->addWidget(new QLabel(QStringLiteral("速度设置"), groupBox), 0, 3);
-    axisLayout->addWidget(new QLabel(QStringLiteral("当前位置（范围）"), groupBox), 0, 4);
-    axisLayout->addWidget(new QLabel(QStringLiteral("移动位置"), groupBox), 0, 5);
-    axisLayout->addWidget(new QLabel(QStringLiteral("点动距离"), groupBox), 0, 7);
-    axisLayout->addWidget(new QLabel(QStringLiteral("点动"), groupBox), 0, 8, 1, 2);
+    axisLayout->addWidget(new QLabel(QStringLiteral("当前位置（范围）"), groupBox), 0, 2);
+    axisLayout->addWidget(new QLabel(QStringLiteral("移动位置"), groupBox), 0, 3);
+    axisLayout->addWidget(new QLabel(QStringLiteral("点动距离"), groupBox), 0, 5);
+    axisLayout->addWidget(new QLabel(QStringLiteral("点动"), groupBox), 0, 6, 1, 2);
 
     for (int index = 0; index < static_cast<int>(kThreeAxisNodeIds.size()); ++index) {
         auto* axisLabel = new QLabel(threeAxisAxisTitle(index), groupBox);
@@ -1154,20 +1182,11 @@ QWidget* DeviceMonitorPage::createThreeAxisMotorControlCard()
         m_threeAxisSoftPositionLabels[static_cast<size_t>(index)]->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         setExpandingColumnWidget(m_threeAxisSoftPositionLabels[static_cast<size_t>(index)], 330);
 
-        auto* speedSpin = new QSpinBox(groupBox);
-        speedSpin->setRange(0, 20000);
-        speedSpin->setValue(kThreeAxisDefaultSpeed);
-        speedSpin->setSingleStep(100);
-        speedSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
-        setStableColumnWidget(speedSpin, 100);
-        m_threeAxisSpeedSpins[static_cast<size_t>(index)] = speedSpin;
-        m_threeAxisSetSpeedButtons[static_cast<size_t>(index)] = new QPushButton(QStringLiteral("设置"), groupBox);
-        setStableColumnWidget(m_threeAxisSetSpeedButtons[static_cast<size_t>(index)], 64);
-
         auto* targetSpin = new QDoubleSpinBox(groupBox);
-        targetSpin->setDecimals(3);
+        targetSpin->setDecimals(threeAxisDisplayDecimals(index));
         targetSpin->setRange(threeAxisMinimumDisplayUnits(index), threeAxisMaximumDisplayUnits(index));
-        targetSpin->setSingleStep(index == 0 ? 0.1 : 1.0);
+        targetSpin->setSingleStep(index == 0 ? 0.1 : 0.1);
+        targetSpin->setValue(index == 0 ? 1.0 : 0.0);
         targetSpin->setSuffix(QStringLiteral(" %1").arg(threeAxisDisplayUnitText(index)));
         targetSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
         setStableColumnWidget(targetSpin, 128);
@@ -1181,10 +1200,10 @@ QWidget* DeviceMonitorPage::createThreeAxisMotorControlCard()
 
         auto* jogDistanceSpin = new QDoubleSpinBox(groupBox);
         jogDistanceSpin->setDecimals(2);
-        jogDistanceSpin->setRange(index == 0 ? 0.01 : 0.05, index == 0 ? kThreeAxisSwingMaximumDegrees : 50.0);
-        jogDistanceSpin->setSingleStep(index == 0 ? 0.1 : 0.5);
+        jogDistanceSpin->setRange(0.01, threeAxisMaximumDisplayUnits(index) - threeAxisMinimumDisplayUnits(index));
+        jogDistanceSpin->setSingleStep(index == 0 ? 0.1 : 0.1);
         jogDistanceSpin->setValue(1.0);
-        jogDistanceSpin->setSuffix(index == 0 ? QStringLiteral(" °") : QStringLiteral(" mm"));
+        jogDistanceSpin->setSuffix(QStringLiteral(" %1").arg(threeAxisDisplayUnitText(index)));
         jogDistanceSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
         setStableColumnWidget(jogDistanceSpin, 98);
         m_threeAxisJogDistanceSpins[static_cast<size_t>(index)] = jogDistanceSpin;
@@ -1197,14 +1216,12 @@ QWidget* DeviceMonitorPage::createThreeAxisMotorControlCard()
         const int row = index + 1;
         axisLayout->addWidget(axisLabel, row, 0);
         axisLayout->addWidget(m_threeAxisNodeLabels[static_cast<size_t>(index)], row, 1);
-        axisLayout->addWidget(speedSpin, row, 2);
-        axisLayout->addWidget(m_threeAxisSetSpeedButtons[static_cast<size_t>(index)], row, 3);
-        axisLayout->addWidget(m_threeAxisSoftPositionLabels[static_cast<size_t>(index)], row, 4);
-        axisLayout->addWidget(targetSpin, row, 5);
-        axisLayout->addWidget(m_threeAxisMoveToButtons[static_cast<size_t>(index)], row, 6);
-        axisLayout->addWidget(jogDistanceSpin, row, 7);
-        axisLayout->addWidget(m_threeAxisNegativeButtons[static_cast<size_t>(index)], row, 8);
-        axisLayout->addWidget(m_threeAxisPositiveButtons[static_cast<size_t>(index)], row, 9);
+        axisLayout->addWidget(m_threeAxisSoftPositionLabels[static_cast<size_t>(index)], row, 2);
+        axisLayout->addWidget(targetSpin, row, 3);
+        axisLayout->addWidget(m_threeAxisMoveToButtons[static_cast<size_t>(index)], row, 4);
+        axisLayout->addWidget(jogDistanceSpin, row, 5);
+        axisLayout->addWidget(m_threeAxisNegativeButtons[static_cast<size_t>(index)], row, 6);
+        axisLayout->addWidget(m_threeAxisPositiveButtons[static_cast<size_t>(index)], row, 7);
 
         connect(m_threeAxisNegativeButtons[static_cast<size_t>(index)], &QPushButton::clicked, this, [this, index]() {
             moveThreeAxisMotor(index, kThreeAxisNegativeButtonDirections.at(static_cast<size_t>(index)));
@@ -1215,8 +1232,11 @@ QWidget* DeviceMonitorPage::createThreeAxisMotorControlCard()
         connect(m_threeAxisMoveToButtons[static_cast<size_t>(index)], &QPushButton::clicked, this, [this, index]() {
             moveThreeAxisMotorToAbsolute(index);
         });
-        connect(m_threeAxisSetSpeedButtons[static_cast<size_t>(index)], &QPushButton::clicked, this, [this, index]() {
-            setThreeAxisMotorSpeed(index);
+        connect(targetSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this]() {
+            refreshThreeAxisUi();
+        });
+        connect(jogDistanceSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this]() {
+            refreshThreeAxisUi();
         });
     }
     layout->addLayout(axisLayout);
@@ -2753,7 +2773,7 @@ void DeviceMonitorPage::toggleThreeAxisGateway()
     updateThreeAxisNodeStatus();
     const bool parametersConfigured = configureThreeAxisMotorParameters();
     setThreeAxisStatus(parametersConfigured
-            ? QStringLiteral("UIM 网关已打开，CAN 节点 %1 个，电流和 S1/S2 下降沿动作已设置").arg(m_threeAxisNodes.size())
+            ? QStringLiteral("UIM 网关已打开，CAN 节点 %1 个，电流、固定速度和 S1/S2 下降沿动作已设置").arg(m_threeAxisNodes.size())
             : QStringLiteral("UIM 网关已打开，CAN 节点 %1 个，部分电机参数设置失败").arg(m_threeAxisNodes.size()));
     refreshThreeAxisMotors();
     refreshThreeAxisUi();
@@ -2801,7 +2821,6 @@ void DeviceMonitorPage::emergencyStopThreeAxisMotors()
 
     for (int index = 0; index < static_cast<int>(kThreeAxisNodeIds.size()); ++index) {
         m_threeAxisPreEmergencySpeeds[static_cast<size_t>(index)] = threeAxisSpeedForAxis(index);
-        setThreeAxisSpeedSpinValue(index, 0);
     }
 
     m_threeAxisEmergencyStopActive = true;
@@ -2826,7 +2845,7 @@ void DeviceMonitorPage::emergencyStopThreeAxisMotors()
         m_simulationDevice->injectFault(InterlockReason::EmergencyStop, true);
         m_safetyKernel->setEmergencyStopReleased(false);
     }
-    setThreeAxisStatus(QStringLiteral("三电机急停已触发，期望速度已置 0，残余移动已取消，电机未断电"));
+    setThreeAxisStatus(QStringLiteral("三电机急停已触发，固定速度已置 0，残余移动已取消，电机未断电"));
     refreshThreeAxisMotors();
     refreshThreeAxisUi();
 }
@@ -2867,13 +2886,14 @@ void DeviceMonitorPage::releaseThreeAxisEmergencyStop()
     }
 
     bool restoreFailed = false;
-    appendThreeAxisLog(QStringLiteral("解除急停：残余移动已取消，开始恢复急停前期望速度"));
+    appendThreeAxisLog(QStringLiteral("解除急停：残余移动已取消，开始恢复固定速度"));
     for (int index = 0; index < static_cast<int>(kThreeAxisNodeIds.size()); ++index) {
-        const int speed = m_threeAxisPreEmergencySpeeds[static_cast<size_t>(index)];
-        setThreeAxisSpeedSpinValue(index, speed);
+        const int speed = m_threeAxisPreEmergencySpeeds[static_cast<size_t>(index)] > 0
+            ? m_threeAxisPreEmergencySpeeds[static_cast<size_t>(index)]
+            : kThreeAxisDefaultSpeed;
 
         if (!m_threeAxisGateway.isGatewayOpen()) {
-            appendThreeAxisLog(QStringLiteral("%1 恢复速度 %2：UIM 网关未打开，仅恢复界面期望值")
+            appendThreeAxisLog(QStringLiteral("%1 恢复固定速度 %2：UIM 网关未打开")
                                    .arg(threeAxisAxisTitle(index))
                                    .arg(speed));
             continue;
@@ -2916,7 +2936,7 @@ void DeviceMonitorPage::releaseThreeAxisEmergencyStop()
         m_simulationDevice->injectFault(InterlockReason::EmergencyStop, false);
         m_safetyKernel->setEmergencyStopReleased(true);
     }
-    setThreeAxisStatus(QStringLiteral("三电机急停已解除，残余移动已取消，已恢复急停前期望速度"));
+    setThreeAxisStatus(QStringLiteral("三电机急停已解除，残余移动已取消，已恢复固定速度"));
     refreshThreeAxisMotors();
     refreshThreeAxisUi();
 }
@@ -2981,6 +3001,8 @@ void DeviceMonitorPage::moveThreeAxisMotor(int axisIndex, int direction)
         return;
     }
     const int currentSteps = snapshot.position;
+    m_threeAxisSoftPositionSteps[static_cast<size_t>(axisIndex)] = currentSteps;
+    m_threeAxisPositionKnown[static_cast<size_t>(axisIndex)] = true;
     const int projectedSteps = currentSteps + signedSteps;
     if (!threeAxisAbsoluteTargetAllowed(axisIndex, projectedSteps, &errorMessage)) {
         setThreeAxisStatus(errorMessage);
@@ -3001,7 +3023,7 @@ void DeviceMonitorPage::moveThreeAxisMotor(int axisIndex, int direction)
     const QString actionName = QStringLiteral("%1 %2 %3 / %4 步")
                                    .arg(threeAxisJogActionTitle(axisIndex, direction))
                                    .arg(stepAmount, 0, 'f', 2)
-                                   .arg(axisIndex == 0 ? QStringLiteral("°") : QStringLiteral("mm"))
+                                   .arg(threeAxisDisplayUnitText(axisIndex))
                                    .arg(std::abs(signedSteps));
 
     errorMessage.clear();
@@ -3071,6 +3093,8 @@ void DeviceMonitorPage::moveThreeAxisMotorToAbsolute(int axisIndex)
     }
 
     const int currentSteps = snapshot.position;
+    m_threeAxisSoftPositionSteps[static_cast<size_t>(axisIndex)] = currentSteps;
+    m_threeAxisPositionKnown[static_cast<size_t>(axisIndex)] = true;
     const double targetValue = targetSpin->value();
     const int targetSteps = threeAxisDisplayUnitsToSteps(axisIndex, targetValue);
     if (!threeAxisAbsoluteTargetAllowed(axisIndex, targetSteps, &errorMessage)) {
@@ -3129,24 +3153,6 @@ void DeviceMonitorPage::moveThreeAxisMotorToAbsolute(int axisIndex)
     refreshThreeAxisUi();
 }
 
-void DeviceMonitorPage::setThreeAxisMotorSpeed(int axisIndex)
-{
-    if (m_threeAxisEmergencyStopActive) {
-        setThreeAxisStatus(QStringLiteral("急停未解除，禁止设置速度"));
-        return;
-    }
-    if (axisIndex < 0 || axisIndex >= static_cast<int>(kThreeAxisNodeIds.size())) {
-        setThreeAxisStatus(QStringLiteral("三电机轴索引无效"));
-        return;
-    }
-
-    const int speed = threeAxisSpeedForAxis(axisIndex);
-    appendThreeAxisLog(QStringLiteral("%1：期望速度已保存为 %2，待下次移动/点动时生效")
-                           .arg(threeAxisAxisTitle(axisIndex))
-                           .arg(speed));
-    refreshThreeAxisUi();
-}
-
 void DeviceMonitorPage::enableThreeAxisMotor(int axisIndex)
 {
     if (m_threeAxisEmergencyStopActive) {
@@ -3200,6 +3206,19 @@ bool DeviceMonitorPage::configureThreeAxisMotorParameters()
                                    .arg(currentAmps, 0, 'f', 1));
         }
 
+        errorMessage.clear();
+        if (!m_threeAxisGateway.setSpeed(kThreeAxisDefaultSpeed, &errorMessage)) {
+            appendThreeAxisLog(QStringLiteral("%1 固定期望速度设置为 %2 失败：%3")
+                                   .arg(threeAxisAxisTitle(index))
+                                   .arg(kThreeAxisDefaultSpeed)
+                                   .arg(errorMessage));
+            allOk = false;
+        } else {
+            appendThreeAxisLog(QStringLiteral("%1 固定期望速度设置为 %2 => OK")
+                                   .arg(threeAxisAxisTitle(index))
+                                   .arg(kThreeAxisDefaultSpeed));
+        }
+
         diji::adapters::uim::UimSensorActionConfig actionConfig {};
         errorMessage.clear();
         if (!m_threeAxisGateway.readSensorActionConfig(&actionConfig, &errorMessage)) {
@@ -3221,7 +3240,7 @@ bool DeviceMonitorPage::configureThreeAxisMotorParameters()
     }
 
     if (!issued) {
-        setThreeAxisStatus(QStringLiteral("未发现 6/7/8 号电机节点，无法初始化电流和传感器动作"));
+        setThreeAxisStatus(QStringLiteral("未发现 6/7/8 号电机节点，无法初始化电流、固定速度和传感器动作"));
         return false;
     }
     return allOk;
@@ -3320,13 +3339,41 @@ bool DeviceMonitorPage::threeAxisNodeAvailable(int axisIndex) const
     });
 }
 
+int DeviceMonitorPage::threeAxisMinimumSteps(int axisIndex) const
+{
+    if (axisIndex == 0) {
+        return kThreeAxisAxis6MinimumSteps;
+    }
+    if (axisIndex == 1) {
+        return kThreeAxisAxis7MinimumSteps;
+    }
+    if (axisIndex == 2) {
+        return kThreeAxisAxis8MinimumSteps;
+    }
+    return 0;
+}
+
+int DeviceMonitorPage::threeAxisMaximumSteps(int axisIndex) const
+{
+    if (axisIndex == 0) {
+        return kThreeAxisAxis6MaximumSteps;
+    }
+    if (axisIndex == 1) {
+        return kThreeAxisAxis7MaximumSteps;
+    }
+    if (axisIndex == 2) {
+        return kThreeAxisAxis8MaximumSteps;
+    }
+    return 0;
+}
+
 int DeviceMonitorPage::threeAxisMoveSteps(int axisIndex, double amount) const
 {
     const double safeAmount = std::max(0.0, amount);
     if (axisIndex == 0) {
         return static_cast<int>(std::lround(safeAmount * kThreeAxisSwingStepsPerDegree));
     }
-    return static_cast<int>(std::lround(safeAmount * kThreeAxisStepsPerMillimeter));
+    return static_cast<int>(std::lround(safeAmount * kThreeAxisLinearStepsPerCentimeter));
 }
 
 double DeviceMonitorPage::threeAxisStepsToDisplayUnits(int axisIndex, int steps) const
@@ -3334,71 +3381,41 @@ double DeviceMonitorPage::threeAxisStepsToDisplayUnits(int axisIndex, int steps)
     if (axisIndex == 0) {
         return static_cast<double>(steps) / kThreeAxisSwingStepsPerDegree;
     }
-    return static_cast<double>(steps) / kThreeAxisStepsPerMillimeter;
+    return static_cast<double>(steps) / kThreeAxisLinearStepsPerCentimeter;
 }
 
 int DeviceMonitorPage::threeAxisDisplayUnitsToSteps(int axisIndex, double value) const
 {
-    int steps = 0;
-    if (axisIndex == 0) {
-        steps = static_cast<int>(std::lround(value * kThreeAxisSwingStepsPerDegree));
-        return std::max(-kThreeAxisSwingLimitSteps, std::min(kThreeAxisSwingLimitSteps, steps));
+    if (axisIndex < 0 || axisIndex >= static_cast<int>(kThreeAxisNodeIds.size())) {
+        return 0;
     }
-
-    steps = static_cast<int>(std::lround(value * kThreeAxisStepsPerMillimeter));
-    if (axisIndex == 1) {
-        return std::max(kThreeAxisAxis7MinimumSteps, std::min(kThreeAxisAxis7MaximumSteps, steps));
-    }
-    if (axisIndex == 2) {
-        return std::max(kThreeAxisAxis8MinimumSteps, std::min(kThreeAxisAxis8MaximumSteps, steps));
-    }
-    return steps;
+    const double stepsPerUnit = axisIndex == 0 ? kThreeAxisSwingStepsPerDegree : kThreeAxisLinearStepsPerCentimeter;
+    const int steps = static_cast<int>(std::lround(value * stepsPerUnit));
+    return std::max(threeAxisMinimumSteps(axisIndex), std::min(threeAxisMaximumSteps(axisIndex), steps));
 }
 
 double DeviceMonitorPage::threeAxisMinimumDisplayUnits(int axisIndex) const
 {
-    if (axisIndex == 0) {
-        return -kThreeAxisSwingMaximumDegrees;
-    }
-    return 0.0;
+    return threeAxisStepsToDisplayUnits(axisIndex, threeAxisMinimumSteps(axisIndex));
 }
 
 double DeviceMonitorPage::threeAxisMaximumDisplayUnits(int axisIndex) const
 {
+    return threeAxisStepsToDisplayUnits(axisIndex, threeAxisMaximumSteps(axisIndex));
+}
+
+int DeviceMonitorPage::threeAxisDisplayDecimals(int axisIndex) const
+{
     if (axisIndex == 0) {
-        return kThreeAxisSwingMaximumDegrees;
+        return 2;
     }
-    if (axisIndex == 1) {
-        return threeAxisStepsToDisplayUnits(axisIndex, kThreeAxisAxis7MaximumSteps);
-    }
-    if (axisIndex == 2) {
-        return threeAxisStepsToDisplayUnits(axisIndex, kThreeAxisAxis8MaximumSteps);
-    }
-    return 0.0;
+    return 3;
 }
 
 int DeviceMonitorPage::threeAxisSpeedForAxis(int axisIndex) const
 {
-    if (axisIndex < 0 || axisIndex >= static_cast<int>(m_threeAxisSpeedSpins.size())) {
-        return kThreeAxisDefaultSpeed;
-    }
-    QSpinBox* speedSpin = m_threeAxisSpeedSpins[static_cast<size_t>(axisIndex)];
-    return speedSpin != nullptr ? speedSpin->value() : kThreeAxisDefaultSpeed;
-}
-
-void DeviceMonitorPage::setThreeAxisSpeedSpinValue(int axisIndex, int speed)
-{
-    if (axisIndex < 0 || axisIndex >= static_cast<int>(m_threeAxisSpeedSpins.size())) {
-        return;
-    }
-
-    QSpinBox* speedSpin = m_threeAxisSpeedSpins[static_cast<size_t>(axisIndex)];
-    if (speedSpin == nullptr) {
-        return;
-    }
-
-    const QSignalBlocker blocker(speedSpin);
-    speedSpin->setValue(std::max(speedSpin->minimum(), std::min(speedSpin->maximum(), speed)));
+    Q_UNUSED(axisIndex);
+    return kThreeAxisDefaultSpeed;
 }
 
 double DeviceMonitorPage::threeAxisJogAmountForAxis(int axisIndex) const
@@ -3418,42 +3435,27 @@ QString DeviceMonitorPage::threeAxisJogActionTitle(int axisIndex, int direction)
     if (axisIndex == 2) {
         return direction > 0 ? QStringLiteral("下移") : QStringLiteral("上移");
     }
-    return direction > 0 ? QStringLiteral("右摆") : QStringLiteral("左摆");
+    return direction > 0 ? QStringLiteral("左摆") : QStringLiteral("右摆");
 }
 
 bool DeviceMonitorPage::threeAxisAbsoluteTargetAllowed(int axisIndex, int targetSteps, QString* errorMessage) const
 {
-    int minimumSteps = 0;
-    int maximumSteps = 0;
-    QString rangeText;
-    if (axisIndex == 0) {
-        minimumSteps = -kThreeAxisSwingLimitSteps;
-        maximumSteps = kThreeAxisSwingLimitSteps;
-        rangeText = QStringLiteral("%1（%2 到 %3 步）")
-                        .arg(threeAxisPositionRangeText(axisIndex))
-                        .arg(minimumSteps)
-                        .arg(maximumSteps);
-    } else if (axisIndex == 1) {
-        minimumSteps = kThreeAxisAxis7MinimumSteps;
-        maximumSteps = kThreeAxisAxis7MaximumSteps;
-        rangeText = QStringLiteral("S2=0.00 mm 到 S1=%1 mm（%2 到 %3 步）")
-                        .arg(threeAxisMaximumDisplayUnits(axisIndex), 0, 'f', 2)
-                        .arg(minimumSteps)
-                        .arg(maximumSteps);
-    } else if (axisIndex == 2) {
-        minimumSteps = kThreeAxisAxis8MinimumSteps;
-        maximumSteps = kThreeAxisAxis8MaximumSteps;
-        rangeText = QStringLiteral("S1=0.00 mm 到 S2=%1 mm（%2 到 %3 步）")
-                        .arg(threeAxisMaximumDisplayUnits(axisIndex), 0, 'f', 2)
-                        .arg(minimumSteps)
-                        .arg(maximumSteps);
-    } else {
+    if (axisIndex < 0 || axisIndex >= static_cast<int>(kThreeAxisNodeIds.size())) {
         if (errorMessage != nullptr) {
             *errorMessage = QStringLiteral("三电机轴索引无效");
         }
         return false;
     }
 
+    const int minimumSteps = threeAxisMinimumSteps(axisIndex);
+    const int maximumSteps = threeAxisMaximumSteps(axisIndex);
+    const int decimals = threeAxisDisplayDecimals(axisIndex);
+    const QString rangeText = QStringLiteral("S2=%1 %2 到 S1=%3 %2（%4 到 %5 步）")
+                                  .arg(threeAxisMinimumDisplayUnits(axisIndex), 0, 'f', decimals)
+                                  .arg(threeAxisDisplayUnitText(axisIndex))
+                                  .arg(threeAxisMaximumDisplayUnits(axisIndex), 0, 'f', decimals)
+                                  .arg(minimumSteps)
+                                  .arg(maximumSteps);
     if (targetSteps < minimumSteps || targetSteps > maximumSteps) {
         if (errorMessage != nullptr) {
             *errorMessage = QStringLiteral("%1 目标位置 %2 超出安全范围：%3，已拒绝运动")
@@ -3468,10 +3470,10 @@ bool DeviceMonitorPage::threeAxisAbsoluteTargetAllowed(int axisIndex, int target
 
 bool DeviceMonitorPage::threeAxisSensorLimitAllowsMove(int axisIndex, int deltaSteps, QString* errorMessage)
 {
-    if (deltaSteps == 0 || axisIndex == 0) {
+    if (deltaSteps == 0) {
         return true;
     }
-    if (axisIndex < 1 || axisIndex > 2) {
+    if (axisIndex < 0 || axisIndex >= static_cast<int>(kThreeAxisNodeIds.size())) {
         if (errorMessage != nullptr) {
             *errorMessage = QStringLiteral("三电机轴索引无效");
         }
@@ -3496,8 +3498,8 @@ bool DeviceMonitorPage::threeAxisSensorLimitAllowsMove(int axisIndex, int deltaS
         return false;
     }
 
-    const bool movingTowardS1 = axisIndex == 1 ? deltaSteps > 0 : deltaSteps < 0;
-    const bool movingTowardS2 = axisIndex == 1 ? deltaSteps < 0 : deltaSteps > 0;
+    const bool movingTowardS1 = deltaSteps > 0;
+    const bool movingTowardS2 = deltaSteps < 0;
     if (movingTowardS1 && !snapshot.sensor1) {
         if (errorMessage != nullptr) {
             *errorMessage = QStringLiteral("%1 S1=0，当前位置已在 S1 限位，禁止继续向 S1 移动")
@@ -3533,22 +3535,24 @@ bool DeviceMonitorPage::threeAxisSensorLimitAllowsMove(int axisIndex, int deltaS
 
 QString DeviceMonitorPage::threeAxisDisplayUnitText(int axisIndex) const
 {
-    return axisIndex == 0 ? QStringLiteral("°") : QStringLiteral("mm");
+    return axisIndex == 0 ? QStringLiteral("°") : QStringLiteral("cm");
 }
 
 QString DeviceMonitorPage::threeAxisPositionRangeText(int axisIndex) const
 {
     const QString unitText = threeAxisDisplayUnitText(axisIndex);
+    const int decimals = threeAxisDisplayDecimals(axisIndex);
     return QStringLiteral("%1-%2 %3")
-        .arg(threeAxisMinimumDisplayUnits(axisIndex), 0, 'f', 2)
-        .arg(threeAxisMaximumDisplayUnits(axisIndex), 0, 'f', 2)
+        .arg(threeAxisMinimumDisplayUnits(axisIndex), 0, 'f', decimals)
+        .arg(threeAxisMaximumDisplayUnits(axisIndex), 0, 'f', decimals)
         .arg(unitText);
 }
 
 QString DeviceMonitorPage::threeAxisPositionText(int axisIndex, int positionSteps) const
 {
+    const int decimals = threeAxisDisplayDecimals(axisIndex);
     return QStringLiteral("%1 %2（%3）")
-        .arg(threeAxisStepsToDisplayUnits(axisIndex, positionSteps), 0, 'f', 2)
+        .arg(threeAxisStepsToDisplayUnits(axisIndex, positionSteps), 0, 'f', decimals)
         .arg(threeAxisDisplayUnitText(axisIndex), threeAxisPositionRangeText(axisIndex));
 }
 
@@ -3583,11 +3587,13 @@ void DeviceMonitorPage::updateThreeAxisSnapshot(const diji::adapters::uim::UimMo
         }
         if (snapshot.hasPosition) {
             m_threeAxisSoftPositionSteps[static_cast<size_t>(index)] = snapshot.position;
+            m_threeAxisPositionKnown[static_cast<size_t>(index)] = true;
             QLabel* positionLabel = m_threeAxisSoftPositionLabels[static_cast<size_t>(index)];
             if (positionLabel != nullptr) {
                 setStableElidedText(positionLabel, threeAxisPositionText(index, snapshot.position));
             }
         } else {
+            m_threeAxisPositionKnown[static_cast<size_t>(index)] = false;
             QLabel* positionLabel = m_threeAxisSoftPositionLabels[static_cast<size_t>(index)];
             if (positionLabel != nullptr) {
                 setStableElidedText(positionLabel, QStringLiteral("未查询"));
@@ -3596,6 +3602,7 @@ void DeviceMonitorPage::updateThreeAxisSnapshot(const diji::adapters::uim::UimMo
         break;
     }
     handleWaterTankLevelSensors(snapshot);
+    refreshThreeAxisUi();
 }
 
 void DeviceMonitorPage::updateThreeAxisNodeStatus()
@@ -3605,12 +3612,16 @@ void DeviceMonitorPage::updateThreeAxisNodeStatus()
         if (nodeLabel == nullptr) {
             continue;
         }
+        const bool available = threeAxisNodeAvailable(index);
         setStableElidedText(nodeLabel,
-            threeAxisNodeAvailable(index)
+            available
                 ? QStringLiteral("节点 %1 已发现").arg(kThreeAxisNodeIds.at(static_cast<size_t>(index)))
                 : QStringLiteral("未发现"));
-        if (!threeAxisNodeAvailable(index) && m_threeAxisSoftPositionLabels[static_cast<size_t>(index)] != nullptr) {
-            setStableElidedText(m_threeAxisSoftPositionLabels[static_cast<size_t>(index)], QStringLiteral("未查询"));
+        if (!available) {
+            m_threeAxisPositionKnown[static_cast<size_t>(index)] = false;
+            if (m_threeAxisSoftPositionLabels[static_cast<size_t>(index)] != nullptr) {
+                setStableElidedText(m_threeAxisSoftPositionLabels[static_cast<size_t>(index)], QStringLiteral("未查询"));
+            }
         }
     }
     refreshThreeAxisUi();
@@ -3670,26 +3681,49 @@ void DeviceMonitorPage::refreshThreeAxisUi()
         const bool available = gatewayOpen && threeAxisNodeAvailable(index);
         const bool canMove = available && !m_threeAxisEmergencyStopActive;
         const size_t arrayIndex = static_cast<size_t>(index);
-        if (m_threeAxisSpeedSpins[arrayIndex] != nullptr) {
-            m_threeAxisSpeedSpins[arrayIndex]->setEnabled(canMove);
-        }
-        if (m_threeAxisSetSpeedButtons[arrayIndex] != nullptr) {
-            m_threeAxisSetSpeedButtons[arrayIndex]->setEnabled(canMove);
-        }
-        if (m_threeAxisTargetPositionSpins[arrayIndex] != nullptr) {
-            m_threeAxisTargetPositionSpins[arrayIndex]->setEnabled(canMove);
+
+        const bool positionKnown = m_threeAxisPositionKnown[arrayIndex];
+        const int currentSteps = m_threeAxisSoftPositionSteps[arrayIndex];
+        bool targetAllowed = false;
+        QDoubleSpinBox* targetSpin = m_threeAxisTargetPositionSpins[arrayIndex];
+        if (targetSpin != nullptr) {
+            targetSpin->setEnabled(canMove);
+            const double targetValue = targetSpin->value();
+            const double displayTolerance = std::pow(10.0, -threeAxisDisplayDecimals(index)) * 0.5;
+            targetAllowed = targetValue >= threeAxisMinimumDisplayUnits(index) - displayTolerance
+                && targetValue <= threeAxisMaximumDisplayUnits(index) + displayTolerance;
+            if (targetAllowed) {
+                const int targetSteps = threeAxisDisplayUnitsToSteps(index, targetValue);
+                targetAllowed = targetSteps >= threeAxisMinimumSteps(index)
+                    && targetSteps <= threeAxisMaximumSteps(index);
+            }
         }
         if (m_threeAxisMoveToButtons[arrayIndex] != nullptr) {
-            m_threeAxisMoveToButtons[arrayIndex]->setEnabled(canMove);
+            m_threeAxisMoveToButtons[arrayIndex]->setEnabled(canMove && positionKnown && targetAllowed);
         }
-        if (m_threeAxisJogDistanceSpins[arrayIndex] != nullptr) {
-            m_threeAxisJogDistanceSpins[arrayIndex]->setEnabled(canMove);
+
+        bool negativeAllowed = false;
+        bool positiveAllowed = false;
+        QDoubleSpinBox* jogSpin = m_threeAxisJogDistanceSpins[arrayIndex];
+        if (jogSpin != nullptr) {
+            jogSpin->setEnabled(canMove);
+            const int jogSteps = threeAxisMoveSteps(index, jogSpin->value());
+            if (positionKnown && jogSteps > 0) {
+                negativeAllowed = threeAxisAbsoluteTargetAllowed(
+                    index,
+                    currentSteps + kThreeAxisNegativeButtonDirections.at(arrayIndex) * jogSteps,
+                    nullptr);
+                positiveAllowed = threeAxisAbsoluteTargetAllowed(
+                    index,
+                    currentSteps + kThreeAxisPositiveButtonDirections.at(arrayIndex) * jogSteps,
+                    nullptr);
+            }
         }
         if (m_threeAxisNegativeButtons[arrayIndex] != nullptr) {
-            m_threeAxisNegativeButtons[arrayIndex]->setEnabled(canMove);
+            m_threeAxisNegativeButtons[arrayIndex]->setEnabled(canMove && negativeAllowed);
         }
         if (m_threeAxisPositiveButtons[arrayIndex] != nullptr) {
-            m_threeAxisPositiveButtons[arrayIndex]->setEnabled(canMove);
+            m_threeAxisPositiveButtons[arrayIndex]->setEnabled(canMove && positiveAllowed);
         }
     }
 }
@@ -4019,6 +4053,10 @@ bool DeviceMonitorPage::sharedRs485Connected() const
 
 void DeviceMonitorPage::closeSharedRs485Clients()
 {
+    m_temperatureRealtimeTimer.stop();
+    if (m_temperatureCurrentDisplay != nullptr) {
+        m_temperatureCurrentDisplay->setText(QStringLiteral("未连接"));
+    }
     m_waterPumpClient.close();
     m_temperatureClient.close();
     m_liquidLevelClient.close();
@@ -4063,6 +4101,10 @@ bool DeviceMonitorPage::openSharedRs485ForWaterPump(QString* errorMessage)
         return true;
     }
 
+    m_temperatureRealtimeTimer.stop();
+    if (m_temperatureCurrentDisplay != nullptr) {
+        m_temperatureCurrentDisplay->setText(QStringLiteral("未连接"));
+    }
     m_temperatureClient.close();
     m_liquidLevelClient.close();
     panthera::adapters::waterpump::WaterPumpSerialSettings settings;
@@ -4101,6 +4143,10 @@ bool DeviceMonitorPage::openSharedRs485ForLiquidLevel(QString* errorMessage)
     }
 
     m_waterPumpClient.close();
+    m_temperatureRealtimeTimer.stop();
+    if (m_temperatureCurrentDisplay != nullptr) {
+        m_temperatureCurrentDisplay->setText(QStringLiteral("未连接"));
+    }
     m_temperatureClient.close();
     panthera::adapters::liquidlevel::LiquidLevelSerialSettings settings;
     settings.portName = QString::fromLatin1(kSharedRs485PortName);
@@ -4136,6 +4182,10 @@ void DeviceMonitorPage::toggleTemperatureConnection()
 
     QString errorMessage;
     if (!openSharedRs485ForTemperature(&errorMessage)) {
+        m_temperatureRealtimeTimer.stop();
+        if (m_temperatureCurrentDisplay != nullptr) {
+            m_temperatureCurrentDisplay->setText(QStringLiteral("未连接"));
+        }
         setTemperatureStatus(QStringLiteral("485连接失败：%1").arg(errorMessage), false);
         refreshSharedRs485Ui();
         return;
@@ -4143,6 +4193,10 @@ void DeviceMonitorPage::toggleTemperatureConnection()
 
     setSharedRs485ConnectedStatus(QStringLiteral("温控"));
     refreshSharedRs485Ui();
+    if (m_temperatureCurrentDisplay != nullptr) {
+        m_temperatureCurrentDisplay->setText(QStringLiteral("--.- \u2103"));
+    }
+    m_temperatureRealtimeTimer.start();
     setTemperatureStatus(QStringLiteral("485连接成功：%1, %2,8,N,1, RTS=%3, DTR=%4")
                              .arg(m_temperatureClient.portName())
                              .arg(m_temperatureClient.baudRate())
@@ -4156,9 +4210,21 @@ bool DeviceMonitorPage::ensureTemperatureConnection()
     QString errorMessage;
     if (openSharedRs485ForTemperature(&errorMessage)) {
         refreshSharedRs485Ui();
+        if (m_temperatureClient.isOpen()) {
+            if (m_temperatureCurrentDisplay != nullptr && m_temperatureCurrentDisplay->text() == QStringLiteral("未连接")) {
+                m_temperatureCurrentDisplay->setText(QStringLiteral("--.- \u2103"));
+            }
+            if (!m_temperatureRealtimeTimer.isActive()) {
+                m_temperatureRealtimeTimer.start();
+            }
+        }
         return true;
     }
 
+    m_temperatureRealtimeTimer.stop();
+    if (m_temperatureCurrentDisplay != nullptr) {
+        m_temperatureCurrentDisplay->setText(QStringLiteral("未连接"));
+    }
     setTemperatureStatus(QStringLiteral("485连接失败：%1").arg(errorMessage), false);
     refreshSharedRs485Ui();
     return false;
@@ -4224,6 +4290,12 @@ void DeviceMonitorPage::setTemperatureSetpoint()
         return;
     }
 
+    if (m_temperatureRequestBusy) {
+        setTemperatureStatus(temperatureFailureText(QStringLiteral("设定温度"), QStringLiteral("温控串口忙")), false);
+        return;
+    }
+    ScopedBusyFlag busyGuard(m_temperatureRequestBusy);
+
     const QByteArray request = panthera::adapters::anthone::Lu926TemperatureModbusClient::buildWriteSet1Frame(celsius);
     QString errorMessage;
     QByteArray response;
@@ -4269,35 +4341,93 @@ void DeviceMonitorPage::setTemperatureSetpoint()
     setTemperatureStatus(lines.join(QLatin1Char('\n')), true);
 }
 
+bool DeviceMonitorPage::readCurrentPv1Temperature(double& temperature, QString& errorMessage, bool verboseLog)
+{
+    const QByteArray request = panthera::adapters::anthone::Lu926TemperatureModbusClient::buildReadPv1Frame();
+
+    if (m_temperatureRequestBusy) {
+        errorMessage = QStringLiteral("温控串口忙");
+        if (verboseLog) {
+            setTemperatureStatus(temperatureFailureText(QStringLiteral("读取温度"), errorMessage), false);
+        }
+        return false;
+    }
+
+    ScopedBusyFlag busyGuard(m_temperatureRequestBusy);
+
+    if (!m_temperatureClient.isOpen()) {
+        errorMessage = QStringLiteral("温控串口未连接");
+        if (verboseLog) {
+            setTemperatureStatus(temperatureFailureText(QStringLiteral("读取温度"), errorMessage), false);
+        }
+        return false;
+    }
+
+    QByteArray response;
+    if (!m_temperatureClient.readChannel1Temperature(&temperature, &errorMessage, &response)) {
+        if (verboseLog) {
+            QStringList lines = m_temperatureClient.lastDebugLog();
+            if (lines.isEmpty()) {
+                lines = {
+                    QStringLiteral("TX len=%1").arg(request.size()),
+                    QStringLiteral("TX: %1").arg(panthera::adapters::anthone::Lu926TemperatureModbusClient::frameToHex(request))
+                };
+            }
+            lines.push_back(temperatureFailureText(QStringLiteral("读取温度"), errorMessage));
+            setTemperatureStatus(lines.join(QLatin1Char('\n')), false);
+        }
+        return false;
+    }
+
+    if (verboseLog) {
+        const QStringList lines {
+            QStringLiteral("TX len=%1").arg(request.size()),
+            QStringLiteral("TX: %1").arg(panthera::adapters::anthone::Lu926TemperatureModbusClient::frameToHex(request)),
+            QStringLiteral("RX total len=%1").arg(response.size()),
+            QStringLiteral("RX total: %1").arg(panthera::adapters::anthone::Lu926TemperatureModbusClient::frameToHex(response)),
+            QStringLiteral("CH1 当前温度 PV1：%1 °C").arg(temperature, 0, 'f', 1)
+        };
+        setTemperatureStatus(lines.join(QLatin1Char('\n')), true);
+    }
+    return true;
+}
+
+void DeviceMonitorPage::updateRealtimeTemperature()
+{
+    if (m_temperatureCurrentDisplay == nullptr) {
+        return;
+    }
+
+    if (!m_temperatureClient.isOpen()) {
+        m_temperatureRealtimeTimer.stop();
+        m_temperatureCurrentDisplay->setText(QStringLiteral("未连接"));
+        return;
+    }
+
+    double celsius = 0.0;
+    QString errorMessage;
+    if (readCurrentPv1Temperature(celsius, errorMessage, false)) {
+        m_temperatureCurrentDisplay->setText(QStringLiteral("%1 \u2103").arg(celsius, 0, 'f', 1));
+        return;
+    }
+
+    if (errorMessage == QStringLiteral("温控串口忙")) {
+        return;
+    }
+    m_temperatureCurrentDisplay->setText(QStringLiteral("读取失败"));
+}
+
 void DeviceMonitorPage::readTemperatureValue()
 {
     if (!ensureTemperatureConnection()) {
         return;
     }
 
-    const QByteArray request = panthera::adapters::anthone::Lu926TemperatureModbusClient::buildReadPv1Frame();
-    QString errorMessage;
-    QByteArray response;
     double celsius = 0.0;
-    if (!m_temperatureClient.readChannel1Temperature(&celsius, &errorMessage, &response)) {
-        QStringList lines = m_temperatureClient.lastDebugLog();
-        if (lines.isEmpty()) {
-            lines = {
-                QStringLiteral("TX len=%1").arg(request.size()),
-                QStringLiteral("TX: %1").arg(panthera::adapters::anthone::Lu926TemperatureModbusClient::frameToHex(request))
-            };
-        }
-        lines.push_back(temperatureFailureText(QStringLiteral("读取温度"), errorMessage));
-        setTemperatureStatus(lines.join(QLatin1Char('\n')), false);
-        return;
+    QString errorMessage;
+    if (readCurrentPv1Temperature(celsius, errorMessage, true) && m_temperatureCurrentDisplay != nullptr) {
+        m_temperatureCurrentDisplay->setText(QStringLiteral("%1 \u2103").arg(celsius, 0, 'f', 1));
     }
-
-    QStringList lines {
-        QStringLiteral("TX: %1").arg(panthera::adapters::anthone::Lu926TemperatureModbusClient::frameToHex(request)),
-        QStringLiteral("RX: %1").arg(panthera::adapters::anthone::Lu926TemperatureModbusClient::frameToHex(response)),
-        QStringLiteral("CH1 当前温度 PV1：%1 °C").arg(celsius, 0, 'f', 1)
-    };
-    setTemperatureStatus(lines.join(QLatin1Char('\n')), true);
 }
 
 void DeviceMonitorPage::refreshLiquidLevelSerialPorts()
@@ -4502,6 +4632,13 @@ QString DeviceMonitorPage::setTemperatureSetpointsToZeroForWaterTankAlarm()
         setTemperatureStatus(QStringLiteral("水箱下限位报警：%1").arg(message), false);
         return message;
     }
+
+    if (m_temperatureRequestBusy) {
+        const QString message = QStringLiteral("温控串口忙，无法自动将加热棒设定为 0°C。");
+        setTemperatureStatus(QStringLiteral("水箱下限位报警：%1").arg(message), false);
+        return message;
+    }
+    ScopedBusyFlag busyGuard(m_temperatureRequestBusy);
 
     QString errorMessage;
     QByteArray response;
