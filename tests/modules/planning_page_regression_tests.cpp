@@ -191,6 +191,7 @@ private slots:
     void multipleAnnotationsGenerateTargetsForAllRegions();
     void treatmentPageAcceptsGeneratedLinePlan();
     void treatmentPageSelectsSingleLayer();
+    void addPathFallsBackWhenRobotPoseUnavailable();
     void mainWindowSwitchesFromDashboardToPlanningWithoutCrash();
     void mainWindowSwitchesFromTreatmentToPlanningWithoutCrash();
 };
@@ -1751,6 +1752,28 @@ void PlanningPageRegressionTests::mainWindowSwitchesFromTreatmentToPlanningWitho
     QCoreApplication::processEvents();
 
     QVERIFY(mainWindow.findChild<PlanningPage*>() != nullptr);
+}
+
+void PlanningPageRegressionTests::addPathFallsBackWhenRobotPoseUnavailable()
+{
+    EventBus eventBus;
+    AuditService auditService;
+    ApplicationContext context(&eventBus, &auditService);
+    SafetyKernel safetyKernel;
+    panthera::adapters::SimulationDeviceFacade simulationDevice;
+
+    PlanningPage planningPage(&context, &safetyKernel, &auditService, nullptr, &simulationDevice);
+    planningPage.resize(1600, 900);
+    planningPage.show();
+    QCoreApplication::processEvents();
+
+    QVERIFY(QMetaObject::invokeMethod(&planningPage, "addPathItem", Qt::DirectConnection));
+
+    auto* pathList = planningPage.findChild<QListWidget*>(QStringLiteral("planningPathList"));
+    QVERIFY(pathList != nullptr);
+    QCOMPARE(pathList->count(), 1);
+    QVERIFY(pathList->item(0)->text().contains(QStringLiteral("未获取机械臂坐标")));
+    QVERIFY(!pathList->item(0)->text().contains(QStringLiteral("-9.53")));
 }
 
 void PlanningPageRegressionTests::mainWindowSwitchesFromDashboardToPlanningWithoutCrash()

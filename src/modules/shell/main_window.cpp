@@ -25,6 +25,7 @@ MainWindow::MainWindow(
     AuditService* auditService,
     IClinicalDataRepository* clinicalDataRepository,
     adapters::SimulationDeviceFacade* simulationDevice,
+    adapters::dobot::DobotControllerClient* robotArmClient,
     QWidget* parent)
     : QMainWindow(parent)
     , m_context(context)
@@ -32,6 +33,7 @@ MainWindow::MainWindow(
     , m_auditService(auditService)
     , m_clinicalDataRepository(clinicalDataRepository)
     , m_simulationDevice(simulationDevice)
+    , m_robotArmClient(robotArmClient != nullptr ? robotArmClient : &m_ownedRobotArmClient)
 {
     auto* centralWidget = new QWidget();
     auto* rootLayout = new QVBoxLayout(centralWidget);
@@ -129,7 +131,7 @@ MainWindow::MainWindow(
     rootLayout->addWidget(navBar);
 
     m_stack = new QStackedWidget();
-    m_dashboardPage = new DeviceMonitorPage(simulationDevice, safetyKernel);
+    m_dashboardPage = new DeviceMonitorPage(simulationDevice, safetyKernel, m_robotArmClient);
     m_stack->addWidget(m_dashboardPage);
     m_stack->addWidget(new QWidget());
     m_stack->addWidget(new QWidget());
@@ -234,7 +236,7 @@ void MainWindow::ensurePlanningPage()
         return;
     }
 
-    m_planningPage = new PlanningPage(m_context, m_safetyKernel, m_auditService, m_clinicalDataRepository, m_simulationDevice);
+    m_planningPage = new PlanningPage(m_context, m_safetyKernel, m_auditService, m_clinicalDataRepository, m_simulationDevice, m_robotArmClient);
     replacePlaceholderPage(1, m_planningPage);
 }
 

@@ -11,7 +11,7 @@
 namespace panthera::adapters::waterpump {
 namespace {
 
-constexpr quint16 kFlowRegister = 0x400B;
+constexpr quint16 kFlowRegister = 0x4001;
 constexpr quint16 kRunDurationRegister = 0x4005;
 constexpr quint16 kRealtimeRunDurationRegister = 0x4007;
 constexpr quint16 kStartStopCoil = 0x0001;
@@ -425,7 +425,7 @@ bool WaterPumpModbusClient::sendFrame(const QByteArray& request, QString* errorM
     }
 
     if (localResponse.isEmpty()) {
-        if (functionCode == kWriteSingleCoil) {
+        if (functionCode == kWriteSingleCoil || functionCode == kWriteMultipleRegisters) {
             if (response != nullptr) {
                 response->clear();
             }

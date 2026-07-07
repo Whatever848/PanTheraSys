@@ -187,6 +187,13 @@ struct TherapyPlan {
     QDateTime createdAt;
     QDateTime approvedAt;
     QString approvedBy;
+    double robotX {0.0};
+    double robotY {0.0};
+    double robotZ {0.0};
+    double robotRx {0.0};
+    double robotRy {0.0};
+    double robotRz {0.0};
+    bool hasRobotPose {false};
 };
 
 struct TreatmentSessionRecord {

@@ -12,6 +12,7 @@ private slots:
     void formatsCommandsFromPdfSyntax();
     void parsesCommandResponses();
     void parsesPoseAndJointPayloads();
+    void parsesGetPoseResponses();
     void parsesStartPosePayloads();
     void reportsProtocolErrors();
     void formatsScriptTrajectoryCommands();
@@ -171,6 +172,29 @@ void DobotTcpClientTests::parsesPoseAndJointPayloads()
     QCOMPARE(joints.j1, -1.5);
     QCOMPARE(joints.j3, 3.25);
     QCOMPARE(joints.j6, 6.0);
+}
+
+void DobotTcpClientTests::parsesGetPoseResponses()
+{
+    RobotTcpPose pose;
+    QString error;
+    QVERIFY(parseGetPoseResponse(QStringLiteral("0,{100.123,200.456,300.789,1.111,2.222,3.333},GetPose();"), pose, error));
+    QVERIFY(pose.valid);
+    QCOMPARE(pose.x, 100.123);
+    QCOMPARE(pose.y, 200.456);
+    QCOMPARE(pose.z, 300.789);
+    QCOMPARE(pose.rx, 1.111);
+    QCOMPARE(pose.ry, 2.222);
+    QCOMPARE(pose.rz, 3.333);
+    QVERIFY(error.isEmpty());
+
+    QVERIFY(!parseGetPoseResponse(QStringLiteral("-1,{},GetPose();"), pose, error));
+    QVERIFY(!pose.valid);
+    QVERIFY(error.contains(QStringLiteral("response=-1,{},GetPose();")));
+
+    QVERIFY(!parseGetPoseResponse(QStringLiteral("0,{1,2,3},GetPose();"), pose, error));
+    QVERIFY(!pose.valid);
+    QVERIFY(error.contains(QStringLiteral("response=0,{1,2,3},GetPose();")));
 }
 
 void DobotTcpClientTests::parsesStartPosePayloads()

@@ -26,6 +26,17 @@ struct DobotPose {
     double rz {0.0};
 };
 
+struct RobotTcpPose {
+    double x {0.0};
+    double y {0.0};
+    double z {0.0};
+    double rx {0.0};
+    double ry {0.0};
+    double rz {0.0};
+    bool valid {false};
+    QString error;
+};
+
 struct DobotJointAngles {
     double j1 {0.0};
     double j2 {0.0};
@@ -87,6 +98,7 @@ QVector<double> parseDobotDoublePayload(const QString& payload, bool* ok = nullp
 bool parseDobotPosePayload(const QString& payload, DobotPose* pose);
 bool parseDobotJointPayload(const QString& payload, DobotJointAngles* joints);
 bool parseDobotStartPosePayload(const QString& payload, DobotStartPose* startPose);
+bool parseGetPoseResponse(const QString& response, RobotTcpPose& pose, QString& error);
 
 class DobotTcpClient final : public QObject {
     Q_OBJECT
@@ -227,5 +239,7 @@ private:
     DobotTcpClient m_client;
     DobotTcpClient m_motionClient;
 };
+
+bool requestCurrentRobotPose(DobotControllerClient* robotClient, RobotTcpPose& pose, QString& error);
 
 }  // namespace panthera::adapters::dobot

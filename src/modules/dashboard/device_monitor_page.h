@@ -35,7 +35,11 @@ class DeviceMonitorPage final : public QWidget {
     Q_OBJECT
 
 public:
-    DeviceMonitorPage(panthera::adapters::SimulationDeviceFacade* simulationDevice, panthera::core::SafetyKernel* safetyKernel, QWidget* parent = nullptr);
+    DeviceMonitorPage(
+        panthera::adapters::SimulationDeviceFacade* simulationDevice,
+        panthera::core::SafetyKernel* safetyKernel,
+        panthera::adapters::dobot::DobotControllerClient* robotArmClient = nullptr,
+        QWidget* parent = nullptr);
     void releaseThreeAxisGatewayForSharedUse();
 
 private slots:
@@ -65,6 +69,7 @@ private slots:
     void disableAllThreeAxisMotors();
     void emergencyStopThreeAxisMotors();
     void releaseThreeAxisEmergencyStop();
+    void zeroAllThreeAxisMotors();
     void refreshThreeAxisMotors();
     void pollRobotArmSafetyWall();
     void refreshWaterPumpSerialPorts();
@@ -123,8 +128,7 @@ private:
     bool ensureWaterPumpConnection();
     void setWaterPumpStatus(const QString& message, bool ok);
     void refreshWaterPumpUi();
-    void setWaterLoopFlow();
-    bool applySharedWaterPumpFlow(QStringList* responses, QStringList* failures);
+    bool applySharedWaterPumpFlow(double flow, QStringList* responses, QStringList* failures);
     bool setWaterPumpFlowValue(int pumpIndex, double flow, QString* responseText, QString* errorMessage);
     void setWaterPumpFlow(int pumpIndex);
     void readWaterPumpFlow(int pumpIndex);
@@ -160,11 +164,17 @@ private:
     void triggerWaterTankLowLevelAlarm();
     QString setTemperatureSetpointsToZeroForWaterTankAlarm();
     void moveThreeAxisMotor(int axisIndex, int direction);
+    void startThreeAxisContinuousMove(int axisIndex, int direction);
+    void stopThreeAxisContinuousMove(int axisIndex);
     void moveThreeAxisMotorToAbsolute(int axisIndex);
     void enableThreeAxisMotor(int axisIndex);
     void disableThreeAxisMotor(int axisIndex);
     bool configureThreeAxisMotorParameters();
     bool cancelThreeAxisMotorMotion(int axisIndex, QString* errorMessage);
+    bool refreshThreeAxisMotorSnapshot(int axisIndex, diji::adapters::uim::UimMotorSnapshot* snapshot, QString* errorMessage);
+    bool stopThreeAxisMotorAndRestoreSpeed(int axisIndex, QString* errorMessage);
+    bool zeroThreeAxisLinearMotorToS2(int axisIndex, QString* errorMessage);
+    bool zeroThreeAxisSwingMotor(QString* errorMessage);
     bool runThreeAxisCommand(int axisIndex, const QString& action, const std::function<bool(QString*)>& command);
     bool selectThreeAxisNode(int axisIndex, QString* errorMessage);
     bool threeAxisNodeAvailable(int axisIndex) const;
@@ -178,8 +188,10 @@ private:
     int threeAxisDisplayDecimals(int axisIndex) const;
     int threeAxisSpeedForAxis(int axisIndex) const;
     double threeAxisJogAmountForAxis(int axisIndex) const;
+    double threeAxisContinuousAmountForAxis(int axisIndex) const;
     QString threeAxisJogActionTitle(int axisIndex, int direction) const;
     bool threeAxisAbsoluteTargetAllowed(int axisIndex, int targetSteps, QString* errorMessage) const;
+    bool threeAxisCachedSensorLimitAllowsMove(int axisIndex, int deltaSteps) const;
     bool threeAxisSensorLimitAllowsMove(int axisIndex, int deltaSteps, QString* errorMessage);
     QString threeAxisDisplayUnitText(int axisIndex) const;
     QString threeAxisPositionRangeText(int axisIndex) const;
@@ -194,7 +206,8 @@ private:
 
     panthera::adapters::SimulationDeviceFacade* m_simulationDevice {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
-    panthera::adapters::dobot::DobotControllerClient m_robotArmClient;
+    panthera::adapters::dobot::DobotControllerClient m_ownedRobotArmClient;
+    panthera::adapters::dobot::DobotControllerClient& m_robotArmClient;
     panthera::adapters::dobot::DobotZAxisAligner m_robotZAxisAligner;
     panthera::adapters::dobot::DobotConnectionSettings m_robotArmSettings;
     panthera::adapters::dobot::DobotPose m_robotSafeOriginPose;
@@ -251,8 +264,12 @@ private:
     QVector<diji::adapters::uim::UimNodeInfo> m_threeAxisNodes;
     std::array<int, 3> m_threeAxisSoftPositionSteps {0, 0, 0};
     std::array<bool, 3> m_threeAxisPositionKnown {false, false, false};
+    std::array<bool, 3> m_threeAxisSensorFeedbackKnown {false, false, false};
+    std::array<bool, 3> m_threeAxisSensor1High {true, true, true};
+    std::array<bool, 3> m_threeAxisSensor2High {true, true, true};
     std::array<int, 3> m_threeAxisPreEmergencySpeeds {0, 0, 0};
     bool m_threeAxisEmergencyStopActive {false};
+    bool m_threeAxisZeroingActive {false};
     QHash<QString, QLabel*> m_valueLabels;
     QLabel* m_safetyStateLabel {nullptr};
     QLabel* m_interlockLabel {nullptr};
@@ -276,7 +293,6 @@ private:
     QLineEdit* m_waterPumpBaudCombo {nullptr};
     QPushButton* m_waterPumpRefreshPortsButton {nullptr};
     QPushButton* m_waterPumpConnectionButton {nullptr};
-    QDoubleSpinBox* m_waterPumpFlowSpin {nullptr};
     QDoubleSpinBox* m_tank2FillTargetLevelSpin {nullptr};
     QPushButton* m_tank2FillButton {nullptr};
     std::array<QDoubleSpinBox*, 2> m_waterPumpFlowSpins {nullptr, nullptr};
@@ -319,13 +335,18 @@ private:
     QPushButton* m_threeAxisDisableAllButton {nullptr};
     QPushButton* m_threeAxisEmergencyStopButton {nullptr};
     QPushButton* m_threeAxisReleaseEmergencyStopButton {nullptr};
+    QPushButton* m_threeAxisZeroAllButton {nullptr};
     std::array<QLabel*, 3> m_threeAxisNodeLabels {nullptr, nullptr, nullptr};
     std::array<QLabel*, 3> m_threeAxisSoftPositionLabels {nullptr, nullptr, nullptr};
     std::array<QDoubleSpinBox*, 3> m_threeAxisTargetPositionSpins {nullptr, nullptr, nullptr};
     std::array<QDoubleSpinBox*, 3> m_threeAxisJogDistanceSpins {nullptr, nullptr, nullptr};
+    std::array<QDoubleSpinBox*, 3> m_threeAxisContinuousDistanceSpins {nullptr, nullptr, nullptr};
     std::array<QPushButton*, 3> m_threeAxisMoveToButtons {nullptr, nullptr, nullptr};
     std::array<QPushButton*, 3> m_threeAxisNegativeButtons {nullptr, nullptr, nullptr};
     std::array<QPushButton*, 3> m_threeAxisPositiveButtons {nullptr, nullptr, nullptr};
+    std::array<QPushButton*, 3> m_threeAxisContinuousNegativeButtons {nullptr, nullptr, nullptr};
+    std::array<QPushButton*, 3> m_threeAxisContinuousPositiveButtons {nullptr, nullptr, nullptr};
+    std::array<bool, 3> m_threeAxisContinuousMoving {false, false, false};
     QTimer m_threeAxisRefreshTimer;
     QVector<QCheckBox*> m_faultToggles;
 };

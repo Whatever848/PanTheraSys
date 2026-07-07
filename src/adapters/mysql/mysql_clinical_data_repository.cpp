@@ -161,6 +161,13 @@ QString serializePlanPayload(const TherapyPlan& therapyPlan)
     root.insert(QStringLiteral("coordinate_x"), therapyPlan.coordinateX);
     root.insert(QStringLiteral("coordinate_y"), therapyPlan.coordinateY);
     root.insert(QStringLiteral("coordinate_z"), therapyPlan.coordinateZ);
+    root.insert(QStringLiteral("has_robot_pose"), therapyPlan.hasRobotPose);
+    root.insert(QStringLiteral("robot_x"), therapyPlan.robotX);
+    root.insert(QStringLiteral("robot_y"), therapyPlan.robotY);
+    root.insert(QStringLiteral("robot_z"), therapyPlan.robotZ);
+    root.insert(QStringLiteral("robot_rx"), therapyPlan.robotRx);
+    root.insert(QStringLiteral("robot_ry"), therapyPlan.robotRy);
+    root.insert(QStringLiteral("robot_rz"), therapyPlan.robotRz);
     root.insert(QStringLiteral("depth_mm"), therapyPlan.depthMm);
     root.insert(QStringLiteral("dwell_seconds"), therapyPlan.dwellSeconds);
     root.insert(QStringLiteral("approved_by"), therapyPlan.approvedBy);
@@ -183,6 +190,13 @@ void hydratePlanPayload(const QString& serializedPayload, TherapyPlan* therapyPl
     therapyPlan->coordinateX = root.value(QStringLiteral("coordinate_x")).toDouble(therapyPlan->coordinateX);
     therapyPlan->coordinateY = root.value(QStringLiteral("coordinate_y")).toDouble(therapyPlan->coordinateY);
     therapyPlan->coordinateZ = root.value(QStringLiteral("coordinate_z")).toDouble(therapyPlan->coordinateZ);
+    therapyPlan->hasRobotPose = root.value(QStringLiteral("has_robot_pose")).toBool(false);
+    therapyPlan->robotX = root.value(QStringLiteral("robot_x")).toDouble(therapyPlan->robotX);
+    therapyPlan->robotY = root.value(QStringLiteral("robot_y")).toDouble(therapyPlan->robotY);
+    therapyPlan->robotZ = root.value(QStringLiteral("robot_z")).toDouble(therapyPlan->robotZ);
+    therapyPlan->robotRx = root.value(QStringLiteral("robot_rx")).toDouble(therapyPlan->robotRx);
+    therapyPlan->robotRy = root.value(QStringLiteral("robot_ry")).toDouble(therapyPlan->robotRy);
+    therapyPlan->robotRz = root.value(QStringLiteral("robot_rz")).toDouble(therapyPlan->robotRz);
     therapyPlan->depthMm = root.value(QStringLiteral("depth_mm")).toDouble(therapyPlan->depthMm);
     therapyPlan->dwellSeconds = root.value(QStringLiteral("dwell_seconds")).toDouble(therapyPlan->dwellSeconds);
     if (therapyPlan->approvedBy.isEmpty()) {

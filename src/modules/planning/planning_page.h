@@ -39,6 +39,11 @@
 
 class QHBoxLayout;
 
+namespace panthera::adapters::dobot {
+class DobotControllerClient;
+struct RobotTcpPose;
+}
+
 namespace panthera::modules {
 
 class PlanningPage final : public QWidget {
@@ -51,6 +56,7 @@ public:
         panthera::core::AuditService* auditService,
         panthera::core::IClinicalDataRepository* clinicalDataRepository,
         panthera::adapters::SimulationDeviceFacade* simulationDevice,
+        panthera::adapters::dobot::DobotControllerClient* robotArmClient = nullptr,
         QWidget* parent = nullptr);
 
     [[nodiscard]] QStringList personalizationProfileNames() const;
@@ -148,8 +154,10 @@ private:
     void populateDefaultScanChannels();
     QString currentChannelLabel() const;
     QString currentChannelCoordinate() const;
+    panthera::adapters::dobot::RobotTcpPose currentPathRobotPose() const;
+    bool requestCurrentRobotPose(panthera::adapters::dobot::RobotTcpPose& pose, QString& error);
     void updateAcquisitionSummary(const QString& title, const QStringList& lines);
-    QListWidgetItem* createPathListItem(int index);
+    QListWidgetItem* createPathListItem(int index, const panthera::adapters::dobot::RobotTcpPose& pose);
     QString pathStateKeyForRow(int row) const;
     void saveCurrentPathState();
     void loadPathState(int row);
@@ -221,6 +229,7 @@ private:
     panthera::core::IClinicalDataRepository* m_clinicalDataRepository {nullptr};
     panthera::core::ClinicalDataService m_clinicalDataService;
     panthera::adapters::SimulationDeviceFacade* m_simulationDevice {nullptr};
+    panthera::adapters::dobot::DobotControllerClient* m_robotArmClient {nullptr};
     diji::adapters::uim::UimMotorGateway m_imageAcquisitionMotorGateway;
     QVector<diji::adapters::uim::UimDeviceInfo> m_imageAcquisitionMotorDevices;
     QVector<diji::adapters::uim::UimNodeInfo> m_imageAcquisitionMotorNodes;

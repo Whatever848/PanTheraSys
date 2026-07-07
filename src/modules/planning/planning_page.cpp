@@ -1,5 +1,6 @@
 #include "modules/planning/planning_page.h"
 
+#include "adapters/dobot/dobot_tcp_client.h"
 #include "modules/shared/system_sound_guard.h"
 #include "modules/shared/ultrasound_geometry.h"
 
@@ -8,6 +9,7 @@
 
 #include <QButtonGroup>
 #include <QCoreApplication>
+#include <QDebug>
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -43,6 +45,8 @@ using namespace panthera::core;
 namespace {
 
 constexpr int kPathStateKeyRole = Qt::UserRole + 1;
+constexpr int kPathLabelRole = Qt::UserRole + 2;
+constexpr int kPathRobotPoseRole = Qt::UserRole + 3;
 constexpr int kImageAcquisitionAxisNodeId = 7;
 constexpr double kImageAcquisitionStepsPerMillimeter = 640.0;
 constexpr int kImageAcquisitionMotorSpeed = 2400;
@@ -232,15 +236,103 @@ QString summarizePlan(const TherapyPlan& plan)
         .arg(durationSeconds / 60.0, 0, 'f', 2);
 }
 
-QString defaultChannelCoordinate(int index)
+QString robotPoseNumber(double value)
 {
-    const double x = -20.0 + (index * 5.0);
-    return QStringLiteral("(%1, -9.53, 27)").arg(QString::number(x, 'f', 0));
+    return QString::number(value, 'f', 3);
 }
 
-QString defaultChannelText(int index)
+QString robotPoseCompactText(const adapters::dobot::RobotTcpPose& pose)
 {
-    return QStringLiteral("[%1] \u56fe\u50cf\u901a\u9053\u91c7\u96c6\u8def\u5f84%1    %2").arg(index + 1).arg(defaultChannelCoordinate(index));
+    if (!pose.valid) {
+        return QStringLiteral("\u672a\u83b7\u53d6\u673a\u68b0\u81c2\u5750\u6807");
+    }
+
+    return QStringLiteral("(%1, %2, %3, %4, %5, %6)")
+        .arg(robotPoseNumber(pose.x))
+        .arg(robotPoseNumber(pose.y))
+        .arg(robotPoseNumber(pose.z))
+        .arg(robotPoseNumber(pose.rx))
+        .arg(robotPoseNumber(pose.ry))
+        .arg(robotPoseNumber(pose.rz));
+}
+
+QString robotPoseDetailText(const adapters::dobot::RobotTcpPose& pose)
+{
+    if (!pose.valid) {
+        return pose.error.trimmed().isEmpty()
+            ? QStringLiteral("\u672a\u83b7\u53d6\u673a\u68b0\u81c2\u5750\u6807")
+            : QStringLiteral("\u672a\u83b7\u53d6\u673a\u68b0\u81c2\u5750\u6807\uff1a%1").arg(pose.error.trimmed());
+    }
+
+    return QStringLiteral("X=%1, Y=%2, Z=%3, Rx=%4, Ry=%5, Rz=%6")
+        .arg(robotPoseNumber(pose.x))
+        .arg(robotPoseNumber(pose.y))
+        .arg(robotPoseNumber(pose.z))
+        .arg(robotPoseNumber(pose.rx))
+        .arg(robotPoseNumber(pose.ry))
+        .arg(robotPoseNumber(pose.rz));
+}
+
+QVariantMap robotPoseToVariantMap(const adapters::dobot::RobotTcpPose& pose)
+{
+    QVariantMap map;
+    map.insert(QStringLiteral("has_robot_pose"), pose.valid);
+    map.insert(QStringLiteral("robot_x"), pose.x);
+    map.insert(QStringLiteral("robot_y"), pose.y);
+    map.insert(QStringLiteral("robot_z"), pose.z);
+    map.insert(QStringLiteral("robot_rx"), pose.rx);
+    map.insert(QStringLiteral("robot_ry"), pose.ry);
+    map.insert(QStringLiteral("robot_rz"), pose.rz);
+    map.insert(QStringLiteral("error"), pose.error);
+    return map;
+}
+
+adapters::dobot::RobotTcpPose robotPoseFromVariant(const QVariant& value)
+{
+    adapters::dobot::RobotTcpPose pose;
+    const QVariantMap map = value.toMap();
+    if (map.isEmpty()) {
+        return pose;
+    }
+
+    pose.valid = map.value(QStringLiteral("has_robot_pose")).toBool();
+    pose.x = map.value(QStringLiteral("robot_x")).toDouble();
+    pose.y = map.value(QStringLiteral("robot_y")).toDouble();
+    pose.z = map.value(QStringLiteral("robot_z")).toDouble();
+    pose.rx = map.value(QStringLiteral("robot_rx")).toDouble();
+    pose.ry = map.value(QStringLiteral("robot_ry")).toDouble();
+    pose.rz = map.value(QStringLiteral("robot_rz")).toDouble();
+    pose.error = map.value(QStringLiteral("error")).toString();
+    return pose;
+}
+
+QString channelLabelForIndex(int index)
+{
+    return QStringLiteral("[%1] \u56fe\u50cf\u901a\u9053\u91c7\u96c6\u8def\u5f84%1").arg(index + 1);
+}
+
+QString channelText(int index, const adapters::dobot::RobotTcpPose& pose)
+{
+    return QStringLiteral("%1    %2").arg(channelLabelForIndex(index), robotPoseCompactText(pose));
+}
+
+void applyRobotPoseToPlan(TherapyPlan& plan, const adapters::dobot::RobotTcpPose& pose)
+{
+    if (!pose.valid) {
+        plan.hasRobotPose = false;
+        return;
+    }
+
+    plan.coordinateX = pose.x;
+    plan.coordinateY = pose.y;
+    plan.coordinateZ = pose.z;
+    plan.robotX = pose.x;
+    plan.robotY = pose.y;
+    plan.robotZ = pose.z;
+    plan.robotRx = pose.rx;
+    plan.robotRy = pose.ry;
+    plan.robotRz = pose.rz;
+    plan.hasRobotPose = true;
 }
 
 QString extractChannelCoordinate(const QString& itemText)
@@ -558,6 +650,7 @@ PlanningPage::PlanningPage(
     AuditService* auditService,
     IClinicalDataRepository* clinicalDataRepository,
     adapters::SimulationDeviceFacade* simulationDevice,
+    adapters::dobot::DobotControllerClient* robotArmClient,
     QWidget* parent)
     : QWidget(parent)
     , m_context(context)
@@ -566,6 +659,7 @@ PlanningPage::PlanningPage(
     , m_clinicalDataRepository(clinicalDataRepository)
     , m_clinicalDataService(clinicalDataRepository)
     , m_simulationDevice(simulationDevice)
+    , m_robotArmClient(robotArmClient)
 {
     setObjectName(QStringLiteral("planningPage"));
     setAttribute(Qt::WA_StyledBackground, true);
@@ -2297,16 +2391,31 @@ TherapyPlan PlanningPage::buildPlanFromUi(ApprovalState approvalState) const
     plan.deliveryMode = m_segmentedTreatmentRadio->isChecked() ? QStringLiteral("\u5206\u6bb5\u6267\u884c") : QStringLiteral("\u76f4\u63a5\u6cbb\u7597");
     plan.createdAt = QDateTime::currentDateTime();
 
+    const adapters::dobot::RobotTcpPose pathRobotPose = currentPathRobotPose();
     const QVector3D coordinate = parseCoordinateText(currentChannelCoordinate());
     if (m_context->hasActivePlan()) {
         plan.coordinateX = m_context->activePlan().coordinateX;
         plan.coordinateY = m_context->activePlan().coordinateY;
         plan.coordinateZ = m_context->activePlan().coordinateZ;
+        plan.robotX = m_context->activePlan().robotX;
+        plan.robotY = m_context->activePlan().robotY;
+        plan.robotZ = m_context->activePlan().robotZ;
+        plan.robotRx = m_context->activePlan().robotRx;
+        plan.robotRy = m_context->activePlan().robotRy;
+        plan.robotRz = m_context->activePlan().robotRz;
+        plan.hasRobotPose = m_context->activePlan().hasRobotPose;
         plan.depthMm = m_context->activePlan().depthMm;
+        if (!plan.hasRobotPose && pathRobotPose.valid) {
+            applyRobotPoseToPlan(plan, pathRobotPose);
+        }
+    } else if (pathRobotPose.valid) {
+        applyRobotPoseToPlan(plan, pathRobotPose);
+        plan.depthMm = static_cast<double>(m_layerCountSpin->value() * m_stepSpin->value());
     } else {
         plan.coordinateX = coordinate.x();
         plan.coordinateY = coordinate.y();
         plan.coordinateZ = coordinate.z();
+        plan.hasRobotPose = false;
         plan.depthMm = static_cast<double>(m_layerCountSpin->value() * m_stepSpin->value());
     }
 
@@ -3239,14 +3348,7 @@ void PlanningPage::applyPlanToUi(const TherapyPlan& plan)
 
 void PlanningPage::populateDefaultScanChannels()
 {
-    if (m_pathList == nullptr) {
-        return;
-    }
-
-    if (m_pathList->count() == 0) {
-        m_pathList->addItem(createPathListItem(0));
-    }
-    if (m_pathList->count() > 0 && m_pathList->currentRow() < 0) {
+    if (m_pathList != nullptr && m_pathList->count() > 0 && m_pathList->currentRow() < 0) {
         m_pathList->setCurrentRow(0);
     }
     updatePathActionState();
@@ -3341,13 +3443,37 @@ double PlanningPage::currentRealtimeTransducerPowerWatts() const
 QString PlanningPage::currentChannelLabel() const
 {
     const QListWidgetItem* item = m_pathList->currentItem();
-    return item == nullptr ? QStringLiteral("\u672a\u9009\u62e9\u901a\u9053") : extractChannelLabel(item->text());
+    if (item == nullptr) {
+        return QStringLiteral("\u672a\u9009\u62e9\u901a\u9053");
+    }
+
+    const QString label = item->data(kPathLabelRole).toString().trimmed();
+    return label.isEmpty() ? extractChannelLabel(item->text()) : label;
 }
 
 QString PlanningPage::currentChannelCoordinate() const
 {
     const QListWidgetItem* item = m_pathList->currentItem();
-    return item == nullptr ? QStringLiteral("\u672a\u8bbe\u7f6e") : extractChannelCoordinate(item->text());
+    if (item == nullptr) {
+        return QStringLiteral("\u672a\u8bbe\u7f6e");
+    }
+
+    const adapters::dobot::RobotTcpPose pose = robotPoseFromVariant(item->data(kPathRobotPoseRole));
+    if (item->data(kPathRobotPoseRole).isValid()) {
+        return robotPoseCompactText(pose);
+    }
+    return extractChannelCoordinate(item->text());
+}
+
+adapters::dobot::RobotTcpPose PlanningPage::currentPathRobotPose() const
+{
+    const QListWidgetItem* item = m_pathList != nullptr ? m_pathList->currentItem() : nullptr;
+    return item == nullptr ? adapters::dobot::RobotTcpPose {} : robotPoseFromVariant(item->data(kPathRobotPoseRole));
+}
+
+bool PlanningPage::requestCurrentRobotPose(adapters::dobot::RobotTcpPose& pose, QString& error)
+{
+    return adapters::dobot::requestCurrentRobotPose(m_robotArmClient, pose, error);
 }
 
 void PlanningPage::updateAcquisitionSummary(const QString& title, const QStringList& lines)
@@ -3358,10 +3484,13 @@ void PlanningPage::updateAcquisitionSummary(const QString& title, const QStringL
     m_assessmentPreview->setPlainText(text);
 }
 
-QListWidgetItem* PlanningPage::createPathListItem(int index)
+QListWidgetItem* PlanningPage::createPathListItem(int index, const adapters::dobot::RobotTcpPose& pose)
 {
-    auto* item = new QListWidgetItem(defaultChannelText(index));
+    auto* item = new QListWidgetItem(channelText(index, pose));
     item->setData(kPathStateKeyRole, QStringLiteral("planning-path-%1").arg(m_nextPathStateId++));
+    item->setData(kPathLabelRole, channelLabelForIndex(index));
+    item->setData(kPathRobotPoseRole, robotPoseToVariantMap(pose));
+    item->setToolTip(robotPoseDetailText(pose));
     return item;
 }
 
@@ -4866,10 +4995,51 @@ QPixmap PlanningPage::latestAcquisitionFramePixmap() const
 void PlanningPage::addPathItem()
 {
     activatePlanningWorkspace();
+    if (m_pathList == nullptr) {
+        return;
+    }
+
+    adapters::dobot::RobotTcpPose pose;
+    QString poseError;
+    const bool hasPose = requestCurrentRobotPose(pose, poseError);
+    if (!hasPose) {
+        pose.error = poseError.trimmed().isEmpty()
+            ? QStringLiteral("\u673a\u68b0\u81c2\u672a\u8fde\u63a5\uff0c\u65e0\u6cd5\u83b7\u53d6\u672b\u7aef\u5750\u6807")
+            : poseError.trimmed();
+        qWarning().noquote() << QStringLiteral("\u65b0\u589e\u8def\u5f84\u65f6\u83b7\u53d6\u673a\u68b0\u81c2\u672b\u7aef\u5750\u6807\u5931\u8d25\uff1a%1").arg(pose.error);
+    }
+
     const int nextIndex = m_pathList->count();
-    m_pathList->addItem(createPathListItem(nextIndex));
+    m_pathList->addItem(createPathListItem(nextIndex, pose));
     m_pathList->setCurrentRow(m_pathList->count() - 1);
     updatePathActionState();
+
+    if (hasPose) {
+        const QString poseText = robotPoseDetailText(pose);
+        qInfo().noquote() << QStringLiteral("\u65b0\u589e\u56fe\u50cf\u901a\u9053\u91c7\u96c6\u8def\u5f84\u6210\u529f\uff0c\u673a\u68b0\u81c2\u672b\u7aef\u5750\u6807\uff1a%1").arg(poseText);
+        updateAcquisitionSummary(
+            QStringLiteral("\u65b0\u589e\u8def\u5f84"),
+            {
+                QStringLiteral("\u65b0\u589e\u56fe\u50cf\u901a\u9053\u91c7\u96c6\u8def\u5f84\u6210\u529f\u3002"),
+                QStringLiteral("\u673a\u68b0\u81c2\u672b\u7aef\u5750\u6807\uff1a%1").arg(poseText)
+            });
+    } else {
+        updateAcquisitionSummary(
+            QStringLiteral("\u65b0\u589e\u8def\u5f84"),
+            {
+                QStringLiteral("\u65b0\u589e\u56fe\u50cf\u901a\u9053\u91c7\u96c6\u8def\u5f84\u6210\u529f\uff0c\u4f46\u672a\u83b7\u53d6\u673a\u68b0\u81c2\u672b\u7aef\u5750\u6807\u3002"),
+                pose.error
+            });
+    }
+
+    if (m_auditService != nullptr) {
+        m_auditService->appendEntry(
+            QStringLiteral("operator"),
+            QStringLiteral("planning"),
+            hasPose
+                ? QStringLiteral("\u65b0\u589e\u56fe\u50cf\u901a\u9053\u91c7\u96c6\u8def\u5f84\u6210\u529f\uff0c\u673a\u68b0\u81c2\u672b\u7aef\u5750\u6807\uff1a%1").arg(robotPoseDetailText(pose))
+                : QStringLiteral("\u65b0\u589e\u8def\u5f84\u65f6\u83b7\u53d6\u673a\u68b0\u81c2\u672b\u7aef\u5750\u6807\u5931\u8d25\uff1a%1").arg(pose.error));
+    }
 }
 
 void PlanningPage::removeCurrentPathItem()
@@ -4940,6 +5110,7 @@ void PlanningPage::simulateImageAcquisition()
     const int channelIndex = std::max(0, m_pathList->currentRow());
     const QString channelLabel = currentChannelLabel();
     const QString channelCoordinate = currentChannelCoordinate();
+    const adapters::dobot::RobotTcpPose channelRobotPose = currentPathRobotPose();
     const QDateTime now = QDateTime::currentDateTime();
     const QString batchToken = now.toString(QStringLiteral("yyyyMMddhhmmss"));
 
@@ -5132,6 +5303,17 @@ void PlanningPage::simulateImageAcquisition()
             .arg(QStringLiteral("axis7 current->S1 +%1 steps").arg(stepMotorSteps))
             .arg(slicePositionSteps)
             .arg(capturedFromTreatmentScreen ? QStringLiteral("treatment-screen") : QStringLiteral("usb-camera"));
+        if (channelRobotPose.valid) {
+            stagedSlice.notes += QStringLiteral(" | has_robot_pose=1 | robot_x=%1 | robot_y=%2 | robot_z=%3 | robot_rx=%4 | robot_ry=%5 | robot_rz=%6")
+                .arg(robotPoseNumber(channelRobotPose.x))
+                .arg(robotPoseNumber(channelRobotPose.y))
+                .arg(robotPoseNumber(channelRobotPose.z))
+                .arg(robotPoseNumber(channelRobotPose.rx))
+                .arg(robotPoseNumber(channelRobotPose.ry))
+                .arg(robotPoseNumber(channelRobotPose.rz));
+        } else {
+            stagedSlice.notes += QStringLiteral(" | has_robot_pose=0");
+        }
         stagedSlice.createdAt = now;
         m_stagedImageSeries.push_back(stagedSlice);
 

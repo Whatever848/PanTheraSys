@@ -8,6 +8,7 @@
 #include <QStackedWidget>
 #include <QToolButton>
 
+#include "adapters/dobot/dobot_tcp_client.h"
 #include "adapters/sim/simulation_device_facade.h"
 #include "core/application/application_context.h"
 #include "core/repositories/clinical_data_repository.h"
@@ -31,6 +32,7 @@ public:
         panthera::core::AuditService* auditService,
         panthera::core::IClinicalDataRepository* clinicalDataRepository,
         panthera::adapters::SimulationDeviceFacade* simulationDevice,
+        panthera::adapters::dobot::DobotControllerClient* robotArmClient = nullptr,
         QWidget* parent = nullptr);
 
 private slots:
@@ -57,6 +59,8 @@ private:
     panthera::core::AuditService* m_auditService {nullptr};
     panthera::core::IClinicalDataRepository* m_clinicalDataRepository {nullptr};
     panthera::adapters::SimulationDeviceFacade* m_simulationDevice {nullptr};
+    panthera::adapters::dobot::DobotControllerClient m_ownedRobotArmClient;
+    panthera::adapters::dobot::DobotControllerClient* m_robotArmClient {nullptr};
 
     QStackedWidget* m_stack {nullptr};
     DeviceMonitorPage* m_dashboardPage {nullptr};

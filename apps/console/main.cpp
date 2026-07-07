@@ -30,6 +30,7 @@
 #include <algorithm>
 
 #include "adapters/config/local_settings_store.h"
+#include "adapters/dobot/dobot_tcp_client.h"
 #include "adapters/mysql/mysql_clinical_data_repository.h"
 #include "adapters/seed/seed_clinical_data_repository.h"
 #include "adapters/sim/simulation_device_facade.h"
@@ -353,10 +354,12 @@ public:
         panthera::core::AuditService* auditService,
         panthera::core::IClinicalDataRepository* clinicalDataRepository,
         panthera::adapters::SimulationDeviceFacade* simulationDevice,
+        panthera::adapters::dobot::DobotControllerClient* robotArmClient,
         QWidget* parent = nullptr)
         : QMainWindow(parent)
         , m_context(context)
         , m_safetyKernel(safetyKernel)
+        , m_robotArmClient(robotArmClient)
     {
         auto* centralWidget = new QWidget(this);
         auto* rootLayout = new QVBoxLayout(centralWidget);
@@ -559,14 +562,14 @@ private:
         switch (role) {
         case ClinicalDisplayRole::Dashboard: {
             m_dashboardStack = new QStackedWidget();
-            m_dashboardStack->addWidget(new DeviceMonitorPage(simulationDevice, m_safetyKernel));
+            m_dashboardStack->addWidget(new DeviceMonitorPage(simulationDevice, m_safetyKernel, m_robotArmClient));
             m_dataManagementPage = new DataManagementPage(m_context, auditService, clinicalDataRepository);
             m_dashboardStack->addWidget(m_dataManagementPage);
             showDashboardMonitor();
             return m_dashboardStack;
         }
         case ClinicalDisplayRole::Planning: {
-            m_planningPage = new PlanningPage(m_context, m_safetyKernel, auditService, clinicalDataRepository, simulationDevice);
+            m_planningPage = new PlanningPage(m_context, m_safetyKernel, auditService, clinicalDataRepository, simulationDevice, m_robotArmClient);
             connect(m_context, &panthera::core::ApplicationContext::treatmentLayerVisualizationRequested, m_planningPage, [this](const QString& planId, int layerIndex, bool treatmentActive) {
                 if (treatmentActive) {
                     m_planningPage->showTreatmentComparisonLayer(planId, layerIndex, true);
@@ -786,6 +789,7 @@ private:
 
     panthera::core::ApplicationContext* m_context {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
+    panthera::adapters::dobot::DobotControllerClient* m_robotArmClient {nullptr};
     QLabel* m_statusLabel {nullptr};
     QStackedWidget* m_dashboardStack {nullptr};
     panthera::modules::DataManagementPage* m_dataManagementPage {nullptr};
@@ -870,6 +874,7 @@ int main(int argc, char* argv[])
     panthera::adapters::SeedClinicalDataRepository seedClinicalDataRepository;
     panthera::adapters::MySqlClinicalDataRepository mysqlClinicalDataRepository;
     panthera::adapters::SimulationDeviceFacade simulationDevice;
+    panthera::adapters::dobot::DobotControllerClient robotArmClient;
     panthera::core::IClinicalDataRepository* clinicalDataRepository = &seedClinicalDataRepository;
 
     Q_UNUSED(settingsStore)
@@ -1008,21 +1013,24 @@ int main(int argc, char* argv[])
             &safetyKernel,
             &auditService,
             clinicalDataRepository,
-            &simulationDevice));
+            &simulationDevice,
+            &robotArmClient));
         topLevelWindows.push_back(new ClinicalDisplayWindow(
             ClinicalDisplayRole::Planning,
             &context,
             &safetyKernel,
             &auditService,
             clinicalDataRepository,
-            &simulationDevice));
+            &simulationDevice,
+            &robotArmClient));
         topLevelWindows.push_back(new ClinicalDisplayWindow(
             ClinicalDisplayRole::Treatment,
             &context,
             &safetyKernel,
             &auditService,
             clinicalDataRepository,
-            &simulationDevice));
+            &simulationDevice,
+            &robotArmClient));
 
         QTimer::singleShot(0, &application, [displaySettings, clinicalScreenIndexes, screens, &application, &topLevelWindows]() {
             for (int index = 0; index < topLevelWindows.size(); ++index) {
@@ -1038,7 +1046,7 @@ int main(int argc, char* argv[])
             return 1;
         }
 
-        auto* mainWindow = new panthera::modules::MainWindow(&context, &safetyKernel, &auditService, clinicalDataRepository, &simulationDevice);
+        auto* mainWindow = new panthera::modules::MainWindow(&context, &safetyKernel, &auditService, clinicalDataRepository, &simulationDevice, &robotArmClient);
         topLevelWindows.push_back(mainWindow);
         QTimer::singleShot(0, &application, [&application, mainWindow]() {
             mainWindow->show();

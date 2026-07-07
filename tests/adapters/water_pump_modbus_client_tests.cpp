@@ -9,6 +9,7 @@ class WaterPumpModbusClientTests final : public QObject {
 
 private slots:
     void buildsFramesForVerifiedAddress02Examples();
+    void encodesFlowAsWordSwappedSinglePrecisionFloat();
     void recalculatesCrcForSupplyPumpAddress03();
 };
 
@@ -16,10 +17,10 @@ void WaterPumpModbusClientTests::buildsFramesForVerifiedAddress02Examples()
 {
     QCOMPARE(
         WaterPumpModbusClient::buildSetFlowFrame(0x02, 600.0),
-        QByteArray::fromHex("0210400B000204000044163E55"));
+        QByteArray::fromHex("0210400100020400004416BE2A"));
     QCOMPARE(
         WaterPumpModbusClient::buildReadFlowFrame(0x02),
-        QByteArray::fromHex("0203400B0002A03A"));
+        QByteArray::fromHex("0203400100028038"));
     QCOMPARE(
         WaterPumpModbusClient::buildSetRunDurationFrame(0x02, 0),
         QByteArray::fromHex("02104005000204000000000D17"));
@@ -43,12 +44,30 @@ void WaterPumpModbusClientTests::buildsFramesForVerifiedAddress02Examples()
         QByteArray::fromHex("02050002FF002DC9"));
 }
 
+void WaterPumpModbusClientTests::encodesFlowAsWordSwappedSinglePrecisionFloat()
+{
+    const QByteArray flow200Frame = WaterPumpModbusClient::buildSetFlowFrame(0x02, 200.0);
+    const QByteArray flow50Frame = WaterPumpModbusClient::buildSetFlowFrame(0x02, 50.0);
+    const QByteArray flow350Frame = WaterPumpModbusClient::buildSetFlowFrame(0x03, 350.0);
+    const QByteArray supplyFlow50Frame = WaterPumpModbusClient::buildSetFlowFrame(0x03, 50.0);
+    const QByteArray supplyFlow200Frame = WaterPumpModbusClient::buildSetFlowFrame(0x03, 200.0);
+
+    QCOMPARE(flow200Frame.mid(7, 4), QByteArray::fromHex("00004348"));
+    QCOMPARE(flow50Frame.mid(7, 4), QByteArray::fromHex("00004248"));
+    QCOMPARE(flow350Frame.mid(7, 4), QByteArray::fromHex("000043AF"));
+    QCOMPARE(supplyFlow50Frame, QByteArray::fromHex("0310400100020400004248388E"));
+    QCOMPARE(supplyFlow200Frame, QByteArray::fromHex("0310400100020400004348391E"));
+    QVERIFY(WaterPumpModbusClient::frameHasValidCrc(flow200Frame));
+    QVERIFY(WaterPumpModbusClient::frameHasValidCrc(flow50Frame));
+    QVERIFY(WaterPumpModbusClient::frameHasValidCrc(flow350Frame));
+}
+
 void WaterPumpModbusClientTests::recalculatesCrcForSupplyPumpAddress03()
 {
     const QByteArray returnPumpFrame = WaterPumpModbusClient::buildSetFlowFrame(0x02, 600.0);
     const QByteArray supplyPumpFrame = WaterPumpModbusClient::buildSetFlowFrame(0x03, 600.0);
 
-    QCOMPARE(supplyPumpFrame.left(supplyPumpFrame.size() - 2), QByteArray::fromHex("0310400B00020400004416"));
+    QCOMPARE(supplyPumpFrame.left(supplyPumpFrame.size() - 2), QByteArray::fromHex("0310400100020400004416"));
     QVERIFY(WaterPumpModbusClient::frameHasValidCrc(supplyPumpFrame));
     QVERIFY(supplyPumpFrame.right(2) != returnPumpFrame.right(2));
 }

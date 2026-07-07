@@ -72,8 +72,8 @@ constexpr int kFluidControlPollMs = 300;
 constexpr int kTemperatureRefreshMs = 3000;
 constexpr int kRobotPumpForwardDo = 13;
 constexpr int kRobotPumpReverseDo = 14;
-constexpr double kTankTransferFlowMlPerMin = 450.0;
-constexpr double kDefaultLoopFlowMlPerMin = 600.0;
+constexpr double kTankTransferFlowMlPerMin = 350.0;
+constexpr double kDefaultLoopFlowMlPerMin = 200.0;
 constexpr double kTank2DefaultTargetLevelMillimeters = 300.0;
 constexpr double kTank2MaximumTargetLevelMillimeters = 430.0;
 constexpr double kTank2CycleToleranceMillimeters = 10.0;
@@ -88,6 +88,13 @@ QString treatmentOptionalIntText(bool hasValue, int value)
 QString treatmentBoolText(bool value)
 {
     return value ? QStringLiteral("1") : QStringLiteral("0");
+}
+
+QString treatmentWaterPumpResponseText(const QByteArray& response)
+{
+    return response.isEmpty()
+        ? QStringLiteral("未回包（已发送命令）")
+        : panthera::adapters::waterpump::WaterPumpModbusClient::frameToHex(response);
 }
 
 bool treatmentSnapshotPosition(
@@ -1663,6 +1670,7 @@ void TreatmentPage::toggleWaterPumpConnection()
     panthera::adapters::waterpump::WaterPumpSerialSettings settings;
     settings.portName = selectedSerialPortName(m_waterPumpPortCombo);
     settings.baudRate = selectedBaudRate(m_waterPumpBaudCombo, 9600);
+    settings.responseTimeoutMs = 2000;
 
     QString errorMessage;
     if (!m_waterPumpClient.open(settings, &errorMessage)) {
@@ -2297,30 +2305,31 @@ void TreatmentPage::handleTank1UpperLimitReached()
 
 void TreatmentPage::startTank2FillInternal()
 {
-    if (!ensureWaterPumpConnection() || !ensureLiquidLevelConnection()) {
-        return;
-    }
     const double target = m_tank2TargetLevelSpin != nullptr ? m_tank2TargetLevelSpin->value() : 0.0;
     if (target <= 0.0 || target > kTank2MaximumTargetLevelMillimeters) {
         QMessageBox::warning(this, QStringLiteral("目标液位异常"), QStringLiteral("请设置 0 - %1 mm 内的水箱2目标液位。")
             .arg(kTank2MaximumTargetLevelMillimeters, 0, 'f', 1));
         return;
     }
+    if (!ensureLiquidLevelConnection() || !ensureWaterPumpConnection()) {
+        return;
+    }
 
     QString errorMessage;
-    QByteArray response;
+    QByteArray flowResponse;
     if (!setWaterPumpFlow(
             panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress,
             kTankTransferFlowMlPerMin,
             &errorMessage,
-            &response)) {
+            &flowResponse)) {
         setFluidStatus(QStringLiteral("03 加水启动失败：流速设置失败：%1").arg(errorMessage), false);
         return;
     }
+    QByteArray startResponse;
     if (!startWaterPump(
             panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress,
             &errorMessage,
-            &response)) {
+            &startResponse)) {
         setFluidStatus(QStringLiteral("03 加水启动失败：%1").arg(errorMessage), false);
         return;
     }
@@ -2329,7 +2338,12 @@ void TreatmentPage::startTank2FillInternal()
     if (!m_fluidControlTimer.isActive()) {
         m_fluidControlTimer.start();
     }
-    setFluidStatus(QStringLiteral("03 已启动，正在从水箱1向水箱2加水，目标 %1 mm").arg(target, 0, 'f', 1), true);
+    setFluidStatus(QStringLiteral("03 已启动，流速 %1 mL/min，正在从水箱1向水箱2加水，目标 %2 mm；流速响应 %3；启动响应 %4")
+                       .arg(kTankTransferFlowMlPerMin, 0, 'f', 1)
+                       .arg(target, 0, 'f', 1)
+                       .arg(treatmentWaterPumpResponseText(flowResponse))
+                       .arg(treatmentWaterPumpResponseText(startResponse)),
+                   true);
 }
 
 void TreatmentPage::setCycleBalanceMode(CycleBalanceMode mode)

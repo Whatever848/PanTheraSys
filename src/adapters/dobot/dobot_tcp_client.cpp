@@ -1,5 +1,6 @@
 #include "adapters/dobot/dobot_tcp_client.h"
 
+#include <QDebug>
 #include <QElapsedTimer>
 #include <QLocale>
 #include <QNetworkProxy>
@@ -327,6 +328,40 @@ bool parseDobotPosePayload(const QString& payload, DobotPose* pose)
     if (pose != nullptr) {
         *pose = DobotPose {values[0], values[1], values[2], values[3], values[4], values[5]};
     }
+    return true;
+}
+
+bool parseGetPoseResponse(const QString& response, RobotTcpPose& pose, QString& error)
+{
+    pose = RobotTcpPose {};
+    error.clear();
+
+    const DobotCommandResult result = parseDobotResponse(response);
+    if (!result.protocolValid()) {
+        error = QStringLiteral("GetPose 返回格式解析失败，response=%1").arg(response.trimmed());
+        pose.error = error;
+        return false;
+    }
+    if (result.errorId != 0) {
+        error = QStringLiteral("GetPose 返回错误，response=%1").arg(response.trimmed());
+        pose.error = error;
+        return false;
+    }
+
+    DobotPose dobotPose;
+    if (!parseDobotPosePayload(result.payload, &dobotPose)) {
+        error = QStringLiteral("GetPose 返回格式解析失败，response=%1").arg(response.trimmed());
+        pose.error = error;
+        return false;
+    }
+
+    pose.x = dobotPose.x;
+    pose.y = dobotPose.y;
+    pose.z = dobotPose.z;
+    pose.rx = dobotPose.rx;
+    pose.ry = dobotPose.ry;
+    pose.rz = dobotPose.rz;
+    pose.valid = true;
     return true;
 }
 
@@ -1298,6 +1333,32 @@ bool DobotControllerClient::setError(const QString& message, QString* errorMessa
         *errorMessage = message;
     }
     return false;
+}
+
+bool requestCurrentRobotPose(DobotControllerClient* robotClient, RobotTcpPose& pose, QString& error)
+{
+    pose = RobotTcpPose {};
+    error.clear();
+
+    if (robotClient == nullptr || !robotClient->isConnected()) {
+        error = QStringLiteral("机械臂未连接，无法获取末端坐标");
+        pose.error = error;
+        return false;
+    }
+
+    qDebug().noquote() << QStringLiteral("TX: GetPose()");
+
+    QString commandError;
+    const DobotCommandResult result = robotClient->rawCommand(QStringLiteral("GetPose()"), &commandError);
+    const QString response = !result.raw.trimmed().isEmpty() ? result.raw.trimmed() : commandError.trimmed();
+    qDebug().noquote() << QStringLiteral("RX: %1").arg(response);
+
+    const QString parseInput = response;
+    if (!parseGetPoseResponse(parseInput, pose, error)) {
+        return false;
+    }
+
+    return true;
 }
 
 }  // namespace panthera::adapters::dobot
