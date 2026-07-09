@@ -81,6 +81,25 @@ set_tests_properties(
 )
 
 add_executable(
+    panthera_aigtek_power_amplifier_client_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/aigtek_power_amplifier_client_tests.cpp
+)
+
+target_link_libraries(
+    panthera_aigtek_power_amplifier_client_tests
+    PRIVATE
+        panthera_adapters
+        Qt6::Test
+)
+
+add_test(NAME panthera_aigtek_power_amplifier_client_tests COMMAND panthera_aigtek_power_amplifier_client_tests)
+set_tests_properties(
+    panthera_aigtek_power_amplifier_client_tests
+    PROPERTIES
+        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:Qt6::Core>;$ENV{PATH}"
+)
+
+add_executable(
     panthera_lu926_temperature_modbus_client_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/adapters/lu926_temperature_modbus_client_tests.cpp
 )

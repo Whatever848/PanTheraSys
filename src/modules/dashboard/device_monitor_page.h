@@ -11,6 +11,7 @@
 #include <QVector>
 #include <QWidget>
 
+#include "adapters/aigtek/aigtek_power_amplifier_client.h"
 #include "adapters/anthone/lu926_temperature_modbus_client.h"
 #include "adapters/dobot/DobotZAxisAligner.h"
 #include "adapters/dobot/DobotPayloadEnableService.h"
@@ -79,6 +80,11 @@ private slots:
     void refreshLiquidLevelSerialPorts();
     void toggleLiquidLevelConnection();
     void readLiquidLevelValue();
+    void refreshPowerAmplifierSerialPort();
+    void togglePowerAmplifierConnection();
+    void turnPowerAmplifierOutputOn();
+    void turnPowerAmplifierOutputOff();
+    void setPowerAmplifierGain();
 
 private:
     QLabel* createValueLabel();
@@ -86,6 +92,7 @@ private:
     QWidget* createWaterLoopControlCard();
     QWidget* createTemperatureControlCard();
     QWidget* createLiquidLevelSensorCard();
+    QWidget* createTransducerPowerControlCard();
     QWidget* createRobotArmControlCard();
     QWidget* createThreeAxisMotorControlCard();
     void bindFaultToggle(QCheckBox* checkBox, panthera::core::InterlockReason reason);
@@ -159,6 +166,9 @@ private:
     bool ensureLiquidLevelConnection();
     void setLiquidLevelStatus(const QString& message, bool ok);
     void refreshLiquidLevelUi();
+    bool ensurePowerAmplifierConnection();
+    void setPowerAmplifierStatus(const QString& message, bool ok);
+    void refreshPowerAmplifierUi();
     void handleWaterTankLevelSensors(const diji::adapters::uim::UimMotorSnapshot& snapshot);
     void updateWaterTankLimitStatus();
     void triggerWaterTankLowLevelAlarm();
@@ -259,6 +269,7 @@ private:
     panthera::adapters::liquidlevel::LiquidLevelModbusClient m_liquidLevelClient;
     quint8 m_liquidLevelAddress {panthera::adapters::liquidlevel::LiquidLevelModbusClient::kDefaultAddress};
     panthera::adapters::waterpump::WaterPumpModbusClient m_waterPumpClient;
+    panthera::adapters::aigtek::AigtekPowerAmplifierClient m_powerAmplifierClient;
     diji::adapters::uim::UimMotorGateway m_threeAxisGateway;
     QVector<diji::adapters::uim::UimDeviceInfo> m_threeAxisDevices;
     QVector<diji::adapters::uim::UimNodeInfo> m_threeAxisNodes;
@@ -318,6 +329,15 @@ private:
     QLineEdit* m_liquidLevelAddressEdit {nullptr};
     QPushButton* m_liquidLevelReadButton {nullptr};
     QLabel* m_waterTankLimitStatusLabel {nullptr};
+    QLabel* m_powerAmplifierStatusLabel {nullptr};
+    QLineEdit* m_powerAmplifierPortEdit {nullptr};
+    QLineEdit* m_powerAmplifierBaudEdit {nullptr};
+    QPushButton* m_powerAmplifierRefreshPortButton {nullptr};
+    QPushButton* m_powerAmplifierConnectionButton {nullptr};
+    QDoubleSpinBox* m_powerAmplifierGainSpin {nullptr};
+    QPushButton* m_powerAmplifierSetGainButton {nullptr};
+    QPushButton* m_powerAmplifierOutputOnButton {nullptr};
+    QPushButton* m_powerAmplifierOutputOffButton {nullptr};
     QPlainTextEdit* m_threeAxisLogEdit {nullptr};
     QTimer m_robotArmSafetyWallTimer;
     QTimer m_robotPhysicalDragPollTimer;

@@ -1,4 +1,6 @@
 set(PANTHERA_ADAPTERS_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/aigtek/aigtek_power_amplifier_client.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/aigtek/aigtek_power_amplifier_client.h
     ${CMAKE_CURRENT_SOURCE_DIR}/anthone/lu926_temperature_modbus_client.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/anthone/lu926_temperature_modbus_client.h
     ${CMAKE_CURRENT_SOURCE_DIR}/anthone/lu926_temperature_protocol.cpp

@@ -84,6 +84,8 @@ constexpr double kWaterLoopFlowMlPerMin = 200.0;
 constexpr double kTank2FillFlowMlPerMin = 350.0;
 constexpr const char* kSharedRs485PortName = "COM3";
 constexpr int kSharedRs485BaudRate = 9600;
+constexpr const char* kPowerAmplifierPortName = "COM5";
+constexpr int kPowerAmplifierBaudRate = 9600;
 // UI rows map directly to CAN node ids: row 6 controls node 6, row 7 controls node 7, row 8 controls node 8.
 const std::array<int, 3> kThreeAxisNodeIds {6, 7, 8};
 constexpr int kWaterTankHighLevelAxisIndex = 0;  // 6号电机上限位
@@ -202,6 +204,17 @@ QString waterPumpResponseText(const QByteArray& response)
     return response.isEmpty()
         ? QStringLiteral("未回包（已发送命令）")
         : panthera::adapters::waterpump::WaterPumpModbusClient::frameToHex(response);
+}
+
+QString powerAmplifierResponseText(const QByteArray& response)
+{
+    const QString text = panthera::adapters::aigtek::AigtekPowerAmplifierClient::bytesToText(response);
+    return text.isEmpty() ? QStringLiteral("未回包") : text;
+}
+
+QString powerAmplifierRequestText(const QByteArray& request)
+{
+    return QStringLiteral("%1\\r\\n").arg(QString::fromLatin1(request));
 }
 
 QString temperatureFailureText(const QString& action, const QString& errorMessage)
@@ -545,18 +558,7 @@ DeviceMonitorPage::DeviceMonitorPage(
     bottomGrid->setVerticalSpacing(16);
     rootLayout->addLayout(bottomGrid, 1);
 
-    auto* motionCard = createMetricCard(
-        QStringLiteral("运动与换能器状态"),
-        {
-            {QStringLiteral("位置 X/Y/Z"), createValueLabel()},
-            {QStringLiteral("姿态 A/B/C"), createValueLabel()},
-            {QStringLiteral("负载"), createValueLabel()},
-            {QStringLiteral("精度"), createValueLabel()},
-            {QStringLiteral("换能器温度"), createValueLabel()},
-            {QStringLiteral("振动频率"), createValueLabel()},
-            {QStringLiteral("能量效率"), createValueLabel()}
-        });
-    bottomGrid->addWidget(motionCard, 0, 0);
+    bottomGrid->addWidget(createTransducerPowerControlCard(), 0, 0);
 
     bottomGrid->addWidget(createRobotArmControlCard(), 0, 1);
 
@@ -578,6 +580,8 @@ DeviceMonitorPage::DeviceMonitorPage(
     refreshTemperatureUi();
     refreshLiquidLevelSerialPorts();
     refreshLiquidLevelUi();
+    refreshPowerAmplifierSerialPort();
+    refreshPowerAmplifierUi();
     refreshRobotArmUi();
     refreshThreeAxisUi();
 }
@@ -635,13 +639,6 @@ void DeviceMonitorPage::updateSnapshot(const DeviceSnapshot& snapshot)
             QStringLiteral("%1 | %2 | %3")
                 .arg(percentText(channel.outputPercent), toDisplayString(channel.inputType), channel.statusMessage));
     }
-    setValue(QStringLiteral("位置 X/Y/Z"), QStringLiteral("%1 / %2 / %3").arg(snapshot.position.x, 0, 'f', 1).arg(snapshot.position.y, 0, 'f', 1).arg(snapshot.position.z, 0, 'f', 1));
-    setValue(QStringLiteral("姿态 A/B/C"), QStringLiteral("%1 / %2 / %3").arg(snapshot.position.a, 0, 'f', 1).arg(snapshot.position.b, 0, 'f', 1).arg(snapshot.position.c, 0, 'f', 1));
-    setValue(QStringLiteral("负载"), QStringLiteral("%1 %").arg(snapshot.motorLoadPercent, 0, 'f', 1));
-    setValue(QStringLiteral("精度"), QStringLiteral("%1 mm").arg(snapshot.motionAccuracyMm, 0, 'f', 2));
-    setValue(QStringLiteral("换能器温度"), celsiusText(snapshot.transducerTemperatureCelsius));
-    setValue(QStringLiteral("振动频率"), QStringLiteral("%1 MHz").arg(snapshot.vibrationFrequencyMhz, 0, 'f', 2));
-    setValue(QStringLiteral("能量效率"), QStringLiteral("%1 %").arg(snapshot.conversionEfficiencyPercent, 0, 'f', 1));
     setValue(QStringLiteral("亮度"), QStringLiteral("%1").arg(snapshot.imageBrightness, 0, 'f', 0));
     setValue(QStringLiteral("对比度"), QStringLiteral("%1").arg(snapshot.imageContrast, 0, 'f', 0));
     setValue(QStringLiteral("清晰度"), QStringLiteral("%1").arg(snapshot.imageClarity, 0, 'f', 0));
@@ -966,6 +963,73 @@ QWidget* DeviceMonitorPage::createLiquidLevelSensorCard()
 
     refreshLiquidLevelUi();
     updateWaterTankLimitStatus();
+    return groupBox;
+}
+
+QWidget* DeviceMonitorPage::createTransducerPowerControlCard()
+{
+    auto* groupBox = new QGroupBox(QStringLiteral("换能器 / 功率放大器控制"));
+    groupBox->setMinimumWidth(0);
+    groupBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    auto* layout = new QVBoxLayout(groupBox);
+    layout->setSpacing(10);
+
+    auto* serialLayout = new QGridLayout();
+    serialLayout->setHorizontalSpacing(8);
+    serialLayout->setVerticalSpacing(8);
+    serialLayout->setColumnStretch(1, 1);
+    m_powerAmplifierPortEdit = createFixedSerialText(QString::fromLatin1(kPowerAmplifierPortName), groupBox);
+    m_powerAmplifierRefreshPortButton = new QPushButton(QStringLiteral("固定"), groupBox);
+    m_powerAmplifierRefreshPortButton->setEnabled(false);
+    m_powerAmplifierBaudEdit = createFixedSerialText(QString::number(kPowerAmplifierBaudRate), groupBox);
+    m_powerAmplifierConnectionButton = new QPushButton(QStringLiteral("连接功放"), groupBox);
+
+    serialLayout->addWidget(new QLabel(QStringLiteral("串口"), groupBox), 0, 0);
+    serialLayout->addWidget(m_powerAmplifierPortEdit, 0, 1);
+    serialLayout->addWidget(m_powerAmplifierRefreshPortButton, 0, 2);
+    serialLayout->addWidget(new QLabel(QStringLiteral("波特率"), groupBox), 1, 0);
+    serialLayout->addWidget(m_powerAmplifierBaudEdit, 1, 1);
+    serialLayout->addWidget(m_powerAmplifierConnectionButton, 1, 2);
+    layout->addLayout(serialLayout);
+
+    auto* commandLayout = new QGridLayout();
+    commandLayout->setHorizontalSpacing(8);
+    commandLayout->setVerticalSpacing(8);
+    commandLayout->setColumnStretch(1, 1);
+    m_powerAmplifierGainSpin = new QDoubleSpinBox(groupBox);
+    m_powerAmplifierGainSpin->setRange(0.1, 30.0);
+    m_powerAmplifierGainSpin->setDecimals(1);
+    m_powerAmplifierGainSpin->setSingleStep(0.1);
+    m_powerAmplifierGainSpin->setValue(30.0);
+    m_powerAmplifierGainSpin->setSuffix(QStringLiteral(" 倍"));
+    m_powerAmplifierGainSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_powerAmplifierSetGainButton = new QPushButton(QStringLiteral("设置放大倍数"), groupBox);
+    m_powerAmplifierOutputOnButton = new QPushButton(QStringLiteral("输出开"), groupBox);
+    m_powerAmplifierOutputOffButton = new QPushButton(QStringLiteral("输出关"), groupBox);
+
+    commandLayout->addWidget(new QLabel(QStringLiteral("放大倍数"), groupBox), 0, 0);
+    commandLayout->addWidget(m_powerAmplifierGainSpin, 0, 1);
+    commandLayout->addWidget(m_powerAmplifierSetGainButton, 0, 2);
+    commandLayout->addWidget(m_powerAmplifierOutputOnButton, 1, 1);
+    commandLayout->addWidget(m_powerAmplifierOutputOffButton, 1, 2);
+    layout->addLayout(commandLayout);
+
+    m_powerAmplifierStatusLabel = new QLabel(
+        QStringLiteral("功率放大器待连接：USB-COM5，9600,8,N,1；可执行输出开、输出关、放大倍数设置，最大 30.0 倍。"),
+        groupBox);
+    m_powerAmplifierStatusLabel->setWordWrap(true);
+    m_powerAmplifierStatusLabel->setMinimumHeight(240);
+    m_powerAmplifierStatusLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_powerAmplifierStatusLabel->setStyleSheet(statusPanelStyle(false));
+    layout->addWidget(m_powerAmplifierStatusLabel, 1);
+
+    connect(m_powerAmplifierRefreshPortButton, &QPushButton::clicked, this, &DeviceMonitorPage::refreshPowerAmplifierSerialPort);
+    connect(m_powerAmplifierConnectionButton, &QPushButton::clicked, this, &DeviceMonitorPage::togglePowerAmplifierConnection);
+    connect(m_powerAmplifierOutputOnButton, &QPushButton::clicked, this, &DeviceMonitorPage::turnPowerAmplifierOutputOn);
+    connect(m_powerAmplifierOutputOffButton, &QPushButton::clicked, this, &DeviceMonitorPage::turnPowerAmplifierOutputOff);
+    connect(m_powerAmplifierSetGainButton, &QPushButton::clicked, this, &DeviceMonitorPage::setPowerAmplifierGain);
+
+    refreshPowerAmplifierUi();
     return groupBox;
 }
 
@@ -4593,6 +4657,189 @@ bool DeviceMonitorPage::sharedRs485Connected() const
     return m_waterPumpClient.isOpen()
         || m_temperatureClient.isOpen()
         || m_liquidLevelClient.isOpen();
+}
+
+void DeviceMonitorPage::refreshPowerAmplifierSerialPort()
+{
+    if (m_powerAmplifierPortEdit != nullptr) {
+        m_powerAmplifierPortEdit->setText(QString::fromLatin1(kPowerAmplifierPortName));
+    }
+    if (m_powerAmplifierBaudEdit != nullptr) {
+        m_powerAmplifierBaudEdit->setText(QString::number(kPowerAmplifierBaudRate));
+    }
+}
+
+void DeviceMonitorPage::togglePowerAmplifierConnection()
+{
+    if (m_powerAmplifierClient.isOpen()) {
+        m_powerAmplifierClient.close();
+        setPowerAmplifierStatus(QStringLiteral("功率放大器已断开：%1 @ %2 bps")
+                                    .arg(QString::fromLatin1(kPowerAmplifierPortName))
+                                    .arg(kPowerAmplifierBaudRate),
+                                false);
+        refreshPowerAmplifierUi();
+        return;
+    }
+
+    if (!ensurePowerAmplifierConnection()) {
+        return;
+    }
+    setPowerAmplifierStatus(QStringLiteral("功率放大器连接成功：%1, %2,8,N,1, RTS=%3, DTR=%4")
+                                .arg(m_powerAmplifierClient.portName())
+                                .arg(m_powerAmplifierClient.baudRate())
+                                .arg(m_powerAmplifierClient.requestToSend() ? QStringLiteral("ON") : QStringLiteral("OFF"))
+                                .arg(m_powerAmplifierClient.dataTerminalReady() ? QStringLiteral("ON") : QStringLiteral("OFF")),
+                            true);
+}
+
+bool DeviceMonitorPage::ensurePowerAmplifierConnection()
+{
+    if (m_powerAmplifierClient.isOpen()) {
+        return true;
+    }
+
+    panthera::adapters::aigtek::AigtekPowerAmplifierSerialSettings settings;
+    settings.portName = m_powerAmplifierPortEdit != nullptr
+        ? m_powerAmplifierPortEdit->text().trimmed()
+        : QString::fromLatin1(kPowerAmplifierPortName);
+    bool baudOk = false;
+    const int baudRate = m_powerAmplifierBaudEdit != nullptr
+        ? m_powerAmplifierBaudEdit->text().trimmed().toInt(&baudOk)
+        : kPowerAmplifierBaudRate;
+    settings.baudRate = baudOk ? baudRate : kPowerAmplifierBaudRate;
+    settings.responseTimeoutMs = 3000;
+
+    QString errorMessage;
+    if (!m_powerAmplifierClient.open(settings, &errorMessage)) {
+        setPowerAmplifierStatus(QStringLiteral("功率放大器连接失败：%1").arg(errorMessage), false);
+        refreshPowerAmplifierUi();
+        return false;
+    }
+
+    refreshPowerAmplifierUi();
+    return true;
+}
+
+void DeviceMonitorPage::setPowerAmplifierStatus(const QString& message, bool ok)
+{
+    if (m_powerAmplifierStatusLabel == nullptr) {
+        return;
+    }
+
+    m_powerAmplifierStatusLabel->setText(message);
+    m_powerAmplifierStatusLabel->setStyleSheet(statusPanelStyle(!ok));
+}
+
+void DeviceMonitorPage::refreshPowerAmplifierUi()
+{
+    const bool connected = m_powerAmplifierClient.isOpen();
+    if (m_powerAmplifierPortEdit != nullptr) {
+        m_powerAmplifierPortEdit->setEnabled(true);
+    }
+    if (m_powerAmplifierBaudEdit != nullptr) {
+        m_powerAmplifierBaudEdit->setEnabled(true);
+    }
+    if (m_powerAmplifierRefreshPortButton != nullptr) {
+        m_powerAmplifierRefreshPortButton->setEnabled(false);
+    }
+    if (m_powerAmplifierConnectionButton != nullptr) {
+        m_powerAmplifierConnectionButton->setText(connected ? QStringLiteral("断开功放") : QStringLiteral("连接功放"));
+    }
+    if (m_powerAmplifierGainSpin != nullptr) {
+        m_powerAmplifierGainSpin->setEnabled(true);
+    }
+    if (m_powerAmplifierSetGainButton != nullptr) {
+        m_powerAmplifierSetGainButton->setEnabled(connected);
+    }
+    if (m_powerAmplifierOutputOnButton != nullptr) {
+        m_powerAmplifierOutputOnButton->setEnabled(connected);
+    }
+    if (m_powerAmplifierOutputOffButton != nullptr) {
+        m_powerAmplifierOutputOffButton->setEnabled(connected);
+    }
+}
+
+void DeviceMonitorPage::turnPowerAmplifierOutputOn()
+{
+    if (!ensurePowerAmplifierConnection()) {
+        return;
+    }
+
+    const QByteArray request = panthera::adapters::aigtek::AigtekPowerAmplifierClient::buildOutputOnCommand();
+    QString errorMessage;
+    QByteArray response;
+    if (!m_powerAmplifierClient.outputOn(&errorMessage, &response)) {
+        setPowerAmplifierStatus(QStringLiteral("输出开失败：%1\n发送：%2\n响应：%3")
+                                    .arg(errorMessage,
+                                         powerAmplifierRequestText(request),
+                                         powerAmplifierResponseText(response)),
+                                false);
+        return;
+    }
+
+    setPowerAmplifierStatus(QStringLiteral("输出开成功\n发送：%1\n响应：%2")
+                                .arg(powerAmplifierRequestText(request),
+                                     powerAmplifierResponseText(response)),
+                            true);
+}
+
+void DeviceMonitorPage::turnPowerAmplifierOutputOff()
+{
+    if (!ensurePowerAmplifierConnection()) {
+        return;
+    }
+
+    const QByteArray request = panthera::adapters::aigtek::AigtekPowerAmplifierClient::buildOutputOffCommand();
+    QString errorMessage;
+    QByteArray response;
+    if (!m_powerAmplifierClient.outputOff(&errorMessage, &response)) {
+        setPowerAmplifierStatus(QStringLiteral("输出关失败：%1\n发送：%2\n响应：%3")
+                                    .arg(errorMessage,
+                                         powerAmplifierRequestText(request),
+                                         powerAmplifierResponseText(response)),
+                                false);
+        return;
+    }
+
+    setPowerAmplifierStatus(QStringLiteral("输出关成功\n发送：%1\n响应：%2")
+                                .arg(powerAmplifierRequestText(request),
+                                     powerAmplifierResponseText(response)),
+                            true);
+}
+
+void DeviceMonitorPage::setPowerAmplifierGain()
+{
+    if (m_powerAmplifierGainSpin == nullptr) {
+        setPowerAmplifierStatus(QStringLiteral("放大倍数设置失败：输入框未初始化"), false);
+        return;
+    }
+
+    const double gain = m_powerAmplifierGainSpin->value();
+    const QByteArray request = panthera::adapters::aigtek::AigtekPowerAmplifierClient::buildSetGainCommand(gain);
+    if (request.isEmpty()) {
+        setPowerAmplifierStatus(QStringLiteral("放大倍数设置失败：放大倍数无效"), false);
+        return;
+    }
+    if (!ensurePowerAmplifierConnection()) {
+        return;
+    }
+
+    QString errorMessage;
+    QByteArray response;
+    if (!m_powerAmplifierClient.setGain(gain, &errorMessage, &response)) {
+        setPowerAmplifierStatus(QStringLiteral("放大倍数设置失败：%1\n发送：%2\n响应：%3")
+                                    .arg(errorMessage,
+                                         powerAmplifierRequestText(request),
+                                         powerAmplifierResponseText(response)),
+                                false);
+        return;
+    }
+
+    setPowerAmplifierStatus(QStringLiteral("放大倍数设置成功：%1 倍\n发送：%2\n响应：%3")
+                                .arg(gain, 0, 'f', 1)
+                                .arg(powerAmplifierRequestText(request),
+                                     powerAmplifierResponseText(response)),
+                            true);
 }
 
 void DeviceMonitorPage::closeSharedRs485Clients()
