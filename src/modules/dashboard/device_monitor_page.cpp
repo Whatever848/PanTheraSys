@@ -86,6 +86,10 @@ constexpr const char* kSharedRs485PortName = "COM3";
 constexpr int kSharedRs485BaudRate = 9600;
 constexpr const char* kPowerAmplifierPortName = "COM5";
 constexpr int kPowerAmplifierBaudRate = 9600;
+constexpr int kVacuumPumpP4AxisIndex = 2;  // kThreeAxisNodeIds[2] => 8号节点，P4=1 接通，P4=0 断开。
+constexpr double kRigolDefaultDutyCyclePercent = 50.0;
+constexpr double kRigolMinimumDutyCyclePercent = 1.0;
+constexpr double kRigolMaximumDutyCyclePercent = 99.0;
 // UI rows map directly to CAN node ids: row 6 controls node 6, row 7 controls node 7, row 8 controls node 8.
 const std::array<int, 3> kThreeAxisNodeIds {6, 7, 8};
 constexpr int kWaterTankHighLevelAxisIndex = 0;  // 6号电机上限位
@@ -154,6 +158,22 @@ QLineEdit* createFixedSerialText(const QString& text, QWidget* parent)
     return edit;
 }
 
+QCheckBox* createInlineSwitch(const QString& offText, const QString& onText, QWidget* parent)
+{
+    auto* checkBox = new QCheckBox(offText, parent);
+    checkBox->setObjectName(QStringLiteral("inlineSwitch"));
+    checkBox->setCursor(Qt::PointingHandCursor);
+    checkBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    checkBox->setStyleSheet(QStringLiteral(
+        "QCheckBox#inlineSwitch { color: #ffffff; font-weight: 700; spacing: 10px; }"
+        "QCheckBox#inlineSwitch::indicator { width: 58px; height: 30px; border-radius: 15px; background: #d9dee3; }"
+        "QCheckBox#inlineSwitch::indicator:checked { background: #39b97f; }"));
+    QObject::connect(checkBox, &QCheckBox::toggled, checkBox, [checkBox, offText, onText](bool checked) {
+        checkBox->setText(checked ? onText : offText);
+    });
+    return checkBox;
+}
+
 class ScopedBusyFlag final {
 public:
     explicit ScopedBusyFlag(bool& flag)
@@ -215,6 +235,51 @@ QString powerAmplifierResponseText(const QByteArray& response)
 QString powerAmplifierRequestText(const QByteArray& request)
 {
     return QStringLiteral("%1\\r\\n").arg(QString::fromLatin1(request));
+}
+
+QString trimmedScpiValue(QString value)
+{
+    value = value.trimmed();
+    if (value.startsWith(QLatin1Char('"')) && value.endsWith(QLatin1Char('"')) && value.size() >= 2) {
+        value = value.mid(1, value.size() - 2);
+    }
+    return value.trimmed();
+}
+
+bool parseScpiDouble(const QString& value, double* parsed)
+{
+    if (parsed == nullptr) {
+        return false;
+    }
+
+    bool ok = false;
+    const double number = trimmedScpiValue(value).toDouble(&ok);
+    if (!ok || !std::isfinite(number)) {
+        return false;
+    }
+    *parsed = number;
+    return true;
+}
+
+QString rigolDutyCycleDisplayText(const QString& rawValue)
+{
+    double dutyCycle = 0.0;
+    if (!parseScpiDouble(rawValue, &dutyCycle)) {
+        return rawValue.trimmed().isEmpty() ? QStringLiteral("--") : trimmedScpiValue(rawValue);
+    }
+    return QStringLiteral("%1 %").arg(QString::number(dutyCycle, 'f', 1));
+}
+
+QString rigolOutputStateDisplayText(const QString& rawValue)
+{
+    const QString value = trimmedScpiValue(rawValue).toUpper();
+    if (value == QStringLiteral("1") || value == QStringLiteral("ON")) {
+        return QStringLiteral("ON");
+    }
+    if (value == QStringLiteral("0") || value == QStringLiteral("OFF")) {
+        return QStringLiteral("OFF");
+    }
+    return value.isEmpty() ? QStringLiteral("--") : value;
 }
 
 QString temperatureFailureText(const QString& action, const QString& errorMessage)
@@ -519,6 +584,19 @@ DeviceMonitorPage::DeviceMonitorPage(
     connect(&m_tank2FillTimer, &QTimer::timeout, this, &DeviceMonitorPage::pollTank2FillLevel);
     m_temperatureRealtimeTimer.setInterval(kTemperatureRealtimeIntervalMs);
     connect(&m_temperatureRealtimeTimer, &QTimer::timeout, this, &DeviceMonitorPage::updateRealtimeTemperature);
+    connect(&m_rigolSignalSourceClient, &panthera::adapters::rigol::RigolVisaClient::logMessage, this, [this](const QString& message) {
+        appendTransducerPowerLog(message);
+    });
+    connect(&m_rigolSignalSourceClient, &panthera::adapters::rigol::RigolVisaClient::connectedChanged, this, [this](bool connected) {
+        if (!connected) {
+            m_rigolSignalSourceInitialized = false;
+            if (m_rigolOutputStateDisplay != nullptr) {
+                m_rigolOutputStateDisplay->setText(QStringLiteral("未连接"));
+            }
+            updateRigolOutputSwitch(QStringLiteral("OFF"));
+        }
+        refreshRigolSignalSourceUi();
+    });
 
     auto* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(18, 18, 18, 18);
@@ -777,6 +855,14 @@ QWidget* DeviceMonitorPage::createWaterLoopControlCard()
     pumpLayout->addWidget(robotForwardButton, robotRow, 1);
     pumpLayout->addWidget(robotReverseButton, robotRow, 2);
     pumpLayout->addWidget(robotStopButton, robotRow, 3);
+
+    auto* vacuumPumpLabel = new QLabel(QStringLiteral("真空泵"), groupBox);
+    vacuumPumpLabel->setStyleSheet(QStringLiteral("QLabel { font-weight: 700; }"));
+    m_vacuumPumpButton = new QPushButton(QStringLiteral("启动"), groupBox);
+    m_vacuumPumpButton->setToolTip(QStringLiteral("控制 8 号节点 P4：1 接通，0 断开"));
+    const int vacuumPumpRow = 3;
+    pumpLayout->addWidget(vacuumPumpLabel, vacuumPumpRow, 0);
+    pumpLayout->addWidget(m_vacuumPumpButton, vacuumPumpRow, 1);
     layout->addLayout(pumpLayout);
 
     auto* logTitleLabel = new QLabel(QStringLiteral("日志输出"), groupBox);
@@ -807,6 +893,7 @@ QWidget* DeviceMonitorPage::createWaterLoopControlCard()
     connect(robotForwardButton, &QPushButton::clicked, this, &DeviceMonitorPage::startRobotPumpForward);
     connect(robotReverseButton, &QPushButton::clicked, this, &DeviceMonitorPage::startRobotPumpReverse);
     connect(robotStopButton, &QPushButton::clicked, this, &DeviceMonitorPage::stopRobotPump);
+    connect(m_vacuumPumpButton, &QPushButton::clicked, this, &DeviceMonitorPage::toggleVacuumPump);
 
     refreshWaterPumpUi();
     setWaterPumpStatus(QStringLiteral("水循环待连接：02/03 通过 485，第三泵通过机械臂 RO。"), true);
@@ -974,6 +1061,62 @@ QWidget* DeviceMonitorPage::createTransducerPowerControlCard()
     auto* layout = new QVBoxLayout(groupBox);
     layout->setSpacing(10);
 
+    auto* rigolTitleLabel = new QLabel(QStringLiteral("信号源控制（RIGOL CH1）"), groupBox);
+    rigolTitleLabel->setStyleSheet(QStringLiteral("QLabel { font-weight: 700; color: #ffffff; }"));
+    layout->addWidget(rigolTitleLabel);
+
+    auto* rigolLayout = new QGridLayout();
+    rigolLayout->setHorizontalSpacing(8);
+    rigolLayout->setVerticalSpacing(7);
+    rigolLayout->setColumnStretch(1, 1);
+    rigolLayout->setColumnStretch(2, 1);
+    rigolLayout->setColumnStretch(3, 1);
+    rigolLayout->setColumnStretch(4, 1);
+
+    m_rigolUsbResourceCombo = new QComboBox(groupBox);
+    m_rigolUsbResourceCombo->setEditable(true);
+    m_rigolUsbResourceCombo->setInsertPolicy(QComboBox::NoInsert);
+    m_rigolUsbResourceCombo->setMinimumWidth(0);
+    m_rigolUsbResourceCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    if (m_rigolUsbResourceCombo->lineEdit() != nullptr) {
+        m_rigolUsbResourceCombo->lineEdit()->setPlaceholderText(
+            QStringLiteral("USB0::0x1AB1::0x0643::DG8Axxxxxxxx::INSTR"));
+    }
+    m_rigolSignalSourceConnectionButton = new QPushButton(QStringLiteral("连接USB信号源"), groupBox);
+    m_rigolDutyCycleSpin = new QDoubleSpinBox(groupBox);
+    m_rigolDutyCycleSpin->setRange(kRigolMinimumDutyCyclePercent, kRigolMaximumDutyCyclePercent);
+    m_rigolDutyCycleSpin->setDecimals(1);
+    m_rigolDutyCycleSpin->setSingleStep(1.0);
+    m_rigolDutyCycleSpin->setValue(kRigolDefaultDutyCyclePercent);
+    m_rigolDutyCycleSpin->setSuffix(QStringLiteral(" %"));
+    m_rigolDutyCycleSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_rigolSetDutyCycleButton = new QPushButton(QStringLiteral("设置占空比"), groupBox);
+    m_rigolInitializeButton = new QPushButton(QStringLiteral("初始化信号源"), groupBox);
+    m_rigolOutputSwitch = createInlineSwitch(QStringLiteral("OFF"), QStringLiteral("ON"), groupBox);
+    for (QPushButton* button : {
+             m_rigolSignalSourceConnectionButton,
+             m_rigolSetDutyCycleButton,
+             m_rigolInitializeButton
+         }) {
+        button->setMinimumWidth(0);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    }
+
+    rigolLayout->addWidget(new QLabel(QStringLiteral("USB资源名"), groupBox), 0, 0);
+    rigolLayout->addWidget(m_rigolUsbResourceCombo, 0, 1, 1, 4);
+    rigolLayout->addWidget(m_rigolSignalSourceConnectionButton, 1, 1, 1, 4);
+    rigolLayout->addWidget(new QLabel(QStringLiteral("占空比"), groupBox), 2, 0);
+    rigolLayout->addWidget(m_rigolDutyCycleSpin, 2, 1);
+    rigolLayout->addWidget(m_rigolSetDutyCycleButton, 2, 2, 1, 3);
+    rigolLayout->addWidget(new QLabel(QStringLiteral("CH1输出"), groupBox), 3, 0);
+    rigolLayout->addWidget(m_rigolOutputSwitch, 3, 1, 1, 4);
+    rigolLayout->addWidget(m_rigolInitializeButton, 4, 0, 1, 5);
+    layout->addLayout(rigolLayout);
+
+    auto* amplifierTitleLabel = new QLabel(QStringLiteral("功率放大器控制"), groupBox);
+    amplifierTitleLabel->setStyleSheet(QStringLiteral("QLabel { font-weight: 700; color: #ffffff; }"));
+    layout->addWidget(amplifierTitleLabel);
+
     auto* serialLayout = new QGridLayout();
     serialLayout->setHorizontalSpacing(8);
     serialLayout->setVerticalSpacing(8);
@@ -1018,18 +1161,44 @@ QWidget* DeviceMonitorPage::createTransducerPowerControlCard()
         QStringLiteral("功率放大器待连接：USB-COM5，9600,8,N,1；可执行输出开、输出关、放大倍数设置，最大 30.0 倍。"),
         groupBox);
     m_powerAmplifierStatusLabel->setWordWrap(true);
-    m_powerAmplifierStatusLabel->setMinimumHeight(240);
+    m_powerAmplifierStatusLabel->setMinimumHeight(118);
     m_powerAmplifierStatusLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     m_powerAmplifierStatusLabel->setStyleSheet(statusPanelStyle(false));
-    layout->addWidget(m_powerAmplifierStatusLabel, 1);
+    layout->addWidget(m_powerAmplifierStatusLabel);
+
+    auto* logTitleLabel = new QLabel(QStringLiteral("日志输出"), groupBox);
+    logTitleLabel->setStyleSheet(QStringLiteral(
+        "QLabel { padding: 2px 4px; background: #020b12; color: #ffffff; font-weight: 500; }"));
+    layout->addWidget(logTitleLabel);
+
+    m_transducerPowerLogEdit = new QPlainTextEdit(groupBox);
+    m_transducerPowerLogEdit->setReadOnly(true);
+    m_transducerPowerLogEdit->setMinimumHeight(100);
+    m_transducerPowerLogEdit->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    m_transducerPowerLogEdit->setStyleSheet(QStringLiteral(
+        "QPlainTextEdit {"
+        "  padding: 12px 14px;"
+        "  border: 1px solid #1e5d91;"
+        "  border-radius: 8px;"
+        "  background: #0e2943;"
+        "  color: #ffffff;"
+        "  selection-background-color: #1f6ca8;"
+        "}"));
+    layout->addWidget(m_transducerPowerLogEdit, 1);
 
     connect(m_powerAmplifierRefreshPortButton, &QPushButton::clicked, this, &DeviceMonitorPage::refreshPowerAmplifierSerialPort);
     connect(m_powerAmplifierConnectionButton, &QPushButton::clicked, this, &DeviceMonitorPage::togglePowerAmplifierConnection);
     connect(m_powerAmplifierOutputOnButton, &QPushButton::clicked, this, &DeviceMonitorPage::turnPowerAmplifierOutputOn);
     connect(m_powerAmplifierOutputOffButton, &QPushButton::clicked, this, &DeviceMonitorPage::turnPowerAmplifierOutputOff);
     connect(m_powerAmplifierSetGainButton, &QPushButton::clicked, this, &DeviceMonitorPage::setPowerAmplifierGain);
+    connect(m_rigolSignalSourceConnectionButton, &QPushButton::clicked, this, &DeviceMonitorPage::toggleRigolSignalSourceConnection);
+    connect(m_rigolInitializeButton, &QPushButton::clicked, this, &DeviceMonitorPage::initializeRigolSignalSource);
+    connect(m_rigolSetDutyCycleButton, &QPushButton::clicked, this, &DeviceMonitorPage::setRigolDutyCycle);
+    connect(m_rigolOutputSwitch, &QCheckBox::toggled, this, &DeviceMonitorPage::toggleRigolSignalOutput);
 
+    refreshRigolSignalSourceUi();
     refreshPowerAmplifierUi();
+    QTimer::singleShot(0, this, &DeviceMonitorPage::searchRigolUsbSignalSources);
     return groupBox;
 }
 
@@ -4720,6 +4889,17 @@ bool DeviceMonitorPage::ensurePowerAmplifierConnection()
     return true;
 }
 
+void DeviceMonitorPage::appendTransducerPowerLog(const QString& message)
+{
+    if (m_transducerPowerLogEdit == nullptr) {
+        return;
+    }
+
+    const QString timestamp = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz"));
+    m_transducerPowerLogEdit->appendPlainText(QStringLiteral("[%1] %2").arg(timestamp, message));
+    m_transducerPowerLogEdit->ensureCursorVisible();
+}
+
 void DeviceMonitorPage::setPowerAmplifierStatus(const QString& message, bool ok)
 {
     if (m_powerAmplifierStatusLabel == nullptr) {
@@ -4728,6 +4908,7 @@ void DeviceMonitorPage::setPowerAmplifierStatus(const QString& message, bool ok)
 
     m_powerAmplifierStatusLabel->setText(message);
     m_powerAmplifierStatusLabel->setStyleSheet(statusPanelStyle(!ok));
+    appendTransducerPowerLog(message);
 }
 
 void DeviceMonitorPage::refreshPowerAmplifierUi()
@@ -4759,16 +4940,38 @@ void DeviceMonitorPage::refreshPowerAmplifierUi()
     }
 }
 
-void DeviceMonitorPage::turnPowerAmplifierOutputOn()
+bool DeviceMonitorPage::setPowerAmplifierOutputEnabled(bool enabled, QString* errorMessage, QByteArray* response)
 {
     if (!ensurePowerAmplifierConnection()) {
-        return;
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("功率放大器未连接");
+        }
+        return false;
     }
 
+    QString commandError;
+    QByteArray localResponse;
+    const bool ok = enabled
+        ? m_powerAmplifierClient.outputOn(&commandError, &localResponse)
+        : m_powerAmplifierClient.outputOff(&commandError, &localResponse);
+    if (response != nullptr) {
+        *response = localResponse;
+    }
+    if (!ok) {
+        if (errorMessage != nullptr) {
+            *errorMessage = commandError;
+        }
+        return false;
+    }
+    return true;
+}
+
+void DeviceMonitorPage::turnPowerAmplifierOutputOn()
+{
     const QByteArray request = panthera::adapters::aigtek::AigtekPowerAmplifierClient::buildOutputOnCommand();
     QString errorMessage;
     QByteArray response;
-    if (!m_powerAmplifierClient.outputOn(&errorMessage, &response)) {
+    if (!setPowerAmplifierOutputEnabled(true, &errorMessage, &response)) {
         setPowerAmplifierStatus(QStringLiteral("输出开失败：%1\n发送：%2\n响应：%3")
                                     .arg(errorMessage,
                                          powerAmplifierRequestText(request),
@@ -4785,14 +4988,10 @@ void DeviceMonitorPage::turnPowerAmplifierOutputOn()
 
 void DeviceMonitorPage::turnPowerAmplifierOutputOff()
 {
-    if (!ensurePowerAmplifierConnection()) {
-        return;
-    }
-
     const QByteArray request = panthera::adapters::aigtek::AigtekPowerAmplifierClient::buildOutputOffCommand();
     QString errorMessage;
     QByteArray response;
-    if (!m_powerAmplifierClient.outputOff(&errorMessage, &response)) {
+    if (!setPowerAmplifierOutputEnabled(false, &errorMessage, &response)) {
         setPowerAmplifierStatus(QStringLiteral("输出关失败：%1\n发送：%2\n响应：%3")
                                     .arg(errorMessage,
                                          powerAmplifierRequestText(request),
@@ -4840,6 +5039,268 @@ void DeviceMonitorPage::setPowerAmplifierGain()
                                 .arg(powerAmplifierRequestText(request),
                                      powerAmplifierResponseText(response)),
                             true);
+}
+
+bool DeviceMonitorPage::ensureRigolSignalSourceConnected()
+{
+    if (m_rigolSignalSourceClient.isConnected()) {
+        return true;
+    }
+
+    const QString message = QStringLiteral("RIGOL信号源未连接，请先连接信号源。");
+    setPowerAmplifierStatus(message, false);
+    if (m_rigolOutputStateDisplay != nullptr) {
+        m_rigolOutputStateDisplay->setText(QStringLiteral("未连接"));
+    }
+    refreshRigolSignalSourceUi();
+    return false;
+}
+
+void DeviceMonitorPage::refreshRigolSignalSourceUi()
+{
+    const bool connected = m_rigolSignalSourceClient.isConnected();
+    if (m_rigolUsbResourceCombo != nullptr) {
+        m_rigolUsbResourceCombo->setEnabled(!connected);
+    }
+    if (m_rigolSignalSourceConnectionButton != nullptr) {
+        m_rigolSignalSourceConnectionButton->setText(connected ? QStringLiteral("断开USB信号源") : QStringLiteral("连接USB信号源"));
+    }
+    if (m_rigolInitializeButton != nullptr) {
+        m_rigolInitializeButton->setEnabled(connected);
+    }
+    if (m_rigolSetDutyCycleButton != nullptr) {
+        m_rigolSetDutyCycleButton->setEnabled(connected);
+    }
+    if (m_rigolOutputSwitch != nullptr) {
+        m_rigolOutputSwitch->setEnabled(connected);
+        if (!connected) {
+            updateRigolOutputSwitch(QStringLiteral("OFF"));
+        }
+    }
+}
+
+void DeviceMonitorPage::searchRigolUsbSignalSources()
+{
+    if (m_rigolSignalSourceClient.isConnected()) {
+        return;
+    }
+
+    const QString previousResource = m_rigolUsbResourceCombo != nullptr
+        ? m_rigolUsbResourceCombo->currentText().trimmed()
+        : QString();
+    const QStringList resources = m_rigolSignalSourceClient.searchRigolUsbResources();
+
+    if (m_rigolUsbResourceCombo != nullptr) {
+        if (!resources.isEmpty()) {
+            m_rigolUsbResourceCombo->clear();
+            m_rigolUsbResourceCombo->addItems(resources);
+            if (!previousResource.isEmpty() && resources.contains(previousResource, Qt::CaseInsensitive)) {
+                m_rigolUsbResourceCombo->setCurrentText(previousResource);
+            } else {
+                m_rigolUsbResourceCombo->setCurrentIndex(0);
+            }
+        } else if (previousResource.isEmpty()) {
+            m_rigolUsbResourceCombo->clear();
+        }
+    }
+
+    if (resources.isEmpty()) {
+        setPowerAmplifierStatus(QStringLiteral("自动识别 RIGOL USB信号源失败：请确认 USB 线已连接、设备已开机，并已安装 VISA 运行库。"), false);
+        return;
+    }
+
+    setPowerAmplifierStatus(QStringLiteral("已自动识别并填入 RIGOL USB信号源：%1").arg(resources.constFirst()), true);
+}
+
+void DeviceMonitorPage::toggleRigolSignalSourceConnection()
+{
+    if (m_rigolSignalSourceClient.isConnected()) {
+        m_rigolSignalSourceClient.disconnectDevice();
+        m_rigolSignalSourceInitialized = false;
+        if (m_rigolOutputStateDisplay != nullptr) {
+            m_rigolOutputStateDisplay->setText(QStringLiteral("未连接"));
+        }
+        setPowerAmplifierStatus(QStringLiteral("RIGOL USB信号源已断开。"), false);
+        refreshRigolSignalSourceUi();
+        return;
+    }
+
+    QString resourceName = m_rigolUsbResourceCombo != nullptr
+        ? m_rigolUsbResourceCombo->currentText().trimmed()
+        : QString();
+    if (resourceName.isEmpty()) {
+        searchRigolUsbSignalSources();
+        resourceName = m_rigolUsbResourceCombo != nullptr
+            ? m_rigolUsbResourceCombo->currentText().trimmed()
+            : QString();
+        if (resourceName.isEmpty()) {
+            setPowerAmplifierStatus(QStringLiteral("RIGOL USB信号源连接失败：未能自动识别 USB资源名。"), false);
+            return;
+        }
+    }
+
+    if (!m_rigolSignalSourceClient.connectToDevice(resourceName)) {
+        refreshRigolSignalSourceUi();
+        return;
+    }
+
+    const QString outputState = m_rigolSignalSourceClient.getOutputState();
+    if (m_rigolOutputStateDisplay != nullptr) {
+        m_rigolOutputStateDisplay->setText(outputState.isEmpty()
+            ? QStringLiteral("已连接，未初始化")
+            : rigolOutputStateDisplayText(outputState));
+    }
+    m_rigolSignalSourceInitialized = false;
+    setPowerAmplifierStatus(QStringLiteral("RIGOL USB信号源已连接，请初始化后使用 CH1 输出开关。"), true);
+    refreshRigolSignalSourceUi();
+}
+
+void DeviceMonitorPage::updateRigolSignalSourceReadbacks()
+{
+    if (!m_rigolSignalSourceClient.isConnected()) {
+        return;
+    }
+
+    const QString dutyCycle = m_rigolSignalSourceClient.getDutyCycle();
+    const QString outputState = m_rigolSignalSourceClient.getOutputState();
+    const QString errorText = m_rigolSignalSourceClient.getError();
+
+    if (m_rigolDutyCycleSpin != nullptr && !dutyCycle.isEmpty()) {
+        double dutyCycleValue = 0.0;
+        if (parseScpiDouble(dutyCycle, &dutyCycleValue)) {
+            const QSignalBlocker blocker(m_rigolDutyCycleSpin);
+            m_rigolDutyCycleSpin->setValue(dutyCycleValue);
+        }
+    }
+    if (m_rigolOutputStateDisplay != nullptr) {
+        m_rigolOutputStateDisplay->setText(rigolOutputStateDisplayText(outputState));
+    }
+    updateRigolOutputSwitch(outputState);
+    if (!errorText.isEmpty()) {
+        appendTransducerPowerLog(QStringLiteral("RIGOL错误查询：%1").arg(errorText));
+    }
+}
+
+void DeviceMonitorPage::updateRigolOutputSwitch(const QString& outputState)
+{
+    if (m_rigolOutputSwitch == nullptr) {
+        return;
+    }
+
+    const bool on = rigolOutputStateDisplayText(outputState) == QStringLiteral("ON");
+    const QSignalBlocker blocker(m_rigolOutputSwitch);
+    m_rigolOutputSwitch->setChecked(on);
+    m_rigolOutputSwitch->setText(on ? QStringLiteral("ON") : QStringLiteral("OFF"));
+}
+
+void DeviceMonitorPage::initializeRigolSignalSource()
+{
+    if (!ensureRigolSignalSourceConnected() || m_rigolDutyCycleSpin == nullptr) {
+        return;
+    }
+
+    const double dutyCycle = m_rigolDutyCycleSpin->value();
+    if (!m_rigolSignalSourceClient.initUltrasoundSignal(dutyCycle)) {
+        m_rigolSignalSourceInitialized = false;
+        setPowerAmplifierStatus(QStringLiteral("信号源初始化失败，请查看日志中的 RIGOL 错误信息。"), false);
+        refreshRigolSignalSourceUi();
+        return;
+    }
+
+    m_rigolSignalSourceInitialized = true;
+    updateRigolSignalSourceReadbacks();
+    if (m_rigolOutputStateDisplay != nullptr) {
+        m_rigolOutputStateDisplay->setText(QStringLiteral("OFF"));
+    }
+    updateRigolOutputSwitch(QStringLiteral("OFF"));
+    setPowerAmplifierStatus(
+        QStringLiteral("信号源初始化完成：占空比 %1%，CH1 OFF")
+            .arg(dutyCycle, 0, 'f', 1),
+        true);
+    refreshRigolSignalSourceUi();
+}
+
+void DeviceMonitorPage::setRigolDutyCycle()
+{
+    if (!ensureRigolSignalSourceConnected() || m_rigolDutyCycleSpin == nullptr) {
+        return;
+    }
+
+    const double dutyCycle = m_rigolDutyCycleSpin->value();
+    if (!m_rigolSignalSourceClient.setDutyCycle(dutyCycle)) {
+        setPowerAmplifierStatus(QStringLiteral("设置 RIGOL CH1 占空比失败。"), false);
+        return;
+    }
+
+    const QString confirmedDutyCycle = m_rigolSignalSourceClient.getDutyCycle();
+    if (!confirmedDutyCycle.isEmpty()) {
+        double confirmedDutyCycleValue = 0.0;
+        if (m_rigolDutyCycleSpin != nullptr && parseScpiDouble(confirmedDutyCycle, &confirmedDutyCycleValue)) {
+            const QSignalBlocker blocker(m_rigolDutyCycleSpin);
+            m_rigolDutyCycleSpin->setValue(confirmedDutyCycleValue);
+        }
+        appendTransducerPowerLog(QStringLiteral("RIGOL CH1 占空比：%1").arg(rigolDutyCycleDisplayText(confirmedDutyCycle)));
+    }
+    const QString errorText = m_rigolSignalSourceClient.getError();
+    if (!errorText.isEmpty()) {
+        appendTransducerPowerLog(QStringLiteral("RIGOL错误查询：%1").arg(errorText));
+    }
+    setPowerAmplifierStatus(QStringLiteral("RIGOL CH1 占空比设置完成：%1")
+                                .arg(confirmedDutyCycle.isEmpty()
+                                         ? QStringLiteral("%1 %").arg(dutyCycle, 0, 'f', 1)
+                                         : rigolDutyCycleDisplayText(confirmedDutyCycle)),
+                            true);
+}
+
+bool DeviceMonitorPage::setRigolSignalOutputEnabled(bool enabled, QString* errorMessage)
+{
+    if (!ensureRigolSignalSourceConnected()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("RIGOL信号源未连接");
+        }
+        return false;
+    }
+
+    const bool ok = enabled
+        ? m_rigolSignalSourceClient.outputOn()
+        : m_rigolSignalSourceClient.outputOff();
+    if (!ok) {
+        if (errorMessage != nullptr) {
+            *errorMessage = enabled ? QStringLiteral("RIGOL CH1 打开失败") : QStringLiteral("RIGOL CH1 关闭失败");
+        }
+        return false;
+    }
+
+    const QString outputState = m_rigolSignalSourceClient.getOutputState();
+    if (m_rigolOutputStateDisplay != nullptr) {
+        m_rigolOutputStateDisplay->setText(rigolOutputStateDisplayText(outputState));
+    }
+    updateRigolOutputSwitch(outputState.isEmpty() ? (enabled ? QStringLiteral("ON") : QStringLiteral("OFF")) : outputState);
+    const QString errorText = m_rigolSignalSourceClient.getError();
+    if (!errorText.isEmpty()) {
+        appendTransducerPowerLog(QStringLiteral("RIGOL错误查询：%1").arg(errorText));
+    }
+    return true;
+}
+
+void DeviceMonitorPage::toggleRigolSignalOutput(bool checked)
+{
+    QString errorMessage;
+    if (!setRigolSignalOutputEnabled(checked, &errorMessage)) {
+        setPowerAmplifierStatus(QStringLiteral("信号源CH1%1失败：%2")
+                                    .arg(checked ? QStringLiteral("开") : QStringLiteral("关"), errorMessage),
+                                false);
+        const QString outputState = m_rigolSignalSourceClient.isConnected()
+            ? m_rigolSignalSourceClient.getOutputState()
+            : QStringLiteral("OFF");
+        updateRigolOutputSwitch(outputState);
+        return;
+    }
+
+    setPowerAmplifierStatus(checked
+            ? QStringLiteral("信号源CH1已打开：RIGOL CH1 ON。")
+            : QStringLiteral("信号源CH1已关闭：RIGOL CH1 OFF。"),
+        true);
 }
 
 void DeviceMonitorPage::closeSharedRs485Clients()
@@ -5552,6 +6013,7 @@ void DeviceMonitorPage::refreshWaterPumpUi()
         m_tank2FillButton->setEnabled(connected);
         m_tank2FillButton->setText(m_tank2FillActive ? QStringLiteral("停止上水") : QStringLiteral("上水"));
     }
+    refreshVacuumPumpUi();
 }
 
 bool DeviceMonitorPage::applySharedWaterPumpFlow(double flow, QStringList* responses, QStringList* failures)
@@ -6039,6 +6501,189 @@ void DeviceMonitorPage::stopWaterLoop()
         return;
     }
     setWaterPumpStatus(QStringLiteral("水循环停止成功：%1").arg(responses.join(QStringLiteral("；"))), true);
+}
+
+void DeviceMonitorPage::refreshVacuumPumpUi()
+{
+    if (m_vacuumPumpButton == nullptr) {
+        return;
+    }
+
+    m_vacuumPumpButton->setEnabled(true);
+    m_vacuumPumpButton->setText(m_vacuumPumpOn ? QStringLiteral("停止") : QStringLiteral("启动"));
+}
+
+bool DeviceMonitorPage::prepareVacuumPumpP4Gateway(QString* errorMessage)
+{
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+
+    if (!m_threeAxisGateway.isSdkLoaded()) {
+        const QString sdkPath = m_threeAxisSdkPathEdit != nullptr && !m_threeAxisSdkPathEdit->text().trimmed().isEmpty()
+            ? m_threeAxisSdkPathEdit->text().trimmed()
+            : defaultThreeAxisSdkPath();
+        if (m_threeAxisSdkPathEdit != nullptr && m_threeAxisSdkPathEdit->text().trimmed().isEmpty()) {
+            m_threeAxisSdkPathEdit->setText(sdkPath);
+        }
+
+        QString loadError;
+        if (!m_threeAxisGateway.loadSdk(sdkPath, &loadError)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("UIM SDK 加载失败：%1").arg(loadError);
+            }
+            appendThreeAxisLog(QStringLiteral("真空泵 P4 准备失败：UIM SDK 加载失败：%1").arg(loadError));
+            refreshThreeAxisUi();
+            return false;
+        }
+        appendThreeAxisLog(QStringLiteral("真空泵 P4 已加载 UIM SDK：%1").arg(sdkPath));
+    }
+
+    if (!m_threeAxisGateway.isGatewayOpen()) {
+        if (m_threeAxisDevices.isEmpty()) {
+            searchThreeAxisGateways();
+        }
+        if (m_threeAxisDevices.isEmpty()) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("未搜索到 USB-CAN 网关");
+            }
+            return false;
+        }
+
+        QVariant selectedDeviceIndex = m_threeAxisDeviceCombo != nullptr ? m_threeAxisDeviceCombo->currentData() : QVariant();
+        if (!selectedDeviceIndex.isValid()) {
+            selectedDeviceIndex = m_threeAxisDevices.constFirst().deviceIndex;
+        }
+
+        QString openError;
+        if (!m_threeAxisGateway.openGateway(selectedDeviceIndex.toUInt(), &openError)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("UIM 网关打开失败：%1").arg(openError);
+            }
+            appendThreeAxisLog(QStringLiteral("真空泵 P4 准备失败：UIM 网关打开失败：%1").arg(openError));
+            refreshThreeAxisUi();
+            return false;
+        }
+
+        m_threeAxisNodes = m_threeAxisGateway.nodes();
+        appendThreeAxisLog(QStringLiteral("真空泵 P4 已打开 UIM 网关：CAN 节点 %1 个").arg(m_threeAxisNodes.size()));
+        updateThreeAxisNodeStatus();
+    } else if (m_threeAxisNodes.isEmpty()) {
+        m_threeAxisNodes = m_threeAxisGateway.nodes();
+        updateThreeAxisNodeStatus();
+    }
+
+    if (!threeAxisNodeAvailable(kVacuumPumpP4AxisIndex)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("未发现 %1 电机节点，无法控制真空泵 P4 输出")
+                                .arg(threeAxisAxisTitle(kVacuumPumpP4AxisIndex));
+        }
+        refreshThreeAxisUi();
+        return false;
+    }
+
+    return true;
+}
+
+bool DeviceMonitorPage::setVacuumPumpP4Output(bool on, QString* errorMessage)
+{
+    if (!prepareVacuumPumpP4Gateway(errorMessage)) {
+        return false;
+    }
+
+    const quint32 previousNodeId = m_threeAxisGateway.selectedNodeId();
+    const auto restorePreviousNode = [this, previousNodeId]() {
+        if (previousNodeId == 0) {
+            return;
+        }
+        const bool stillAvailable = std::any_of(
+            m_threeAxisNodes.cbegin(),
+            m_threeAxisNodes.cend(),
+            [previousNodeId](const diji::adapters::uim::UimNodeInfo& node) {
+                return node.nodeId == previousNodeId;
+            });
+        if (stillAvailable) {
+            QString ignoredError;
+            m_threeAxisGateway.selectNode(previousNodeId, &ignoredError);
+        }
+    };
+
+    QString localError;
+    if (!selectThreeAxisNode(kVacuumPumpP4AxisIndex, &localError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = localError;
+        }
+        restorePreviousNode();
+        refreshThreeAxisUi();
+        return false;
+    }
+
+    if (!m_threeAxisGateway.setDigitalOutput(on, &localError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("%1 P4=%2 失败：%3")
+                                .arg(threeAxisAxisTitle(kVacuumPumpP4AxisIndex))
+                                .arg(on ? 1 : 0)
+                                .arg(localError);
+        }
+        restorePreviousNode();
+        refreshThreeAxisUi();
+        return false;
+    }
+
+    bool readbackHigh = false;
+    const bool readbackOk = m_threeAxisGateway.readDigitalOutput(&readbackHigh, &localError);
+    if (readbackOk && readbackHigh != on) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("%1 P4 写入后读回不一致：写入 %2，读回 %3")
+                                .arg(threeAxisAxisTitle(kVacuumPumpP4AxisIndex))
+                                .arg(on ? 1 : 0)
+                                .arg(readbackHigh ? 1 : 0);
+        }
+        restorePreviousNode();
+        refreshThreeAxisUi();
+        return false;
+    }
+
+    const QString message = readbackOk
+        ? QStringLiteral("真空泵：%1 P4=%2，读回=%3")
+              .arg(threeAxisAxisTitle(kVacuumPumpP4AxisIndex))
+              .arg(on ? 1 : 0)
+              .arg(readbackHigh ? 1 : 0)
+        : QStringLiteral("真空泵：%1 P4=%2，读回失败：%3")
+              .arg(threeAxisAxisTitle(kVacuumPumpP4AxisIndex))
+              .arg(on ? 1 : 0)
+              .arg(localError);
+    appendThreeAxisLog(message);
+
+    m_vacuumPumpOn = on;
+    restorePreviousNode();
+    refreshThreeAxisUi();
+    refreshVacuumPumpUi();
+    return true;
+}
+
+void DeviceMonitorPage::toggleVacuumPump()
+{
+    const bool turnOn = !m_vacuumPumpOn;
+    if (m_vacuumPumpButton != nullptr) {
+        m_vacuumPumpButton->setEnabled(false);
+    }
+
+    QString errorMessage;
+    if (!setVacuumPumpP4Output(turnOn, &errorMessage)) {
+        setWaterPumpStatus(QStringLiteral("真空泵%1失败：%2")
+                               .arg(turnOn ? QStringLiteral("启动") : QStringLiteral("停止"), errorMessage),
+                           false);
+        refreshVacuumPumpUi();
+        return;
+    }
+
+    setWaterPumpStatus(QStringLiteral("真空泵%1成功：%2 P4=%3，红线%4")
+                           .arg(turnOn ? QStringLiteral("启动") : QStringLiteral("停止"))
+                           .arg(threeAxisAxisTitle(kVacuumPumpP4AxisIndex))
+                           .arg(turnOn ? 1 : 0)
+                           .arg(turnOn ? QStringLiteral("接通") : QStringLiteral("断开")),
+                       true);
 }
 
 bool DeviceMonitorPage::ensureRobotPumpControl(QString* errorMessage)

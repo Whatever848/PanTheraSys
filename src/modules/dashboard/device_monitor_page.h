@@ -18,6 +18,7 @@
 #include "adapters/dobot/dobot_trajectory_sftp_client.h"
 #include "adapters/dobot/dobot_tcp_client.h"
 #include "adapters/liquidlevel/liquid_level_modbus_client.h"
+#include "adapters/rigol/rigol_visa_client.h"
 #include "adapters/sim/simulation_device_facade.h"
 #include "adapters/uim/uim_motor_gateway.h"
 #include "adapters/waterpump/water_pump_modbus_client.h"
@@ -85,6 +86,12 @@ private slots:
     void turnPowerAmplifierOutputOn();
     void turnPowerAmplifierOutputOff();
     void setPowerAmplifierGain();
+    void searchRigolUsbSignalSources();
+    void toggleRigolSignalSourceConnection();
+    void initializeRigolSignalSource();
+    void setRigolDutyCycle();
+    void toggleRigolSignalOutput(bool checked);
+    void toggleVacuumPump();
 
 private:
     QLabel* createValueLabel();
@@ -153,6 +160,9 @@ private:
     bool ensureRobotPumpControl(QString* errorMessage);
     bool sendRobotPumpDo(int index, bool on, const QString& action, QString* errorMessage);
     bool setRobotPumpMode(bool do13On, bool do14On, const QString& action, QString* errorMessage);
+    bool prepareVacuumPumpP4Gateway(QString* errorMessage);
+    bool setVacuumPumpP4Output(bool on, QString* errorMessage);
+    void refreshVacuumPumpUi();
     void startRobotPumpForward();
     void startRobotPumpReverse();
     void stopRobotPump();
@@ -169,6 +179,13 @@ private:
     bool ensurePowerAmplifierConnection();
     void setPowerAmplifierStatus(const QString& message, bool ok);
     void refreshPowerAmplifierUi();
+    bool setPowerAmplifierOutputEnabled(bool enabled, QString* errorMessage, QByteArray* response);
+    bool ensureRigolSignalSourceConnected();
+    void appendTransducerPowerLog(const QString& message);
+    void refreshRigolSignalSourceUi();
+    void updateRigolSignalSourceReadbacks();
+    void updateRigolOutputSwitch(const QString& outputState);
+    bool setRigolSignalOutputEnabled(bool enabled, QString* errorMessage);
     void handleWaterTankLevelSensors(const diji::adapters::uim::UimMotorSnapshot& snapshot);
     void updateWaterTankLimitStatus();
     void triggerWaterTankLowLevelAlarm();
@@ -270,6 +287,7 @@ private:
     quint8 m_liquidLevelAddress {panthera::adapters::liquidlevel::LiquidLevelModbusClient::kDefaultAddress};
     panthera::adapters::waterpump::WaterPumpModbusClient m_waterPumpClient;
     panthera::adapters::aigtek::AigtekPowerAmplifierClient m_powerAmplifierClient;
+    panthera::adapters::rigol::RigolVisaClient m_rigolSignalSourceClient;
     diji::adapters::uim::UimMotorGateway m_threeAxisGateway;
     QVector<diji::adapters::uim::UimDeviceInfo> m_threeAxisDevices;
     QVector<diji::adapters::uim::UimNodeInfo> m_threeAxisNodes;
@@ -338,6 +356,16 @@ private:
     QPushButton* m_powerAmplifierSetGainButton {nullptr};
     QPushButton* m_powerAmplifierOutputOnButton {nullptr};
     QPushButton* m_powerAmplifierOutputOffButton {nullptr};
+    QPushButton* m_vacuumPumpButton {nullptr};
+    QComboBox* m_rigolUsbResourceCombo {nullptr};
+    QPushButton* m_rigolSignalSourceConnectionButton {nullptr};
+    QDoubleSpinBox* m_rigolDutyCycleSpin {nullptr};
+    QPushButton* m_rigolSetDutyCycleButton {nullptr};
+    QLineEdit* m_rigolOutputStateDisplay {nullptr};
+    QPushButton* m_rigolInitializeButton {nullptr};
+    QCheckBox* m_rigolOutputSwitch {nullptr};
+    QPlainTextEdit* m_transducerPowerLogEdit {nullptr};
+    bool m_rigolSignalSourceInitialized {false};
     QPlainTextEdit* m_threeAxisLogEdit {nullptr};
     QTimer m_robotArmSafetyWallTimer;
     QTimer m_robotPhysicalDragPollTimer;
@@ -345,6 +373,7 @@ private:
     QTimer m_temperatureRealtimeTimer;
     bool m_temperatureRequestBusy {false};
     bool m_tank2FillActive {false};
+    bool m_vacuumPumpOn {false};
     double m_tank2FillTargetLevelCentimeters {0.0};
     QLineEdit* m_threeAxisSdkPathEdit {nullptr};
     QComboBox* m_threeAxisDeviceCombo {nullptr};

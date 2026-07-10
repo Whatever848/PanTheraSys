@@ -17,6 +17,8 @@ set(PANTHERA_ADAPTERS_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/liquidlevel/liquid_level_modbus_client.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mysql/mysql_clinical_data_repository.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mysql/mysql_repository_facade.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/rigol/rigol_visa_client.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/rigol/rigol_visa_client.h
     ${CMAKE_CURRENT_SOURCE_DIR}/seed/seed_clinical_data_repository.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/sim/simulation_device_facade.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/uim/uim_motor_gateway.cpp
