@@ -10,6 +10,18 @@ namespace panthera::core {
 class EventBus;
 class AuditService;
 
+struct AuthenticatedOperator {
+    QString userId;
+    QString username;
+    QString displayName;
+    QString doctorId;
+    QString doctorName;
+    QString department;
+    QString title;
+    QString licenseNumber;
+    RoleType role {RoleType::Physician};
+};
+
 // ApplicationContext 表示工作站运行时的内存会话上下文。
 // 它负责在页面之间共享“当前患者 / 当前方案 / 当前角色”等状态，
 // 避免页面之间直接相互依赖。
@@ -18,6 +30,12 @@ class ApplicationContext final : public QObject {
 
 public:
     ApplicationContext(EventBus* eventBus, AuditService* auditService, QObject* parent = nullptr);
+
+    bool hasCurrentOperator() const;
+    const AuthenticatedOperator& currentOperator() const;
+    QString currentOperatorLabel() const;
+    void setCurrentOperator(const AuthenticatedOperator& user);
+    void clearCurrentOperator();
 
     bool hasSelectedPatient() const;
     const PatientRecord& selectedPatient() const;
@@ -39,6 +57,7 @@ public:
     QString latestTreatmentCameraDescription() const;
 
 signals:
+    void currentOperatorChanged();
     void selectedPatientChanged(const panthera::core::PatientRecord& patient);
     void selectedPatientCleared();
     void activePlanChanged(const panthera::core::TherapyPlan& plan);
@@ -50,11 +69,13 @@ signals:
 private:
     EventBus* m_eventBus {nullptr};
     AuditService* m_auditService {nullptr};
+    AuthenticatedOperator m_currentOperator;
     PatientRecord m_selectedPatient;
     TherapyPlan m_activePlan;
     QImage m_latestTreatmentCameraFrame;
     QString m_latestTreatmentCameraDescription;
     RoleType m_currentRole {RoleType::Physician};
+    bool m_hasCurrentOperator {false};
     bool m_hasSelectedPatient {false};
     bool m_hasActivePlan {false};
     bool m_hasLatestTreatmentCameraFrame {false};

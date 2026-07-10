@@ -174,6 +174,7 @@ MainWindow::MainWindow(
     });
     connect(m_safetyKernel, &SafetyKernel::safetySnapshotChanged, this, &MainWindow::updateStatusBarSummary);
     connect(m_safetyKernel, &SafetyKernel::systemModeChanged, this, &MainWindow::updateStatusBarSummary);
+    connect(m_context, &ApplicationContext::currentOperatorChanged, this, &MainWindow::updateStatusBarSummary);
 
     updateStatusBarSummary();
     showDashboard();
@@ -390,8 +391,8 @@ void MainWindow::updateStatusBarSummary()
 {
     const SafetySnapshot snapshot = m_safetyKernel->snapshot();
     m_statusLabel->setText(
-        QStringLiteral("系统%1 | 模式：%2 | 联锁：%3")
-            .arg(toDisplayString(snapshot.state), toDisplayString(m_safetyKernel->mode()), snapshot.message));
+        QStringLiteral("医生：%1 | 系统%2 | 模式：%3 | 联锁：%4")
+            .arg(m_context->currentOperatorLabel(), toDisplayString(snapshot.state), toDisplayString(m_safetyKernel->mode()), snapshot.message));
 }
 
 void MainWindow::setActivePage(int index, QAbstractButton* activeButton)

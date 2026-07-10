@@ -7,17 +7,40 @@ CREATE TABLE IF NOT EXISTS role (
     description VARCHAR(255) NULL
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS doctor_profile (
+    id VARCHAR(64) PRIMARY KEY,
+    full_name VARCHAR(128) NOT NULL,
+    department VARCHAR(128) NOT NULL,
+    title_name VARCHAR(128) NOT NULL,
+    license_number VARCHAR(64) NULL,
+    phone VARCHAR(64) NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uk_doctor_license (license_number)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS user_account (
     id VARCHAR(64) PRIMARY KEY,
     username VARCHAR(64) NOT NULL UNIQUE,
     display_name VARCHAR(128) NOT NULL,
     role_id VARCHAR(64) NOT NULL,
+    doctor_id VARCHAR(64) NULL,
     password_hash VARCHAR(255) NOT NULL,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
-    CONSTRAINT fk_user_role FOREIGN KEY (role_id) REFERENCES role(id)
+    last_login_at DATETIME NULL,
+    CONSTRAINT fk_user_role FOREIGN KEY (role_id) REFERENCES role(id),
+    CONSTRAINT fk_user_doctor FOREIGN KEY (doctor_id) REFERENCES doctor_profile(id)
 ) ENGINE=InnoDB;
+
+INSERT INTO role (id, name, description) VALUES
+    ('operator', '操作员', '设备操作与治疗执行人员'),
+    ('physician', '医生', '临床医生账号'),
+    ('engineer', '工程师', '设备维护与工程调试人员'),
+    ('administrator', '管理员', '系统管理人员')
+ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description);
 
 CREATE TABLE IF NOT EXISTS patient (
     id VARCHAR(64) PRIMARY KEY,

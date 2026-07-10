@@ -12,6 +12,48 @@ ApplicationContext::ApplicationContext(EventBus* eventBus, AuditService* auditSe
 {
 }
 
+bool ApplicationContext::hasCurrentOperator() const
+{
+    return m_hasCurrentOperator;
+}
+
+const AuthenticatedOperator& ApplicationContext::currentOperator() const
+{
+    return m_currentOperator;
+}
+
+QString ApplicationContext::currentOperatorLabel() const
+{
+    if (!m_hasCurrentOperator) {
+        return QStringLiteral("未登录");
+    }
+
+    const QString doctorName = m_currentOperator.doctorName.trimmed().isEmpty()
+        ? m_currentOperator.displayName
+        : m_currentOperator.doctorName;
+    const QString title = m_currentOperator.title.trimmed();
+    return title.isEmpty() ? doctorName : QStringLiteral("%1（%2）").arg(doctorName, title);
+}
+
+void ApplicationContext::setCurrentOperator(const AuthenticatedOperator& user)
+{
+    m_currentOperator = user;
+    m_hasCurrentOperator = true;
+    setCurrentRole(user.role);
+    emit currentOperatorChanged();
+}
+
+void ApplicationContext::clearCurrentOperator()
+{
+    if (!m_hasCurrentOperator) {
+        return;
+    }
+
+    m_currentOperator = AuthenticatedOperator {};
+    m_hasCurrentOperator = false;
+    emit currentOperatorChanged();
+}
+
 bool ApplicationContext::hasSelectedPatient() const
 {
     return m_hasSelectedPatient;

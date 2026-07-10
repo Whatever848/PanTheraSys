@@ -2,6 +2,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QByteArray>
+#include <QDialog>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -31,6 +32,7 @@
 
 #include "adapters/config/local_settings_store.h"
 #include "adapters/dobot/dobot_tcp_client.h"
+#include "adapters/mysql/mysql_auth_repository.h"
 #include "adapters/mysql/mysql_clinical_data_repository.h"
 #include "adapters/seed/seed_clinical_data_repository.h"
 #include "adapters/sim/simulation_device_facade.h"
@@ -40,6 +42,7 @@
 #include "core/safety/safety_kernel.h"
 #include "core/services/audit_service.h"
 #include "core/services/clinical_data_service.h"
+#include "modules/auth/login_dialog.h"
 #include "modules/data/data_management_page.h"
 #include "modules/dashboard/device_monitor_page.h"
 #include "modules/planning/planning_page.h"
@@ -457,6 +460,9 @@ public:
         connect(m_safetyKernel, &panthera::core::SafetyKernel::systemModeChanged, this, [this]() {
             updateStatusSummary();
         });
+        connect(m_context, &panthera::core::ApplicationContext::currentOperatorChanged, this, [this]() {
+            updateStatusSummary();
+        });
         if (m_dashboardMonitorButton != nullptr) {
             connect(m_dashboardMonitorButton, &QToolButton::clicked, this, [this]() {
                 showDashboardMonitor();
@@ -783,8 +789,8 @@ private:
     {
         const panthera::core::SafetySnapshot snapshot = m_safetyKernel->snapshot();
         m_statusLabel->setText(
-            QStringLiteral("系统%1 | 模式：%2 | 联锁：%3")
-                .arg(panthera::core::toDisplayString(snapshot.state), panthera::core::toDisplayString(m_safetyKernel->mode()), snapshot.message));
+            QStringLiteral("医生：%1 | 系统%2 | 模式：%3 | 联锁：%4")
+                .arg(m_context->currentOperatorLabel(), panthera::core::toDisplayString(snapshot.state), panthera::core::toDisplayString(m_safetyKernel->mode()), snapshot.message));
     }
 
     panthera::core::ApplicationContext* m_context {nullptr};
@@ -907,6 +913,7 @@ int main(int argc, char* argv[])
     const QString defaultsIniPath = resolveRuntimePath(QStringLiteral("config/defaults.ini"));
     const QString schemaFilePath = resolveRuntimePath(QStringLiteral("db/schema/mysql_5_7_init.sql"));
 
+    bool usingMySqlRepository = false;
     if (isDatabaseEnabled(defaultsIniPath) && mysqlClinicalDataRepository.open(loadDatabaseSettings(defaultsIniPath))) {
         bool mysqlReady = true;
         if (QFileInfo::exists(schemaFilePath) && !mysqlClinicalDataRepository.initializeSchemaFromFile(schemaFilePath)) {
@@ -928,6 +935,7 @@ int main(int argc, char* argv[])
 
         if (mysqlReady) {
             clinicalDataRepository = &mysqlClinicalDataRepository;
+            usingMySqlRepository = true;
             auditService.appendEntry(QStringLiteral("system"), QStringLiteral("database"), QStringLiteral("Using MySQL clinical data repository"));
         } else {
             mysqlClinicalDataRepository.close();
@@ -938,6 +946,35 @@ int main(int argc, char* argv[])
             : QStringLiteral("MySQL disabled; using seed data for startup");
         auditService.appendEntry(QStringLiteral("system"), QStringLiteral("database"), QStringLiteral("Fallback to seed clinical data repository: %1").arg(reason));
     }
+
+    if (!usingMySqlRepository) {
+        QMessageBox::critical(
+            nullptr,
+            QStringLiteral("数据库认证不可用"),
+            QStringLiteral("医生登录需要 MySQL 数据库。请确认 config/defaults.ini 已启用数据库、MySQL 服务正在运行，且 panthera_sys 数据库可连接。"));
+        return 1;
+    }
+
+    panthera::adapters::MySqlAuthRepository authRepository;
+    if (!authRepository.initializeSchema()) {
+        QMessageBox::critical(
+            nullptr,
+            QStringLiteral("登录表初始化失败"),
+            QStringLiteral("无法初始化医生登录表：%1").arg(authRepository.lastError()));
+        return 1;
+    }
+
+    panthera::modules::LoginDialog loginDialog(&authRepository);
+    if (loginDialog.exec() != QDialog::Accepted) {
+        return 0;
+    }
+
+    const panthera::core::AuthenticatedOperator currentOperator = loginDialog.authenticatedOperator();
+    context.setCurrentOperator(currentOperator);
+    auditService.appendEntry(
+        currentOperator.username,
+        QStringLiteral("auth"),
+        QStringLiteral("医生登录：%1，医生ID：%2").arg(context.currentOperatorLabel(), currentOperator.doctorId));
 
     simulationDevice.start();
 

@@ -1,4 +1,6 @@
 set(PANTHERA_MODULE_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/auth/login_dialog.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/auth/login_dialog.h
     ${CMAKE_CURRENT_SOURCE_DIR}/dashboard/device_monitor_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/data/data_management_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/planning/planning_page.cpp

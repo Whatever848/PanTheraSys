@@ -219,6 +219,80 @@ QFrame#dataEditorPanel {
     border-radius: 12px;
 }
 
+QFrame#authBrandPanel,
+QFrame#authFormPanel {
+    background-color: #0b1a2b;
+    border: 1px solid #143759;
+    border-radius: 12px;
+}
+
+QFrame#authBrandPanel {
+    background-color: #10243b;
+}
+
+QLabel#authTitleLabel {
+    color: #10d6ff;
+    font-size: 22pt;
+    font-weight: 800;
+    background: transparent;
+}
+
+QLabel#authSubtitleLabel {
+    color: #ffffff;
+    font-size: 17pt;
+    font-weight: 700;
+    background: transparent;
+}
+
+QLabel#authSectionTitleLabel {
+    color: #18dbff;
+    font-size: 18pt;
+    font-weight: 800;
+    background: transparent;
+}
+
+QLabel#authDescriptionLabel,
+QLabel#authFieldLabel {
+    color: #afc1d4;
+    background: transparent;
+    font-weight: 700;
+}
+
+QLabel#authMessageLabel {
+    min-height: 34px;
+    color: #b9d6ef;
+    background-color: rgba(18, 44, 72, 0.72);
+    border: 1px solid #1e4b73;
+    border-radius: 8px;
+    padding: 8px 12px;
+}
+
+QLabel#authMessageLabel[error="true"] {
+    color: #ffb5ad;
+    border-color: #df4338;
+    background-color: rgba(116, 18, 14, 0.30);
+}
+
+QTabWidget#authTabWidget::pane {
+    border: none;
+    background: transparent;
+}
+
+QTabWidget#authTabWidget QTabBar::tab {
+    min-width: 98px;
+    padding: 9px 18px;
+    color: #afc1d4;
+    background-color: #10243b;
+    border: 1px solid #173c61;
+    border-bottom: none;
+}
+
+QTabWidget#authTabWidget QTabBar::tab:selected {
+    color: #12ddff;
+    background-color: #132f4e;
+    border-color: #1b6392;
+}
+
 QGroupBox#dataSidebarCard {
     background-color: #0b1a2b;
     border: 1px solid #143759;
