@@ -219,52 +219,53 @@ QFrame#dataEditorPanel {
     border-radius: 12px;
 }
 
-QFrame#authBrandPanel,
-QFrame#authFormPanel {
-    background-color: #0b1a2b;
-    border: 1px solid #143759;
-    border-radius: 12px;
+QDialog#authLoginDialog {
+    background-color: #06111e;
 }
 
-QFrame#authBrandPanel {
-    background-color: #10243b;
+QFrame#authLoginPanel {
+    background-color: #0b1d31;
+    border: 1px solid #1c527a;
+    border-radius: 16px;
 }
 
 QLabel#authTitleLabel {
-    color: #10d6ff;
-    font-size: 22pt;
+    color: #1be1ff;
+    font-size: 23pt;
     font-weight: 800;
     background: transparent;
+    padding: 0 2px 3px 2px;
 }
 
-QLabel#authSubtitleLabel {
-    color: #ffffff;
-    font-size: 17pt;
-    font-weight: 700;
+QFrame#authTitleDivider {
+    min-height: 1px;
+    max-height: 1px;
+    border: none;
+    background-color: #1a5077;
+}
+
+QLabel#authFooterLabel {
+    color: #7897b8;
     background: transparent;
+    font-size: 9pt;
+    font-weight: 600;
+    padding-top: 4px;
 }
 
-QLabel#authSectionTitleLabel {
-    color: #18dbff;
-    font-size: 18pt;
-    font-weight: 800;
-    background: transparent;
-}
-
-QLabel#authDescriptionLabel,
 QLabel#authFieldLabel {
-    color: #afc1d4;
+    color: #bfd2e5;
     background: transparent;
     font-weight: 700;
+    min-width: 70px;
 }
 
 QLabel#authMessageLabel {
-    min-height: 34px;
+    min-height: 30px;
     color: #b9d6ef;
-    background-color: rgba(18, 44, 72, 0.72);
-    border: 1px solid #1e4b73;
-    border-radius: 8px;
-    padding: 8px 12px;
+    background-color: #102b46;
+    border: 1px solid #21547b;
+    border-radius: 7px;
+    padding: 7px 11px;
 }
 
 QLabel#authMessageLabel[error="true"] {
@@ -274,23 +275,70 @@ QLabel#authMessageLabel[error="true"] {
 }
 
 QTabWidget#authTabWidget::pane {
-    border: none;
-    background: transparent;
+    border: 1px solid #1c4f75;
+    border-top-left-radius: 0px;
+    border-top-right-radius: 10px;
+    border-bottom-right-radius: 10px;
+    border-bottom-left-radius: 10px;
+    background-color: #09192a;
+    top: -1px;
 }
 
 QTabWidget#authTabWidget QTabBar::tab {
-    min-width: 98px;
-    padding: 9px 18px;
-    color: #afc1d4;
-    background-color: #10243b;
-    border: 1px solid #173c61;
+    min-width: 128px;
+    padding: 10px 22px;
+    color: #8eabc8;
+    background-color: #0d2137;
+    border: 1px solid #1c4f75;
     border-bottom: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    font-weight: 700;
 }
 
 QTabWidget#authTabWidget QTabBar::tab:selected {
-    color: #12ddff;
-    background-color: #132f4e;
-    border-color: #1b6392;
+    color: #1ce2ff;
+    background-color: #09192a;
+    border-color: #2781ae;
+}
+
+QLineEdit#authInputEdit {
+    color: #eaf6ff;
+    background-color: #102842;
+    border: 1px solid #245879;
+    border-radius: 8px;
+    padding: 8px 12px;
+    selection-background-color: #087b9a;
+}
+
+QLineEdit#authInputEdit:focus {
+    border: 1px solid #19d7f6;
+    background-color: #12314e;
+}
+
+QPushButton#authPrimaryButton {
+    color: #ffffff;
+    background-color: #0b91bd;
+    border: 1px solid #2bcce8;
+    border-radius: 8px;
+    font-size: 11pt;
+    font-weight: 700;
+    padding: 10px 20px;
+}
+
+QPushButton#authPrimaryButton:hover {
+    background-color: #11a9d6;
+    border-color: #82edff;
+}
+
+QPushButton#authPrimaryButton:pressed {
+    background-color: #087ca8;
+}
+
+QPushButton#authPrimaryButton:disabled {
+    color: #7896ad;
+    background-color: #17324a;
+    border-color: #28506d;
 }
 
 QGroupBox#dataSidebarCard {
@@ -610,6 +658,34 @@ QLabel#planningBottomTitle {
     font-size: 16pt;
     font-weight: 700;
     background: transparent;
+}
+
+QComboBox#planningPatientSelector {
+    min-height: 28px;
+    padding: 3px 10px;
+    background-color: #122b47;
+    border: 1px solid #3270a8;
+    border-radius: 8px;
+    color: #f3fbff;
+    font-weight: 700;
+}
+
+QComboBox#planningPatientSelector:hover,
+QComboBox#planningPatientSelector:focus {
+    border-color: #13c9ee;
+    background-color: #163657;
+}
+
+QComboBox#planningPatientSelector::drop-down {
+    width: 26px;
+    border: none;
+    background: transparent;
+}
+
+QLabel#planningPatientSelectionHint {
+    background: transparent;
+    color: #9fb9d3;
+    font-size: 9.5pt;
 }
 
 QLabel#planningHeaderIcon {
@@ -1260,6 +1336,104 @@ QPushButton#treatmentControlButton:disabled {
     color: #7c97b7;
     background-color: #16283e;
     border-color: #29415d;
+}
+
+QPushButton#treatmentTerminatePlanButton {
+    min-height: 36px;
+    padding: 7px 12px;
+    background-color: #5b2028;
+    border: 1px solid #e15454;
+    border-radius: 8px;
+    color: #fff4f4;
+    font-size: 10pt;
+    font-weight: 800;
+}
+
+QPushButton#treatmentTerminatePlanButton:hover {
+    background-color: #7a2a34;
+    border-color: #ff827d;
+}
+
+QPushButton#treatmentTerminatePlanButton:disabled {
+    color: #9e7479;
+    background-color: #2c1e28;
+    border-color: #503641;
+}
+
+QDialog#treatmentTerminationDialog {
+    background-color: #0b1a2b;
+    border: 1px solid #24547f;
+}
+
+QLabel#treatmentTerminationTitle {
+    background: transparent;
+    color: #22d8ff;
+    font-size: 17pt;
+    font-weight: 800;
+}
+
+QLabel#treatmentTerminationDescription {
+    background: transparent;
+    color: #d7e8f8;
+    font-size: 10.5pt;
+    line-height: 1.45;
+}
+
+QFrame#treatmentTerminationNotice {
+    background-color: #132945;
+    border: 1px solid #2d5d8b;
+    border-radius: 9px;
+}
+
+QLabel#treatmentTerminationNoticeLabel {
+    background: transparent;
+    color: #f2f8ff;
+    font-weight: 700;
+}
+
+QLabel#treatmentTerminationGuidanceLabel {
+    background: transparent;
+    color: #a9c3dc;
+    line-height: 1.45;
+}
+
+QPushButton#treatmentTerminationCancelButton,
+QPushButton#treatmentTerminationContinueButton,
+QPushButton#treatmentTerminationEndButton {
+    min-height: 36px;
+    padding: 7px 16px;
+    border-radius: 8px;
+    font-weight: 800;
+}
+
+QPushButton#treatmentTerminationCancelButton {
+    color: #c8d8e8;
+    background-color: #172b45;
+    border: 1px solid #395b7d;
+}
+
+QPushButton#treatmentTerminationCancelButton:hover {
+    background-color: #213d5f;
+}
+
+QPushButton#treatmentTerminationContinueButton {
+    color: #eafff4;
+    background-color: #167757;
+    border: 1px solid #47c995;
+}
+
+QPushButton#treatmentTerminationContinueButton:hover {
+    background-color: #1a9167;
+}
+
+QPushButton#treatmentTerminationEndButton {
+    color: #fff4f4;
+    background-color: #a6383b;
+    border: 1px solid #ff7770;
+}
+
+QPushButton#treatmentTerminationEndButton:hover {
+    background-color: #c54748;
 }
 
 QDialog#treatmentVolumePreviewDialog {

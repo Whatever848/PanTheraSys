@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QStringList>
 #include <QVariant>
 
 namespace panthera::adapters {
@@ -999,6 +1000,38 @@ bool MySqlClinicalDataRepository::deleteTreatmentSession(const QString& treatmen
     if (!database.transaction()) {
         setLastError(database.lastError().text());
         return false;
+    }
+
+    // 影像、设备快照和审计证据均可独立于治疗汇总长期留存。删除治疗汇总时，
+    // 先解除这些可空外键，避免历史证据阻塞数据管理页的基础删除操作。
+    const QStringList detachSessionReferenceStatements {
+        QStringLiteral("UPDATE treatment_continue_import SET previous_session_id = NULL WHERE previous_session_id = :id"),
+        QStringLiteral("UPDATE treatment_continue_import SET new_session_id = NULL WHERE new_session_id = :id"),
+        QStringLiteral("UPDATE clinical_operation_log SET treatment_session_id = NULL WHERE treatment_session_id = :id"),
+        QStringLiteral("UPDATE device_control_event SET treatment_session_id = NULL WHERE treatment_session_id = :id"),
+        QStringLiteral("UPDATE water_pump_status SET treatment_session_id = NULL WHERE treatment_session_id = :id"),
+        QStringLiteral("UPDATE temperature_control_status SET treatment_session_id = NULL WHERE treatment_session_id = :id"),
+        QStringLiteral("UPDATE liquid_level_status SET treatment_session_id = NULL WHERE treatment_session_id = :id"),
+        QStringLiteral("UPDATE robot_arm_status SET treatment_session_id = NULL WHERE treatment_session_id = :id"),
+        QStringLiteral("UPDATE three_motor_status SET treatment_session_id = NULL WHERE treatment_session_id = :id"),
+        QStringLiteral("UPDATE power_device_status SET treatment_session_id = NULL WHERE treatment_session_id = :id"),
+        QStringLiteral("UPDATE historical_treatment_image SET treatment_session_id = NULL WHERE treatment_session_id = :id"),
+        QStringLiteral("UPDATE treatment_image_annotation SET treatment_session_id = NULL WHERE treatment_session_id = :id"),
+        QStringLiteral("UPDATE treatment_image_capture SET treatment_session_id = NULL WHERE treatment_session_id = :id"),
+        QStringLiteral("UPDATE treatment_termination_log SET treatment_session_id = NULL WHERE treatment_session_id = :id"),
+        QStringLiteral("UPDATE medical_evidence_document SET treatment_session_id = NULL WHERE treatment_session_id = :id")
+    };
+    for (int index = 0; index < detachSessionReferenceStatements.size(); ++index) {
+        QSqlQuery detachReference(database);
+        detachReference.prepare(detachSessionReferenceStatements.at(index));
+        detachReference.bindValue(QStringLiteral(":id"), treatmentSessionId);
+        if (!executeQuery(
+                &detachReference,
+                &m_lastError,
+                QStringLiteral("deleteTreatmentSession.detachReference[%1]").arg(index))) {
+            database.rollback();
+            return false;
+        }
     }
 
     QSqlQuery deleteReports(database);

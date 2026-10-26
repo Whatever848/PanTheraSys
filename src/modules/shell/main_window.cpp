@@ -120,11 +120,12 @@ MainWindow::MainWindow(
     navLayout->addWidget(m_planningButton);
     navLayout->addWidget(m_treatmentButton);
     navLayout->addWidget(m_dataButton);
-    navLayout->addStretch();
-
     m_statusLabel = new QLabel();
     m_statusLabel->setObjectName(QStringLiteral("navStatusLabel"));
-    navLayout->addWidget(m_statusLabel);
+    m_statusLabel->setMinimumWidth(0);
+    m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_statusLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    navLayout->addWidget(m_statusLabel, 1);
     navLayout->addSpacing(8);
     navLayout->addWidget(m_planningPersonalizationButton, 0, Qt::AlignVCenter);
 
@@ -172,6 +173,17 @@ MainWindow::MainWindow(
         }
         setActivePage(1, m_planningButton);
     });
+    connect(
+        m_context,
+        &ApplicationContext::treatmentContinuationRequested,
+        this,
+        [this](const QString& previousTreatmentSessionId, const QString& patientId, const QString& planId) {
+            const bool planningPageAlreadyCreated = m_planningPage != nullptr;
+            showPlanning();
+            if (!planningPageAlreadyCreated && m_planningPage != nullptr) {
+                m_planningPage->restoreTreatmentContinuation(previousTreatmentSessionId, patientId, planId);
+            }
+        });
     connect(m_safetyKernel, &SafetyKernel::safetySnapshotChanged, this, &MainWindow::updateStatusBarSummary);
     connect(m_safetyKernel, &SafetyKernel::systemModeChanged, this, &MainWindow::updateStatusBarSummary);
     connect(m_context, &ApplicationContext::currentOperatorChanged, this, &MainWindow::updateStatusBarSummary);
@@ -390,9 +402,11 @@ void MainWindow::deletePlanningPersonalizationProfile(const QString& profileName
 void MainWindow::updateStatusBarSummary()
 {
     const SafetySnapshot snapshot = m_safetyKernel->snapshot();
-    m_statusLabel->setText(
+    const QString summary =
         QStringLiteral("医生：%1 | 系统%2 | 模式：%3 | 联锁：%4")
-            .arg(m_context->currentOperatorLabel(), toDisplayString(snapshot.state), toDisplayString(m_safetyKernel->mode()), snapshot.message));
+            .arg(m_context->currentOperatorLabel(), toDisplayString(snapshot.state), toDisplayString(m_safetyKernel->mode()), snapshot.message);
+    m_statusLabel->setText(summary);
+    m_statusLabel->setToolTip(summary);
 }
 
 void MainWindow::setActivePage(int index, QAbstractButton* activeButton)

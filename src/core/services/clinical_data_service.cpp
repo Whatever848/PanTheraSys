@@ -204,6 +204,9 @@ bool ClinicalDataService::savePatient(PatientRecord* patient)
         setLastError(QStringLiteral("Patient age is out of range."));
         return false;
     }
+    if (patient->gender.trimmed().isEmpty()) {
+        patient->gender = QStringLiteral("\u672a\u8bf4\u660e");
+    }
 
     const QDateTime now = QDateTime::currentDateTime();
     if (patient->id.trimmed().isEmpty()) {

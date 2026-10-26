@@ -1,0 +1,212 @@
+QWidget {
+    background-color: #020505;
+    color: #eaf4ff;
+    font-family: "Microsoft YaHei UI";
+    font-size: 10pt;
+}
+
+QWidget#limitTestPage {
+    background-color: #07182a;
+}
+
+QScrollArea#mainScrollArea {
+    background-color: #07182a;
+    border: none;
+}
+
+QLabel#pageTitle {
+    color: #10d6ff;
+    font-size: 20pt;
+    font-weight: 800;
+    background: transparent;
+}
+
+QLabel#safetyNotice {
+    color: #d9e8f7;
+    background-color: #102238;
+    border: 1px solid #2d5d8b;
+    border-radius: 9px;
+    padding: 10px 12px;
+    font-weight: 700;
+}
+
+QGroupBox {
+    background-color: #0b1a2b;
+    border: 1px solid #143456;
+    border-radius: 12px;
+    margin-top: 10px;
+    padding: 14px 10px 10px 10px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 14px;
+    padding: 0 5px;
+    color: #18dbff;
+    font-weight: 700;
+}
+
+QGroupBox QLabel {
+    background: transparent;
+}
+
+QLineEdit,
+QComboBox,
+QSpinBox {
+    min-height: 28px;
+    background-color: #162c46;
+    border: 1px solid #244664;
+    border-radius: 6px;
+    padding: 4px 9px;
+    selection-background-color: #0f7f93;
+}
+
+QPushButton {
+    min-height: 30px;
+    background-color: #17304c;
+    border: 1px solid #24547f;
+    border-radius: 8px;
+    padding: 5px 13px;
+    color: #ffffff;
+    font-weight: 700;
+}
+
+QPushButton:hover {
+    background-color: #21466d;
+}
+
+QPushButton:disabled {
+    color: #7c97b7;
+    border-color: #29415d;
+    background-color: #16283e;
+}
+
+QPushButton#primaryButton {
+    background-color: #0b91bd;
+    border-color: #2bcce8;
+}
+
+QPushButton#primaryButton:hover {
+    background-color: #11a9d6;
+    border-color: #82edff;
+}
+
+QLabel#connectionState {
+    min-width: 250px;
+    color: #ffc46b;
+    font-weight: 800;
+}
+
+QLabel#connectionState[connected="true"] {
+    color: #52e3a6;
+}
+
+QLabel#testResult {
+    min-height: 32px;
+    padding: 6px 9px;
+    border-radius: 7px;
+    background-color: #102b46;
+    border: 1px solid #21547b;
+    font-weight: 700;
+}
+
+QLabel#testResult[testState="running"] {
+    color: #9be7ff;
+    border-color: #19bfe9;
+}
+
+QLabel#testResult[testState="passed"] {
+    color: #caffdf;
+    background-color: #123c30;
+    border-color: #35cc6d;
+}
+
+QLabel#testResult[testState="failed"] {
+    color: #ffd7d7;
+    background-color: #3a1014;
+    border-color: #df4338;
+}
+
+QLabel#testResult[testState="warning"] {
+    color: #ffe0a6;
+    background-color: #3c2c10;
+    border-color: #c68a2c;
+}
+
+QLabel#testPrompt {
+    color: #9fb9d3;
+    background: transparent;
+    padding: 4px 0;
+}
+
+QTableWidget {
+    background-color: #0f2238;
+    alternate-background-color: #102842;
+    border: 1px solid #1c4266;
+    border-radius: 8px;
+    gridline-color: #193650;
+    selection-background-color: #0d6d78;
+}
+
+QHeaderView::section {
+    background-color: #132c47;
+    color: #f6fbff;
+    padding: 7px;
+    border: 0;
+    border-right: 1px solid #244664;
+    font-weight: 700;
+}
+
+QLabel#systemMessage {
+    color: #afc1d4;
+    background-color: #09182b;
+    border: 1px solid #143456;
+    border-radius: 7px;
+    padding: 7px 10px;
+}
+
+QLabel#diagnosticTitle {
+    color: #9be7ff;
+    background: transparent;
+    font-weight: 700;
+    padding: 2px 0;
+}
+
+QPlainTextEdit#diagnosticLog {
+    color: #d7ebff;
+    background-color: #020b12;
+    border: 1px solid #1c4266;
+    border-radius: 8px;
+    padding: 7px;
+    selection-background-color: #0d6d78;
+    font-family: "Consolas", "Microsoft YaHei UI";
+    font-size: 9pt;
+}
+
+QStatusBar {
+    background-color: #11223b;
+    color: #afc1d4;
+}
+
+QScrollBar:vertical {
+    background-color: #203247;
+    width: 12px;
+    margin: 2px 0;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #d8e2ee;
+    min-height: 50px;
+    border-radius: 6px;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: transparent;
+    border: none;
+    height: 0;
+}
+

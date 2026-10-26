@@ -100,12 +100,15 @@ public:
     bool setClosedLoopEncoderPosition(int encoderPosition, QString* errorMessage = nullptr);
     bool setDigitalOutput(bool high, QString* errorMessage = nullptr);
     bool readDigitalOutput(bool* high, QString* errorMessage = nullptr);
-    bool refreshSnapshot(QString* errorMessage = nullptr);
+    bool refreshSnapshot(QString* errorMessage = nullptr, bool includeSensorFeedback = true);
     bool refreshSensorFeedback(QString* errorMessage = nullptr);
     bool readSensorDebounceConfig(UimSensorDebounceConfig* config, QString* errorMessage = nullptr);
     bool setSensorDebounce(int sensorIndex, int milliseconds, QString* errorMessage = nullptr);
     bool readSensorActionConfig(UimSensorActionConfig* config, QString* errorMessage = nullptr);
     bool setSensorActionConfig(const UimSensorActionConfig& config, QString* errorMessage = nullptr);
+    // Updates only S1/S2 falling-edge actions and preserves the rising-edge
+    // and S3 configuration. This avoids unnecessary S3 bus transactions.
+    bool setSensor12FallingAction(int action, QString* errorMessage = nullptr);
 
     [[nodiscard]] UimMotorSnapshot latestSnapshot() const;
     [[nodiscard]] QString lastError() const;

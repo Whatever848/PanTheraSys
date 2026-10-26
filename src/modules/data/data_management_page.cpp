@@ -1,9 +1,13 @@
 #include "modules/data/data_management_page.h"
 
+#include "adapters/mysql/mysql_treatment_workflow_repository.h"
+
 #include <algorithm>
 
 #include <QAbstractItemView>
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -25,6 +29,7 @@
 #include <QTableWidgetItem>
 #include <QTextStream>
 #include <QToolButton>
+#include <QUrl>
 #include <QVBoxLayout>
 
 namespace panthera::modules {
@@ -111,6 +116,32 @@ QString previewPathForStorage(const QString& storagePath)
         QDir::Files,
         QDirIterator::Subdirectories);
     return iterator.hasNext() ? iterator.next() : QString();
+}
+
+QString localEvidenceDocumentPath(const QString& treatmentSessionId)
+{
+    if (treatmentSessionId.trimmed().isEmpty()) {
+        return {};
+    }
+
+    const QString relativePath = QStringLiteral("runtime/evidence_documents/%1/%1.docx").arg(treatmentSessionId);
+    const QList<QDir> initialDirectories {
+        QDir::current(),
+        QDir(QCoreApplication::applicationDirPath()),
+        QDir(QStringLiteral("D:/PanSoftware/PanTheraSys"))
+    };
+    for (QDir directory : initialDirectories) {
+        for (int depth = 0; depth <= 6; ++depth) {
+            const QString candidate = QDir::cleanPath(directory.absoluteFilePath(relativePath));
+            if (QFileInfo::exists(candidate)) {
+                return QFileInfo(candidate).absoluteFilePath();
+            }
+            if (!directory.cdUp()) {
+                break;
+            }
+        }
+    }
+    return {};
 }
 
 QString reportListText(const TreatmentReportRecord& report)
@@ -228,15 +259,39 @@ DataManagementPage::DataManagementPage(
     m_patientAgeSpin->setRange(0, 150);
     m_patientAgeSpin->setFixedWidth(260);
 
+    m_patientGenderCombo = new QComboBox();
+    m_patientGenderCombo->setFixedWidth(260);
+    m_patientGenderCombo->addItem(QStringLiteral("\u5973"), QStringLiteral("\u5973"));
+    m_patientGenderCombo->addItem(QStringLiteral("\u7537"), QStringLiteral("\u7537"));
+    m_patientGenderCombo->addItem(QStringLiteral("\u672a\u8bf4\u660e"), QStringLiteral("\u672a\u8bf4\u660e"));
+
+    m_patientContactEdit = new QLineEdit();
+    m_patientContactEdit->setFixedWidth(260);
+    m_patientContactEdit->setPlaceholderText(QStringLiteral("\u8054\u7cfb\u65b9\u5f0f"));
+
     m_patientDiagnosisEdit = new QPlainTextEdit();
     m_patientDiagnosisEdit->setMinimumWidth(610);
     m_patientDiagnosisEdit->setMinimumHeight(260);
     m_patientDiagnosisEdit->setTabChangesFocus(true);
 
+    m_patientCreatedAtValue = new QLineEdit();
+    m_patientCreatedAtValue->setObjectName(QStringLiteral("patientReadOnlyField"));
+    m_patientCreatedAtValue->setReadOnly(true);
+    m_patientCreatedAtValue->setFixedWidth(260);
+
+    m_patientUpdatedAtValue = new QLineEdit();
+    m_patientUpdatedAtValue->setObjectName(QStringLiteral("patientReadOnlyField"));
+    m_patientUpdatedAtValue->setReadOnly(true);
+    m_patientUpdatedAtValue->setFixedWidth(260);
+
     detailLayout->addRow(QStringLiteral("患者ID"), m_patientIdValue);
     detailLayout->addRow(QStringLiteral("患者姓名"), m_patientNameEdit);
     detailLayout->addRow(QStringLiteral("患者年龄"), m_patientAgeSpin);
+    detailLayout->addRow(QStringLiteral("性别"), m_patientGenderCombo);
+    detailLayout->addRow(QStringLiteral("联系方式"), m_patientContactEdit);
     detailLayout->addRow(QStringLiteral("诊断结果"), m_patientDiagnosisEdit);
+    detailLayout->addRow(QStringLiteral("建档时间"), m_patientCreatedAtValue);
+    detailLayout->addRow(QStringLiteral("最后更新时间"), m_patientUpdatedAtValue);
     patientDetailLayout->addLayout(detailLayout);
     patientInfoLayout->addWidget(patientDetailPanel, 1);
 
@@ -455,16 +510,18 @@ DataManagementPage::DataManagementPage(
     treatmentHeaderLayout->addWidget(m_saveTreatmentButton);
     treatmentHeaderLayout->addWidget(m_deleteTreatmentButton);
 
-    m_treatmentTable = new QTableWidget(0, 7);
+    m_treatmentTable = new QTableWidget(0, 6);
     m_treatmentTable->setHorizontalHeaderLabels(
         {QStringLiteral("治疗ID"),
-         QStringLiteral("方案ID"),
-         QStringLiteral("病灶类型"),
          QStringLiteral("治疗日期"),
+         QStringLiteral("状态"),
          QStringLiteral("总能量(J)"),
          QStringLiteral("总时长(s)"),
-         QStringLiteral("状态")});
+         QStringLiteral("证据文档")});
     m_treatmentTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_treatmentTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_treatmentTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Fixed);
+    m_treatmentTable->horizontalHeader()->resizeSection(5, 112);
     m_treatmentTable->verticalHeader()->setVisible(false);
     m_treatmentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_treatmentTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -769,6 +826,11 @@ void DataManagementPage::onTreatmentSelectionChanged()
     setSelectedTreatmentSession(idItem == nullptr ? QString() : idItem->data(Qt::UserRole).toString());
 }
 
+void DataManagementPage::onOpenTreatmentEvidenceDocumentClicked()
+{
+    openTreatmentEvidenceDocument(m_selectedTreatmentSessionId);
+}
+
 void DataManagementPage::onAddTreatmentReportClicked()
 {
     m_selectedTreatmentReportId.clear();
@@ -874,14 +936,27 @@ void DataManagementPage::refreshPatientOverview(const PatientRecord* patient)
         m_patientIdValue->clear();
         m_patientNameEdit->clear();
         m_patientAgeSpin->setValue(0);
+        m_patientGenderCombo->setCurrentIndex(0);
+        m_patientContactEdit->clear();
         m_patientDiagnosisEdit->clear();
+        m_patientCreatedAtValue->clear();
+        m_patientUpdatedAtValue->clear();
         return;
     }
 
     m_patientIdValue->setText(patient->id);
     m_patientNameEdit->setText(patient->name);
     m_patientAgeSpin->setValue(patient->age);
+    const int genderIndex = m_patientGenderCombo->findData(patient->gender.trimmed());
+    m_patientGenderCombo->setCurrentIndex(genderIndex >= 0 ? genderIndex : 2);
+    m_patientContactEdit->setText(patient->contact);
     m_patientDiagnosisEdit->setPlainText(patient->diagnosis);
+    m_patientCreatedAtValue->setText(patient->createdAt.isValid()
+            ? patient->createdAt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+            : QString());
+    m_patientUpdatedAtValue->setText(patient->updatedAt.isValid()
+            ? patient->updatedAt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+            : QString());
 }
 
 void DataManagementPage::setPatientPanelMode(PatientPanelMode mode)
@@ -898,6 +973,8 @@ void DataManagementPage::setPatientPanelMode(PatientPanelMode mode)
     m_patientNameEdit->setReadOnly(!editable);
     m_patientAgeSpin->setReadOnly(!editable);
     m_patientAgeSpin->setButtonSymbols(editable ? QAbstractSpinBox::UpDownArrows : QAbstractSpinBox::NoButtons);
+    m_patientGenderCombo->setEnabled(editable);
+    m_patientContactEdit->setReadOnly(!editable);
     m_patientDiagnosisEdit->setReadOnly(!editable);
     m_panelTitleLabel->setText(QStringLiteral("患者详细档案"));
 
@@ -1042,6 +1119,8 @@ bool DataManagementPage::saveCurrentPatient()
     PatientRecord patient = creating ? PatientRecord {} : m_context->selectedPatient();
     patient.name = m_patientNameEdit->text().trimmed();
     patient.age = m_patientAgeSpin->value();
+    patient.gender = m_patientGenderCombo->currentData().toString();
+    patient.contact = m_patientContactEdit->text().trimmed();
     patient.diagnosis = m_patientDiagnosisEdit->toPlainText().trimmed();
 
     if (!m_clinicalDataService.savePatient(&patient)) {
@@ -1168,7 +1247,9 @@ bool DataManagementPage::importPatientsFromCsv()
         patient.id = importedRow.id.trimmed();
         patient.name = importedRow.name.trimmed();
         patient.age = importedRow.age;
+        patient.gender = importedRow.gender.trimmed();
         patient.diagnosis = importedRow.diagnosis.trimmed();
+        patient.contact = importedRow.contact.trimmed();
 
         if (!m_clinicalDataService.savePatient(&patient)) {
             ++failedCount;
@@ -1268,6 +1349,12 @@ bool DataManagementPage::parseImportedPatientRow(
         row->name = columnValue(nameIndex);
         row->diagnosis = columnValue(diagnosisIndex);
         row->age = columnValue(ageIndex).toInt();
+        row->gender = columnValue(headerIndexMap.value(
+            QStringLiteral("gender"),
+            headerIndexMap.value(QStringLiteral("\u6027\u522b"), headerIndexMap.value(QStringLiteral("patientgender"), -1))));
+        row->contact = columnValue(headerIndexMap.value(
+            QStringLiteral("contact"),
+            headerIndexMap.value(QStringLiteral("\u8054\u7cfb\u65b9\u5f0f"), headerIndexMap.value(QStringLiteral("phone"), -1))));
     } else if (columns.size() == 3) {
         row->name = columnValue(0);
         row->age = columnValue(1).toInt();
@@ -1277,6 +1364,14 @@ bool DataManagementPage::parseImportedPatientRow(
         row->name = columnValue(1);
         row->age = columnValue(2).toInt();
         row->diagnosis = columnValue(3);
+        if (columns.size() == 5) {
+            row->gender = columnValue(3);
+            row->diagnosis = columnValue(4);
+        } else if (columns.size() >= 6) {
+            row->gender = columnValue(3);
+            row->diagnosis = columnValue(4);
+            row->contact = columnValue(5);
+        }
     } else {
         if (error != nullptr) {
             *error = QStringLiteral("列数不足，至少需要姓名、年龄、诊断结果。");
@@ -1485,12 +1580,32 @@ void DataManagementPage::fillTreatmentTable(const QVector<TreatmentSessionRecord
         auto* idItem = new QTableWidgetItem(session.id);
         idItem->setData(Qt::UserRole, session.id);
         m_treatmentTable->setItem(row, 0, idItem);
-        m_treatmentTable->setItem(row, 1, new QTableWidgetItem(session.planId));
-        m_treatmentTable->setItem(row, 2, new QTableWidgetItem(session.lesionType));
-        m_treatmentTable->setItem(row, 3, new QTableWidgetItem(session.treatmentDate.toString(QStringLiteral("yyyy-MM-dd hh:mm"))));
-        m_treatmentTable->setItem(row, 4, new QTableWidgetItem(QString::number(session.totalEnergyJ, 'f', 0)));
-        m_treatmentTable->setItem(row, 5, new QTableWidgetItem(QString::number(session.totalDurationSeconds, 'f', 1)));
-        m_treatmentTable->setItem(row, 6, new QTableWidgetItem(session.status));
+        m_treatmentTable->setItem(row, 1, new QTableWidgetItem(session.treatmentDate.toString(QStringLiteral("yyyy-MM-dd hh:mm"))));
+        m_treatmentTable->setItem(row, 2, new QTableWidgetItem(session.status));
+        m_treatmentTable->setItem(row, 3, new QTableWidgetItem(QString::number(session.totalEnergyJ, 'f', 0)));
+        m_treatmentTable->setItem(row, 4, new QTableWidgetItem(QString::number(session.totalDurationSeconds, 'f', 1)));
+        adapters::MySqlTreatmentWorkflowRepository evidenceRepository;
+        QString evidencePath;
+        QString evidenceError;
+        const bool hasRegisteredEvidence = evidenceRepository.findLatestEvidenceDocumentPath(
+            session.id,
+            &evidencePath,
+            &evidenceError);
+        const bool hasEvidenceDocument = (hasRegisteredEvidence && QFileInfo::exists(evidencePath))
+            || !localEvidenceDocumentPath(session.id).isEmpty();
+        auto* openEvidenceButton = new QPushButton(
+            hasEvidenceDocument ? QStringLiteral("\u67e5\u770b\u6587\u6863") : QStringLiteral("\u65e0\u8bc1\u636e\u6587\u6863"));
+        openEvidenceButton->setObjectName(QStringLiteral("panelActionButton"));
+        openEvidenceButton->setEnabled(hasEvidenceDocument);
+        openEvidenceButton->setToolTip(hasEvidenceDocument
+                ? QStringLiteral("\u6253\u5f00\u672c\u6b21\u6cbb\u7597\u5df2\u767b\u8bb0\u7684\u8bc1\u636e\u6587\u6863")
+                : (session.status == QStringLiteral("\u5f85\u7ee7\u7eed\u6cbb\u7597")
+                        ? QStringLiteral("\u5df2\u9009\u62e9\u7ee7\u7eed\u6cbb\u7597\uff0c\u6b64\u4f1a\u8bdd\u4e0d\u751f\u6210\u7ed3\u675f\u8bc1\u636e\u6587\u6863")
+                        : QStringLiteral("\u8be5\u6cbb\u7597\u8bb0\u5f55\u6682\u65e0\u5df2\u751f\u6210\u7684\u8bc1\u636e\u6587\u6863")));
+        connect(openEvidenceButton, &QPushButton::clicked, this, [this, treatmentSessionId = session.id]() {
+            openTreatmentEvidenceDocument(treatmentSessionId);
+        });
+        m_treatmentTable->setCellWidget(row, 5, openEvidenceButton);
 
         if (session.id == m_selectedTreatmentSessionId) {
             selectedRow = row;
@@ -1631,6 +1746,75 @@ bool DataManagementPage::deleteCurrentTreatmentSession()
     m_selectedTreatmentReportId.clear();
     refreshFromContext();
     return true;
+}
+
+void DataManagementPage::openTreatmentEvidenceDocument(const QString& treatmentSessionId)
+{
+    if (treatmentSessionId.trimmed().isEmpty()) {
+        return;
+    }
+
+    adapters::MySqlTreatmentWorkflowRepository repository;
+    QString documentPath;
+    QString error;
+    const bool hasRegisteredDocument = repository.findLatestEvidenceDocumentPath(treatmentSessionId, &documentPath, &error);
+    if (!hasRegisteredDocument || !QFileInfo::exists(documentPath)) {
+        const QString recoveredPath = localEvidenceDocumentPath(treatmentSessionId);
+        if (!recoveredPath.isEmpty()) {
+            documentPath = recoveredPath;
+            const auto sessionIt = std::find_if(
+                m_currentTreatmentSessions.cbegin(),
+                m_currentTreatmentSessions.cend(),
+                [&treatmentSessionId](const TreatmentSessionRecord& candidate) {
+                    return candidate.id == treatmentSessionId;
+                });
+            const TreatmentSessionRecord* session = sessionIt == m_currentTreatmentSessions.cend()
+                ? nullptr
+                : &(*sessionIt);
+            if (session != nullptr) {
+                QString recoveryError;
+                if (!repository.registerRecoveredEvidenceDocument(
+                        treatmentSessionId,
+                        session->patientId,
+                        documentPath,
+                        QFileInfo(documentPath).lastModified(),
+                        &recoveryError)) {
+                    error = recoveryError;
+                }
+            }
+        }
+    }
+    if (documentPath.trimmed().isEmpty()) {
+        const TreatmentSessionRecord* session = findSelectedTreatmentSession();
+        const QString guidance = session != nullptr && session->status == QStringLiteral("\u5f85\u7ee7\u7eed\u6cbb\u7597")
+            ? QStringLiteral("\u6b64\u4f1a\u8bdd\u5df2\u9009\u62e9\u201c\u7ee7\u7eed\u6cbb\u7597\u201d\uff0c\u4e0d\u4f1a\u751f\u6210\u7ed3\u675f\u8bc1\u636e\u6587\u6863\u3002")
+            : QStringLiteral("\u8bf7\u5728\u6cbb\u7597\u6267\u884c\u9875\u70b9\u51fb\u201c\u7ec8\u6b62\u65b9\u6848\u201d\u5e76\u9009\u62e9\u201c\u7ed3\u675f\u65b9\u6848\u201d\uff0c\u7cfb\u7edf\u4f1a\u751f\u6210\u5e76\u767b\u8bb0\u8bc1\u636e\u6587\u6863\u3002");
+        QMessageBox::information(
+            this,
+            QStringLiteral("\u8bc1\u636e\u6587\u6863"),
+            QStringLiteral("\u5f53\u524d\u6cbb\u7597\u6682\u65e0\u53ef\u67e5\u770b\u7684\u8bc1\u636e\u6587\u6863\u3002\n%1\n\n\u8be6\u7ec6\u4fe1\u606f\uff1a%2").arg(guidance, error));
+        return;
+    }
+    if (!QFileInfo::exists(documentPath)) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("\u8bc1\u636e\u6587\u6863\u7f3a\u5931"),
+            QStringLiteral("\u6570\u636e\u5e93\u5df2\u767b\u8bb0\u6587\u6863\u8def\u5f84\uff0c\u4f46\u672c\u5730\u6587\u4ef6\u4e0d\u5b58\u5728\uff1a%1").arg(documentPath));
+        return;
+    }
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(documentPath))) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("\u65e0\u6cd5\u6253\u5f00\u6587\u6863"),
+            QStringLiteral("\u7cfb\u7edf\u65e0\u6cd5\u6253\u5f00\uff1a%1").arg(documentPath));
+        return;
+    }
+    if (m_auditService != nullptr) {
+        m_auditService->appendEntry(
+            QStringLiteral("physician"),
+            QStringLiteral("treatment_evidence"),
+            QStringLiteral("open evidence document: %1").arg(treatmentSessionId));
+    }
 }
 
 void DataManagementPage::fillReportList(const QVector<TreatmentReportRecord>& treatmentReports)

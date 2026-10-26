@@ -1,0 +1,45 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "mingw-debug",
+      "displayName": "UIM limit sensor test - MinGW Debug",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build/mingw",
+      "environment": {
+        "PATH": "D:/PanSoftware/QT/6.2.0/mingw81_64/bin;D:/PanSoftware/QT/Tools/mingw810_64/bin;$penv{PATH}"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_PREFIX_PATH": "D:/PanSoftware/QT/6.2.0/mingw81_64",
+        "Qt6_DIR": "D:/PanSoftware/QT/6.2.0/mingw81_64/lib/cmake/Qt6",
+        "CMAKE_CXX_COMPILER": "D:/PanSoftware/QT/Tools/mingw810_64/bin/g++.exe",
+        "CMAKE_MAKE_PROGRAM": "D:/PanSoftware/QT/Tools/mingw810_64/bin/mingw32-make.exe",
+        "UIM_LIMIT_BUILD_TESTS": "ON",
+        "UIM_SDK_DLL_PATH": "D:/PanSoftware/UIMDemo/UISimCanFunc.dll"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "mingw-debug",
+      "configurePreset": "mingw-debug",
+      "jobs": 4
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "mingw-debug",
+      "configurePreset": "mingw-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
+

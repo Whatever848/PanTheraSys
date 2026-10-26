@@ -67,6 +67,7 @@ public:
 
 public slots:
     void showTreatmentComparisonLayer(const QString& planId, int layerIndex, bool treatmentActive);
+    void restoreTreatmentContinuation(const QString& previousTreatmentSessionId, const QString& patientId, const QString& planId);
 
 private slots:
     void loadDemoPatient(bool refreshHistoricalImages = true);
@@ -194,6 +195,13 @@ private:
     bool waitForLatestAcquisitionFrame(int timeoutMs) const;
     QPixmap latestAcquisitionFramePixmap() const;
     void persistCurrentSliceAnnotations();
+    void persistCurrentSliceAnnotationSnapshot(const QString& savedReason);
+    void persistAllSliceAnnotationSnapshots(const QString& savedReason);
+    bool rebuildContinuationSlices(
+        const QString& previousTreatmentSessionId,
+        const panthera::core::TherapyPlan& previousPlan,
+        panthera::core::TherapyPlan* continuationPlan,
+        QString* errorMessage);
     void loadStagedSlice(int row);
     QPixmap renderCurrentSlicePixmap(int row, const QSize& size) const;
     void refreshCurrentSliceVisualization();

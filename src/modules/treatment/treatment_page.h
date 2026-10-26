@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QComboBox>
+#include <QDateTime>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QLabel>
@@ -9,6 +10,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSlider>
+#include <QStringList>
 #include <QTimer>
 #include <QToolButton>
 #include <QVector>
@@ -47,6 +49,7 @@ private slots:
     void pauseTreatment();
     void resumeTreatment();
     void stopTreatment();
+    void terminateTreatmentPlan();
     void advanceProgress();
     void onActivePlanChanged(const panthera::core::TherapyPlan& plan);
     void onActivePlanCleared();
@@ -89,10 +92,17 @@ private:
         DrainingTank2
     };
 
+    enum class PlanTerminationChoice {
+        Cancel,
+        ContinueTreatment,
+        TerminateTreatment
+    };
+
     void setButtonState(bool canStart, bool canPause, bool canResume, bool canStop);
     QWidget* createFluidControlCard();
     bool isPlanTreatable(const panthera::core::TherapyPlan& plan) const;
     bool canTreatSelectedLayer() const;
+    PlanTerminationChoice promptForPlanTermination();
     int layerCount(const panthera::core::TherapyPlan* plan = nullptr) const;
     int normalizedLayerIndex(const panthera::core::TherapyPlan& plan) const;
     int visualizationSliceIndexForSelectedLayer(const panthera::core::TherapyPlan& plan) const;
@@ -107,6 +117,9 @@ private:
     double planElapsedDurationSeconds(const panthera::core::TherapyPlan& plan) const;
     double planPlannedDurationSeconds(const panthera::core::TherapyPlan& plan) const;
     int completedPointCountForLayer(int layerIndex, const panthera::core::TherapyPlan& plan) const;
+    int totalCompletedPointCount(const panthera::core::TherapyPlan& plan) const;
+    int totalPointCountForPlan(const panthera::core::TherapyPlan& plan) const;
+    double totalDeliveredEnergyJ() const;
     void ensureLayerProgressStorage(const panthera::core::TherapyPlan& plan);
     void updateVolumeButtonState();
     QString planComboText(const panthera::core::TherapyPlan& plan) const;
@@ -119,6 +132,11 @@ private:
     void updateProgressText();
     void appendLog(const QString& line);
     void finalizeTreatment(const QString& status);
+    bool persistManualTreatmentOutcome(bool continueTreatment, const QString& finalStatus, QString* treatmentSessionId = nullptr);
+    QStringList treatmentEvidenceLines(
+        const panthera::core::TreatmentSessionRecord& treatmentSession,
+        const QString& finalStatus) const;
+    QString treatmentPathSummary() const;
     void refreshAvailablePlans(bool keepSelectionBlank = false);
     bool prepareTreatmentMotorGateway(QString* errorMessage);
     bool selectTreatmentMotor(quint32 nodeId, QString* errorMessage);
@@ -206,6 +224,7 @@ private:
     QPushButton* m_startButton {nullptr};
     QPushButton* m_pauseButton {nullptr};
     QPushButton* m_stopButton {nullptr};
+    QPushButton* m_terminatePlanButton {nullptr};
     QPushButton* m_generate3dButton {nullptr};
     QLabel* m_fluidStatusLabel {nullptr};
     QLabel* m_temperatureStatusLabel {nullptr};
@@ -247,7 +266,11 @@ private:
     int m_selectedLayerIndex {0};
     int m_completedPointCount {0};
     double m_deliveredEnergyJ {0.0};
+    QDateTime m_treatmentStartedAt;
+    QDateTime m_planTreatmentStartedAt;
     QVector<int> m_layerCompletedPointCounts;
+    QVector<double> m_layerDeliveredEnergyJ;
+    QString m_progressPlanId;
     int m_treatmentSwingCenterSteps {0};
     bool m_hasTreatmentSwingCenter {false};
     bool m_deferStartupPlanSelection {true};

@@ -15,7 +15,7 @@ struct DobotPayloadPresetOptions {
 
     // Optional fallback: if SetPayload(TEST) fails, call EnableRobot(load,cx,cy,cz[,isCheck]).
     bool fallbackToExplicitEnableRobot = false;
-    double loadKg = 7.5;
+    double loadKg = 20.0;
     double centerX = 0.0;
     double centerY = 0.0;
     double centerZ = 0.0;

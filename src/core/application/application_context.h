@@ -51,6 +51,7 @@ public:
     void setCurrentRole(RoleType role);
 
     void requestTreatmentLayerVisualization(const QString& planId, int layerIndex, bool treatmentActive);
+    void requestTreatmentContinuation(const QString& previousTreatmentSessionId, const QString& patientId, const QString& planId);
     void updateTreatmentCameraFrame(const QImage& frame, const QString& cameraDescription = {});
     bool hasLatestTreatmentCameraFrame() const;
     QImage latestTreatmentCameraFrame() const;
@@ -64,6 +65,7 @@ signals:
     void activePlanCleared();
     void currentRoleChanged(panthera::core::RoleType role);
     void treatmentLayerVisualizationRequested(const QString& planId, int layerIndex, bool treatmentActive);
+    void treatmentContinuationRequested(const QString& previousTreatmentSessionId, const QString& patientId, const QString& planId);
     void treatmentCameraFrameUpdated(const QImage& frame, const QString& cameraDescription);
 
 private:

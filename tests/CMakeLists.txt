@@ -221,3 +221,44 @@ set_tests_properties(
         ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:PanTheraConsole>;PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_QPA_PLATFORM_PLUGIN_PATH=set:$<TARGET_FILE_DIR:PanTheraConsole>/platforms"
 )
+
+add_executable(
+    panthera_login_dialog_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/login_dialog_tests.cpp
+)
+
+target_link_libraries(
+    panthera_login_dialog_tests
+    PRIVATE
+        panthera_core
+        panthera_adapters
+        panthera_modules
+        Qt6::Test
+        Qt6::Widgets
+)
+
+add_test(NAME panthera_login_dialog_tests COMMAND panthera_login_dialog_tests)
+set_tests_properties(
+    panthera_login_dialog_tests
+    PROPERTIES
+        ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:PanTheraConsole>;PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_QPA_PLATFORM_PLUGIN_PATH=set:$<TARGET_FILE_DIR:PanTheraConsole>/platforms"
+)
+
+add_executable(
+    panthera_device_monitor_limit_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/device_monitor_limit_tests.cpp
+)
+add_library(panthera_fake_uim_sdk SHARED ${CMAKE_CURRENT_SOURCE_DIR}/support/fake_uim_sdk.cpp)
+target_link_libraries(panthera_fake_uim_sdk PRIVATE Qt6::Core)
+add_dependencies(panthera_device_monitor_limit_tests panthera_fake_uim_sdk)
+target_compile_definitions(panthera_device_monitor_limit_tests PRIVATE
+    PANTHERA_FAKE_UIM_SDK_PATH="$<TARGET_FILE:panthera_fake_uim_sdk>")
+target_link_libraries(panthera_device_monitor_limit_tests PRIVATE panthera_modules Qt6::Test Qt6::Widgets)
+add_test(NAME panthera_device_monitor_limit_tests COMMAND panthera_device_monitor_limit_tests)
+set_tests_properties(
+    panthera_device_monitor_limit_tests
+    PROPERTIES
+        ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:PanTheraConsole>;PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_QPA_PLATFORM_PLUGIN_PATH=set:$<TARGET_FILE_DIR:PanTheraConsole>/platforms"
+)

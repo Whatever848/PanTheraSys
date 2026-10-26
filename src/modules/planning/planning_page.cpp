@@ -1,6 +1,7 @@
 #include "modules/planning/planning_page.h"
 
 #include "adapters/dobot/dobot_tcp_client.h"
+#include "adapters/mysql/mysql_treatment_workflow_repository.h"
 #include "modules/shared/system_sound_guard.h"
 #include "modules/shared/ultrasound_geometry.h"
 
@@ -25,6 +26,9 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QImageReader>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLineEdit>
 #include <QListWidgetItem>
 #include <QScrollArea>
@@ -212,6 +216,82 @@ PatientRecord buildFallbackPatient()
 QString createPlanId()
 {
     return QStringLiteral("PLAN-%1").arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMddhhmmss")));
+}
+
+QString continuationPlanId(const QString& previousPlanId)
+{
+    return QStringLiteral("%1-C-%2")
+        .arg(previousPlanId.left(40), QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMddhhmmsszzz")));
+}
+
+QString workflowImageId(const QString& prefix, const QString& planId, int sliceIndex)
+{
+    return QStringLiteral("%1-%2-%3").arg(prefix, planId.left(48)).arg(sliceIndex + 1).left(64);
+}
+
+QString annotationPayload(
+    const QVector<AnnotationStroke>& annotations,
+    double spacingMm,
+    double dwellSeconds,
+    double powerWatts,
+    TreatmentPattern pattern,
+    const QString& deliveryMode,
+    int targetCount)
+{
+    QJsonArray strokeArray;
+    for (const AnnotationStroke& stroke : annotations) {
+        QJsonArray pointArray;
+        for (const QPointF& point : stroke.normalizedPoints) {
+            QJsonArray pair;
+            pair.append(point.x());
+            pair.append(point.y());
+            pointArray.append(pair);
+        }
+        QJsonObject strokeObject;
+        strokeObject.insert(QStringLiteral("color"), stroke.color.name(QColor::HexArgb));
+        strokeObject.insert(QStringLiteral("points"), pointArray);
+        strokeArray.append(strokeObject);
+    }
+
+    QJsonObject payload;
+    payload.insert(QStringLiteral("strokes"), strokeArray);
+    payload.insert(QStringLiteral("spacing_mm"), spacingMm);
+    payload.insert(QStringLiteral("dwell_seconds"), dwellSeconds);
+    payload.insert(QStringLiteral("power_w"), powerWatts);
+    payload.insert(QStringLiteral("pattern"), pattern == TreatmentPattern::Line ? QStringLiteral("line") : QStringLiteral("point"));
+    payload.insert(QStringLiteral("delivery_mode"), deliveryMode);
+    payload.insert(QStringLiteral("target_count"), targetCount);
+    return QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+}
+
+QVector<AnnotationStroke> annotationsFromPayload(const QString& payloadText)
+{
+    const QJsonDocument document = QJsonDocument::fromJson(payloadText.toUtf8());
+    if (!document.isObject()) {
+        return {};
+    }
+
+    QVector<AnnotationStroke> annotations;
+    const QJsonArray strokes = document.object().value(QStringLiteral("strokes")).toArray();
+    for (const QJsonValue& strokeValue : strokes) {
+        const QJsonObject strokeObject = strokeValue.toObject();
+        AnnotationStroke stroke;
+        stroke.color = QColor(strokeObject.value(QStringLiteral("color")).toString());
+        if (!stroke.color.isValid()) {
+            stroke.color = QColor(201, 71, 51);
+        }
+        const QJsonArray points = strokeObject.value(QStringLiteral("points")).toArray();
+        for (const QJsonValue& pointValue : points) {
+            const QJsonArray pair = pointValue.toArray();
+            if (pair.size() >= 2) {
+                stroke.normalizedPoints.push_back(QPointF(pair.at(0).toDouble(), pair.at(1).toDouble()));
+            }
+        }
+        if (!stroke.normalizedPoints.isEmpty()) {
+            annotations.push_back(stroke);
+        }
+    }
+    return annotations;
 }
 
 QString patientDisplayLabel(const PatientRecord& patient)
@@ -671,6 +751,49 @@ PlanningPage::PlanningPage(
     leftColumn->setSpacing(10);
     leftColumn->setContentsMargins(10, 10, 10, 10);
 
+    auto* patientCard = new QFrame();
+    patientCard->setObjectName(QStringLiteral("planningSidebarCard"));
+    patientCard->setMinimumWidth(292);
+    patientCard->setMinimumHeight(62);
+    patientCard->setMaximumHeight(154);
+    patientCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
+    auto* patientLayout = new QVBoxLayout(patientCard);
+    patientLayout->setContentsMargins(12, 12, 12, 12);
+    patientLayout->setSpacing(10);
+
+    auto* patientHeader = new QHBoxLayout();
+    auto* patientTitle = new QLabel(QStringLiteral("治疗患者"));
+    patientTitle->setObjectName(QStringLiteral("planningCardTitle"));
+    patientHeader->addWidget(patientTitle);
+    patientHeader->addStretch();
+    patientHeader->addWidget(createHeaderMarker());
+
+    m_patientCombo = new QComboBox();
+    m_patientCombo->setObjectName(QStringLiteral("planningPatientSelector"));
+    m_patientCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_patientCombo->setMinimumContentsLength(16);
+    m_patientCombo->setMaxVisibleItems(12);
+    m_patientCombo->setMinimumHeight(34);
+    m_patientCombo->setToolTip(QStringLiteral("从数据管理中的在用患者档案选择本次治疗患者。必须先选定患者，才能进行图像采集和后续治疗。"));
+
+    auto* patientHint = new QLabel(QStringLiteral("请先选择患者，再进行图像通道采集、靶点规划和治疗执行。"));
+    patientHint->setObjectName(QStringLiteral("planningPatientSelectionHint"));
+    patientHint->setWordWrap(true);
+
+    auto* patientBody = createSectionBody();
+    auto* patientBodyLayout = new QVBoxLayout(patientBody);
+    patientBodyLayout->setContentsMargins(0, 0, 0, 0);
+    patientBodyLayout->setSpacing(6);
+    patientBodyLayout->addWidget(m_patientCombo);
+    patientBodyLayout->addWidget(patientHint);
+    auto* patientCollapseButton = createCollapseButton(patientBody, true);
+    patientHeader->addWidget(patientCollapseButton);
+    registerCollapseSection(QStringLiteral("patientSelector"), patientCollapseButton);
+
+    patientLayout->addLayout(patientHeader);
+    patientLayout->addWidget(patientBody);
+    leftColumn->addWidget(patientCard);
+
     auto* pathCard = new QFrame();
     pathCard->setObjectName(QStringLiteral("planningSidebarCard"));
     pathCard->setMinimumWidth(292);
@@ -743,9 +866,6 @@ PlanningPage::PlanningPage(
     captureForm->setHorizontalSpacing(18);
     captureForm->setVerticalSpacing(12);
     captureForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-
-    m_patientCombo = new QComboBox();
-    m_patientCombo->setVisible(false);
 
     m_layerCountSpin = new QSpinBox();
     m_layerCountSpin->setRange(1, 60);
@@ -1561,6 +1681,27 @@ PlanningPage::PlanningPage(
     connect(m_addPathButton, &QPushButton::clicked, this, &PlanningPage::addPathItem);
     connect(m_removePathButton, &QPushButton::clicked, this, &PlanningPage::removeCurrentPathItem);
     connect(m_acquireImageButton, &QPushButton::clicked, this, &PlanningPage::simulateImageAcquisition);
+    connect(m_patientCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+        if (m_initializingUi || m_context == nullptr || index < 0) {
+            return;
+        }
+
+        const QString patientId = m_patientCombo->itemData(index).toString();
+        if (patientId.trimmed().isEmpty()
+            || (m_context->hasSelectedPatient() && m_context->selectedPatient().id == patientId)) {
+            return;
+        }
+
+        PatientRecord patient;
+        if (!m_clinicalDataService.findPatientById(patientId, &patient)) {
+            return;
+        }
+
+        m_context->selectPatient(patient);
+        if (m_safetyKernel != nullptr) {
+            m_safetyKernel->setPatientSelected(true);
+        }
+    });
     connect(m_pathList, &QListWidget::currentRowChanged, this, &PlanningPage::onPathSelectionChanged);
     connect(m_generate3dButton, &QPushButton::clicked, this, &PlanningPage::generateThreeDimensionalImage);
     connect(m_storeImageButton, &QPushButton::clicked, this, &PlanningPage::storeCapturedImages);
@@ -1618,6 +1759,11 @@ PlanningPage::PlanningPage(
     });
     connect(m_modelList, &QListWidget::currentRowChanged, this, &PlanningPage::onStagedSliceSelectionChanged);
     connect(m_preview, &MockUltrasoundView::annotationStrokesChanged, this, &PlanningPage::onPreviewAnnotationsChanged);
+    connect(
+        m_context,
+        &ApplicationContext::treatmentContinuationRequested,
+        this,
+        &PlanningPage::restoreTreatmentContinuation);
     connect(m_comparisonSyncCheck, &QCheckBox::toggled, this, [this](bool enabled) {
         if (enabled && !hasComparisonSyncCalibration()) {
             const QSignalBlocker blocker(m_comparisonSyncCheck);
@@ -2015,7 +2161,14 @@ void PlanningPage::generateDraftPlan()
 
     storeCurrentSliceControls();
     TherapyPlan draftPlan = hasGeneratedSliceTargets() ? buildPlanFromSlices(ApprovalState::Draft) : buildPlanFromUi(ApprovalState::Draft);
+    if (m_clinicalDataRepository != nullptr) {
+        TherapyPlan persistedPlan = draftPlan;
+        if (m_clinicalDataService.saveTherapyPlan(&persistedPlan)) {
+            draftPlan = persistedPlan;
+        }
+    }
     m_context->setActivePlan(draftPlan);
+    persistAllSliceAnnotationSnapshots(QStringLiteral("draft_plan_created"));
     if (m_safetyKernel != nullptr) {
         m_safetyKernel->setPlanApprovalState(draftPlan.approvalState);
     }
@@ -2110,7 +2263,14 @@ void PlanningPage::generateTargetsForCurrentSlice()
     updateSliceAssessmentMetrics();
 
     TherapyPlan draftPlan = buildPlanFromSlices(ApprovalState::Draft);
+    if (m_clinicalDataRepository != nullptr) {
+        TherapyPlan persistedPlan = draftPlan;
+        if (m_clinicalDataService.saveTherapyPlan(&persistedPlan)) {
+            draftPlan = persistedPlan;
+        }
+    }
     m_context->setActivePlan(draftPlan);
+    persistAllSliceAnnotationSnapshots(QStringLiteral("targets_generated"));
     if (m_safetyKernel != nullptr) {
         m_safetyKernel->setPlanApprovalState(draftPlan.approvalState);
     }
@@ -2263,6 +2423,7 @@ void PlanningPage::approveCurrentPlan()
     }
 
     m_context->setActivePlan(approvedPlan);
+    persistAllSliceAnnotationSnapshots(QStringLiteral("plan_approved"));
     if (m_safetyKernel != nullptr) {
         m_safetyKernel->setPlanApprovalState(approvedPlan.approvalState);
     }
@@ -2638,6 +2799,7 @@ void PlanningPage::onStagedSliceSelectionChanged(int row)
     }
     persistCurrentSliceAnnotations();
     storeCurrentSliceControls();
+    persistCurrentSliceAnnotationSnapshot(QStringLiteral("switch_image"));
     loadStagedSlice(row);
 }
 
@@ -2651,8 +2813,10 @@ void PlanningPage::onPreviewAnnotationsChanged()
     StagedSliceState& slice = m_stagedSlices[m_currentStagedSliceIndex];
     if (slice.targetsGenerated) {
         invalidateCurrentSliceTargets();
+        persistCurrentSliceAnnotationSnapshot(QStringLiteral("annotation_changed"));
         return;
     }
+    persistCurrentSliceAnnotationSnapshot(QStringLiteral("annotation_changed"));
     refreshCurrentSliceVisualization();
     updateSliceAssessmentMetrics();
 }
@@ -2738,6 +2902,285 @@ void PlanningPage::persistCurrentSliceAnnotations()
     slice.annotations = normalizedAnnotations;
     slice.edited = !slice.annotations.isEmpty();
     slice.annotatedAreaMm2 = slice.annotations.isEmpty() ? 0.0 : annotationRegionAreaMm2(slice.annotations);
+}
+
+void PlanningPage::persistCurrentSliceAnnotationSnapshot(const QString& savedReason)
+{
+    if (m_currentStagedSliceIndex < 0
+        || m_currentStagedSliceIndex >= m_stagedSlices.size()
+        || m_context == nullptr
+        || !m_context->hasSelectedPatient()
+        || !m_context->hasActivePlan()) {
+        return;
+    }
+
+    const TherapyPlan& activePlan = m_context->activePlan();
+    TherapyPlan persistedPlan;
+    if (!m_clinicalDataService.findTherapyPlanById(activePlan.id, &persistedPlan)) {
+        return;
+    }
+
+    const StagedSliceState& slice = m_stagedSlices.at(m_currentStagedSliceIndex);
+    if (slice.annotations.isEmpty() || slice.image.storagePath.trimmed().isEmpty()) {
+        return;
+    }
+
+    const QString annotationDirectory = QDir(QDir::currentPath()).filePath(
+        QStringLiteral("runtime/images/annotations/%1").arg(activePlan.id));
+    if (!QDir().mkpath(annotationDirectory)) {
+        return;
+    }
+
+    const QString annotatedImagePath = QDir(annotationDirectory).filePath(
+        QStringLiteral("slice_%1.png").arg(m_currentStagedSliceIndex + 1, 3, 10, QChar('0')));
+    const QPixmap annotatedImage = renderCurrentSlicePixmap(m_currentStagedSliceIndex, QSize(1280, 960));
+    if (annotatedImage.isNull() || !annotatedImage.save(annotatedImagePath, "PNG")) {
+        return;
+    }
+
+    const QString userId = m_context->hasCurrentOperator() ? m_context->currentOperator().userId : QString();
+    adapters::TreatmentImageAnnotationSnapshot snapshot;
+    snapshot.capturedImageId = workflowImageId(QStringLiteral("CAP"), activePlan.id, m_currentStagedSliceIndex);
+    snapshot.annotationId = workflowImageId(QStringLiteral("ANN"), activePlan.id, m_currentStagedSliceIndex);
+    snapshot.patientId = m_context->selectedPatient().id;
+    snapshot.planId = activePlan.id;
+    snapshot.userId = userId;
+    snapshot.layerIndex = m_currentStagedSliceIndex;
+    snapshot.sliceIndex = m_currentStagedSliceIndex;
+    snapshot.capturePath = slice.image.storagePath;
+    snapshot.annotatedImagePath = annotatedImagePath;
+    snapshot.annotationPayload = annotationPayload(
+        slice.annotations,
+        slice.spacingMm,
+        slice.dwellSeconds,
+        slice.powerWatts,
+        slice.pattern,
+        slice.deliveryMode,
+        slice.targets.size());
+    snapshot.targetAreaMm2 = slice.annotatedAreaMm2;
+    snapshot.targetVolumeMm3 = slice.estimatedVolumeCm3 * 1000.0;
+    snapshot.capturedAt = slice.image.createdAt.isValid() ? slice.image.createdAt : QDateTime::currentDateTime();
+    snapshot.savedReason = savedReason;
+
+    ImageSeriesRecord captureSeries;
+    captureSeries.id = snapshot.capturedImageId;
+    captureSeries.patientId = snapshot.patientId;
+    captureSeries.type = QStringLiteral("\u6cbb\u7597\u91c7\u96c6\u539f\u59cb\u5f71\u50cf");
+    captureSeries.storagePath = snapshot.capturePath;
+    captureSeries.acquisitionDate = snapshot.capturedAt.date();
+    captureSeries.notes = QStringLiteral("plan_id=%1; layer=%2; slice=%3")
+                              .arg(snapshot.planId)
+                              .arg(snapshot.layerIndex + 1)
+                              .arg(snapshot.sliceIndex + 1);
+    captureSeries.createdAt = snapshot.capturedAt;
+    m_clinicalDataService.saveImageSeries(&captureSeries);
+
+    ImageSeriesRecord annotationSeries;
+    annotationSeries.id = snapshot.annotationId;
+    annotationSeries.patientId = snapshot.patientId;
+    annotationSeries.type = QStringLiteral("\u6cbb\u7597\u9776\u70b9\u5708\u753b\u5f71\u50cf");
+    annotationSeries.storagePath = snapshot.annotatedImagePath;
+    annotationSeries.acquisitionDate = snapshot.capturedAt.date();
+    annotationSeries.notes = QStringLiteral("capture_id=%1; saved_reason=%2")
+                                .arg(snapshot.capturedImageId, snapshot.savedReason);
+    annotationSeries.createdAt = QDateTime::currentDateTime();
+    m_clinicalDataService.saveImageSeries(&annotationSeries);
+
+    QString error;
+    adapters::MySqlTreatmentWorkflowRepository repository;
+    if (!repository.saveImageAnnotation(snapshot, &error) && m_auditService != nullptr) {
+        m_auditService->appendEntry(
+            QStringLiteral("system"),
+            QStringLiteral("planning"),
+            QStringLiteral("annotation persistence failed: %1").arg(error));
+    }
+}
+
+void PlanningPage::persistAllSliceAnnotationSnapshots(const QString& savedReason)
+{
+    const int currentIndex = m_currentStagedSliceIndex;
+    for (int index = 0; index < m_stagedSlices.size(); ++index) {
+        m_currentStagedSliceIndex = index;
+        persistCurrentSliceAnnotationSnapshot(savedReason);
+    }
+    m_currentStagedSliceIndex = currentIndex;
+}
+
+bool PlanningPage::rebuildContinuationSlices(
+    const QString& previousTreatmentSessionId,
+    const TherapyPlan& previousPlan,
+    TherapyPlan* continuationPlan,
+    QString* errorMessage)
+{
+    if (continuationPlan == nullptr || m_context == nullptr || !m_context->hasSelectedPatient()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Continuation plan context is unavailable.");
+        }
+        return false;
+    }
+
+    adapters::MySqlTreatmentWorkflowRepository repository;
+    QVector<adapters::TreatmentImageAnnotationSnapshot> snapshots = repository.loadPlanAnnotations(
+        m_context->selectedPatient().id,
+        previousPlan.id,
+        errorMessage);
+    if (snapshots.isEmpty()) {
+        if (errorMessage != nullptr && errorMessage->trimmed().isEmpty()) {
+            *errorMessage = QStringLiteral("No saved annotated treatment images exist for this plan.");
+        }
+        return false;
+    }
+
+    m_stagedImageSeries.clear();
+    m_stagedSlices.clear();
+    QStringList annotationIds;
+    for (int index = 0; index < snapshots.size(); ++index) {
+        const adapters::TreatmentImageAnnotationSnapshot& snapshot = snapshots.at(index);
+        ImageSeriesRecord image;
+        image.id = snapshot.capturedImageId;
+        image.patientId = snapshot.patientId;
+        image.type = QStringLiteral("\u7ee7\u7eed\u6cbb\u7597\u5f71\u50cf");
+        image.storagePath = snapshot.capturePath;
+        image.acquisitionDate = snapshot.capturedAt.date();
+        image.notes = QStringLiteral("restored_from_annotation=%1").arg(snapshot.annotationId);
+        image.createdAt = snapshot.capturedAt;
+        m_stagedImageSeries.push_back(image);
+
+        StagedSliceState slice;
+        slice.image = image;
+        slice.capturedFrame = QPixmap(snapshot.capturePath);
+        if (slice.capturedFrame.isNull()) {
+            slice.capturedFrame = QPixmap(snapshot.annotatedImagePath);
+        }
+        slice.label = QStringLiteral("[S%1] %2")
+                          .arg(snapshot.sliceIndex + 1, 2, 10, QChar('0'))
+                          .arg(QStringLiteral("\u7ee7\u7eed\u6cbb\u7597\u5207\u7247"));
+        slice.annotations = annotationsFromPayload(snapshot.annotationPayload);
+        slice.edited = !slice.annotations.isEmpty();
+        slice.annotatedAreaMm2 = snapshot.targetAreaMm2;
+        slice.estimatedVolumeCm3 = snapshot.targetVolumeMm3 / 1000.0;
+        slice.spacingMm = continuationPlan->spacingMm;
+        slice.dwellSeconds = continuationPlan->dwellSeconds;
+        slice.powerWatts = continuationPlan->plannedPowerWatts;
+        slice.pattern = continuationPlan->pattern == TreatmentPattern::Line ? TreatmentPattern::Line : TreatmentPattern::Point;
+        slice.deliveryMode = continuationPlan->deliveryMode;
+        slice.acquisitionAxis7PositionSteps = -1;
+
+        for (const TherapySegment& segment : previousPlan.segments) {
+            if (segment.sourceSliceIndex == snapshot.sliceIndex) {
+                slice.acquisitionAxis7PositionSteps = segment.axis7PositionSteps;
+                break;
+            }
+        }
+        // A continuation must be planned and approved again.  Restore the image
+        // and its saved annotations, but never carry forward treatment points
+        // which may already have been delivered during the prior session.
+        slice.targets.clear();
+        slice.respiratoryAdjustedTargets.clear();
+        slice.targetsGenerated = false;
+        m_stagedSlices.push_back(slice);
+        annotationIds.push_back(snapshot.annotationId);
+    }
+
+    {
+        const QSignalBlocker blocker(m_modelList);
+        m_modelList->clear();
+        for (const StagedSliceState& slice : std::as_const(m_stagedSlices)) {
+            m_modelList->addItem(slice.label);
+        }
+    }
+    if (m_layerCountSpin != nullptr) {
+        m_layerCountSpin->setValue(qBound(m_layerCountSpin->minimum(), m_stagedSlices.size(), m_layerCountSpin->maximum()));
+    }
+    m_imageAcquisitionCompleted = true;
+    m_currentStagedSliceIndex = -1;
+    m_lastAcquisitionAt = QDateTime::currentDateTime();
+    setAnnotationEditingEnabled(true);
+    if (m_modelList->count() > 0) {
+        m_modelList->setCurrentRow(0);
+    } else {
+        loadStagedSlice(0);
+    }
+
+    const QString userId = m_context->hasCurrentOperator() ? m_context->currentOperator().userId : QString();
+    QString importError;
+    if (!repository.recordContinuationImports(previousTreatmentSessionId, annotationIds, userId, &importError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = importError;
+        }
+        return false;
+    }
+    return true;
+}
+
+void PlanningPage::restoreTreatmentContinuation(
+    const QString& previousTreatmentSessionId,
+    const QString& patientId,
+    const QString& planId)
+{
+    if (m_context == nullptr || patientId.trimmed().isEmpty() || planId.trimmed().isEmpty()) {
+        return;
+    }
+
+    if (!m_context->hasSelectedPatient() || m_context->selectedPatient().id != patientId) {
+        PatientRecord patient;
+        if (!m_clinicalDataService.findPatientById(patientId, &patient)) {
+            updateAcquisitionSummary(QStringLiteral("\u7ee7\u7eed\u6cbb\u7597"), {m_clinicalDataService.lastError()});
+            return;
+        }
+        m_context->selectPatient(patient);
+    }
+
+    TherapyPlan previousPlan;
+    if (!m_clinicalDataService.findTherapyPlanById(planId, &previousPlan)) {
+        updateAcquisitionSummary(QStringLiteral("\u7ee7\u7eed\u6cbb\u7597"), {m_clinicalDataService.lastError()});
+        return;
+    }
+
+    TherapyPlan continuationPlan = previousPlan;
+    continuationPlan.id = continuationPlanId(previousPlan.id);
+    continuationPlan.name = QStringLiteral("%1-%2")
+                                .arg(previousPlan.name, QStringLiteral("\u7ee7\u7eed\u6cbb\u7597"));
+    continuationPlan.approvalState = ApprovalState::Draft;
+    continuationPlan.approvedAt = QDateTime {};
+    continuationPlan.approvedBy.clear();
+    continuationPlan.createdAt = QDateTime::currentDateTime();
+    // The previous plan's points may have been partially delivered.  Keep its
+    // configurable parameters, but require new targets and a new approval.
+    continuationPlan.segments.clear();
+
+    if (!m_clinicalDataService.saveTherapyPlan(&continuationPlan)) {
+        updateAcquisitionSummary(QStringLiteral("\u7ee7\u7eed\u6cbb\u7597"), {m_clinicalDataService.lastError()});
+        return;
+    }
+
+    QString restoreError;
+    if (!rebuildContinuationSlices(previousTreatmentSessionId, previousPlan, &continuationPlan, &restoreError)) {
+        updateAcquisitionSummary(QStringLiteral("\u7ee7\u7eed\u6cbb\u7597"), {restoreError});
+        return;
+    }
+
+    m_context->setActivePlan(continuationPlan);
+    if (m_safetyKernel != nullptr) {
+        m_safetyKernel->setPlanApprovalState(ApprovalState::Draft);
+    }
+    refreshCurrentSliceVisualization();
+    updatePlanPreviewText(&continuationPlan);
+    updateAssessmentText(&continuationPlan);
+    updatePlanApprovalButtonState();
+    updateAcquisitionSummary(
+        QStringLiteral("\u7ee7\u7eed\u6cbb\u7597"),
+        {
+            QStringLiteral("\u5df2\u6062\u590d\u5708\u753b\u5f71\u50cf\uff1a%1 \u5f20").arg(m_stagedSlices.size()),
+            QStringLiteral("\u65b0\u7684\u7ee7\u7eed\u6cbb\u7597\u65b9\u6848\uff1a%1").arg(continuationPlan.id),
+            QStringLiteral("\u8bf7\u91cd\u65b0\u5708\u753b\u3001\u751f\u6210\u9776\u70b9\u5e76\u5ba1\u6838\u540e\u518d\u6b21\u6cbb\u7597\u3002")
+        });
+    if (m_auditService != nullptr) {
+        m_auditService->appendEntry(
+            QStringLiteral("physician"),
+            QStringLiteral("planning"),
+            QStringLiteral("restored continuation plan: %1").arg(continuationPlan.id));
+    }
 }
 
 void PlanningPage::loadStagedSlice(int row)
@@ -4320,9 +4763,10 @@ void PlanningPage::showCurrentPreviewMaximized()
         dialogPreviousSliceButton->setEnabled(canNavigate && dialogSliceSlider->value() > dialogSliceSlider->minimum());
         dialogNextSliceButton->setEnabled(canNavigate && dialogSliceSlider->value() < dialogSliceSlider->maximum());
     };
+    bool dialogAnnotationsChanged = false;
     const auto saveDialogSliceAnnotations = [&]() {
         if (dialogSliceIndex < 0 || dialogSliceIndex >= m_stagedSlices.size()) {
-            return;
+            return false;
         }
 
         const QVector<AnnotationStroke> rawAnnotations = dialogPreview->annotationStrokes();
@@ -4333,10 +4777,16 @@ void PlanningPage::showCurrentPreviewMaximized()
         }
 
         StagedSliceState& slice = m_stagedSlices[dialogSliceIndex];
+        const bool annotationsChanged = !annotationStrokesEqual(slice.annotations, normalizedAnnotations);
         slice.annotations = normalizedAnnotations;
         slice.edited = !slice.annotations.isEmpty();
         slice.annotatedAreaMm2 = slice.annotations.isEmpty() ? 0.0 : annotationRegionAreaMm2(slice.annotations);
+        dialogAnnotationsChanged = dialogAnnotationsChanged || annotationsChanged;
+        return annotationsChanged;
     };
+    connect(dialogPreview, &MockUltrasoundView::annotationStrokesChanged, &dialog, [saveDialogSliceAnnotations]() {
+        saveDialogSliceAnnotations();
+    });
     const auto loadDialogSlice = [&](int row) {
         if (m_stagedSlices.isEmpty()) {
             updateDialogSliceNavigation();
@@ -4366,18 +4816,35 @@ void PlanningPage::showCurrentPreviewMaximized()
 
     dialog.show();
     dialog.exec();
-    if (m_preview != nullptr) {
-        m_preview->setScaleRulerExpanded(dialogPreview->isScaleRulerExpanded());
-        saveDialogSliceAnnotations();
-        if (dialogSliceIndex >= 0 && dialogSliceIndex < m_stagedSlices.size()) {
-            if (m_modelList != nullptr && m_modelList->currentRow() != dialogSliceIndex) {
-                m_modelList->setCurrentRow(dialogSliceIndex);
-            } else {
-                loadStagedSlice(dialogSliceIndex);
-            }
+    saveDialogSliceAnnotations();
+    if (m_preview == nullptr) {
+        return;
+    }
+
+    m_preview->setScaleRulerExpanded(dialogPreview->isScaleRulerExpanded());
+    if (dialogSliceIndex < 0 || dialogSliceIndex >= m_stagedSlices.size()) {
+        m_preview->setAnnotationStrokes(dialogPreview->annotationStrokes());
+        return;
+    }
+
+    // Do not re-enter onStagedSliceSelectionChanged here: its initial save
+    // reads the background preview, which can still display a different
+    // slice.  Load the dialog's committed slice directly instead.
+    if (m_modelList != nullptr && m_modelList->currentRow() != dialogSliceIndex) {
+        const QSignalBlocker blocker(m_modelList);
+        m_modelList->setCurrentRow(dialogSliceIndex);
+    }
+    loadStagedSlice(dialogSliceIndex);
+
+    if (dialogAnnotationsChanged) {
+        if (m_stagedSlices.at(dialogSliceIndex).targetsGenerated) {
+            invalidateCurrentSliceTargets(
+                QStringLiteral("圈画已更新"),
+                QStringLiteral("全屏圈画已修改，原有靶点已失效，请重新生成靶点。"));
         } else {
-            m_preview->setAnnotationStrokes(dialogPreview->annotationStrokes());
+            updateSliceAssessmentMetrics();
         }
+        persistCurrentSliceAnnotationSnapshot(QStringLiteral("fullscreen_annotation_changed"));
     }
 }
 

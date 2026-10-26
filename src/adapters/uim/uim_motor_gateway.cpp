@@ -66,6 +66,8 @@ struct SensorFeedbackObject {
     UimFloat analogInput;
 };
 
+static_assert(sizeof(SensorFeedbackObject) == 16, "Unexpected UIROBOT SFBK_INFO_OBJ ABI");
+
 struct StgInfoObject {
     UimUint sensorNumber;
     UimUint sensor1TriggerTime;
@@ -470,6 +472,13 @@ bool UimMotorGateway::selectNode(quint32 nodeId, QString* errorMessage)
         return setError(QStringLiteral("CAN 节点不存在：%1").arg(nodeId), errorMessage);
     }
 
+    if (m_selectedNodeId != nodeId) {
+        // A snapshot belongs to exactly one CAN node. Do not relabel position
+        // or sensor values from the previously selected node as this node.
+        m_snapshot.hasPosition = false;
+        m_snapshot.hasEncoderPosition = false;
+        m_snapshot.hasSensorFeedback = false;
+    }
     m_selectedNodeId = nodeId;
     m_snapshot.nodeId = nodeId;
     m_snapshot.updatedAt = QDateTime::currentDateTime().toString(Qt::ISODate);
@@ -653,7 +662,7 @@ bool UimMotorGateway::readDigitalOutput(bool* high, QString* errorMessage)
     return true;
 }
 
-bool UimMotorGateway::refreshSnapshot(QString* errorMessage)
+bool UimMotorGateway::refreshSnapshot(QString* errorMessage, bool includeSensorFeedback)
 {
     if (!requireReady(errorMessage)) {
         return false;
@@ -690,15 +699,17 @@ bool UimMotorGateway::refreshSnapshot(QString* errorMessage)
         m_snapshot.hasEncoderPosition = false;
     }
 
-    SensorFeedbackObject sensorFeedback {};
-    if (!isFailure(m_functions->uimSfbk(m_deviceIndex, m_selectedNodeId, &sensorFeedback))) {
-        m_snapshot.hasSensorFeedback = true;
-        m_snapshot.sensor1 = sensorFeedback.sensor1 != 0;
-        m_snapshot.sensor2 = sensorFeedback.sensor2 != 0;
-        m_snapshot.sensor3 = sensorFeedback.sensor3 != 0;
-        m_snapshot.analogInput = sensorFeedback.analogInput;
-    } else {
-        m_snapshot.hasSensorFeedback = false;
+    if (includeSensorFeedback) {
+        SensorFeedbackObject sensorFeedback {};
+        if (!isFailure(m_functions->uimSfbk(m_deviceIndex, m_selectedNodeId, &sensorFeedback))) {
+            m_snapshot.hasSensorFeedback = true;
+            m_snapshot.sensor1 = sensorFeedback.sensor1 != 0;
+            m_snapshot.sensor2 = sensorFeedback.sensor2 != 0;
+            m_snapshot.sensor3 = sensorFeedback.sensor3 != 0;
+            m_snapshot.analogInput = sensorFeedback.analogInput;
+        } else {
+            m_snapshot.hasSensorFeedback = false;
+        }
     }
 
     m_snapshot.gatewayOpen = true;
@@ -718,6 +729,12 @@ bool UimMotorGateway::refreshSensorFeedback(QString* errorMessage)
 
     SensorFeedbackObject sensorFeedback {};
     if (isFailure(m_functions->uimSfbk(m_deviceIndex, m_selectedNodeId, &sensorFeedback))) {
+        m_snapshot.hasSensorFeedback = false;
+        m_snapshot.gatewayOpen = true;
+        m_snapshot.deviceIndex = m_deviceIndex;
+        m_snapshot.nodeId = m_selectedNodeId;
+        m_snapshot.updatedAt = QDateTime::currentDateTime().toString(Qt::ISODate);
+        emit snapshotChanged(m_snapshot);
         return setError(formatSdkError(QStringLiteral("UimSFBK 执行失败")), errorMessage);
     }
 
@@ -868,6 +885,34 @@ bool UimMotorGateway::setSensorActionConfig(const UimSensorActionConfig& config,
         if (isFailure(m_functions->setS34Con(m_deviceIndex, m_selectedNodeId, &s34ConIn, 1, &s34ConOut))) {
             return setError(formatSdkError(QStringLiteral("SetS34CON 执行失败")), errorMessage);
         }
+    }
+
+    m_lastError.clear();
+    return true;
+}
+
+bool UimMotorGateway::setSensor12FallingAction(int action, QString* errorMessage)
+{
+    if (!requireReady(errorMessage)) {
+        return false;
+    }
+    if (!isSupportedSensorAction(action)) {
+        return setError(QStringLiteral("S1/S2 falling-edge action is unsupported: %1").arg(action), errorMessage);
+    }
+
+    // Read-modify-write S1/S2 only. In particular, do not access S3/P4:
+    // some controllers do not expose S3 and those calls make opening the
+    // gateway needlessly slow.
+    S12ConObject s12ConIn {};
+    if (isFailure(m_functions->getS12Con(m_deviceIndex, m_selectedNodeId, &s12ConIn))) {
+        return setError(formatSdkError(QStringLiteral("GetS12CON failed")), errorMessage);
+    }
+    s12ConIn.sensor1FallingAction = static_cast<UimUint>(action);
+    s12ConIn.sensor2FallingAction = static_cast<UimUint>(action);
+
+    S12ConObject s12ConOut {};
+    if (isFailure(m_functions->setS12Con(m_deviceIndex, m_selectedNodeId, &s12ConIn, 1, &s12ConOut))) {
+        return setError(formatSdkError(QStringLiteral("SetS12CON failed")), errorMessage);
     }
 
     m_lastError.clear();

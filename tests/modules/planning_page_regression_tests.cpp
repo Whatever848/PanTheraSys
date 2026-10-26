@@ -174,6 +174,7 @@ private slots:
     void pointPreviewRenderDoesNotCrash();
     void approvalButtonApprovesDraftPlan();
     void planningPageSectionsAreCollapsible();
+    void planningPatientSelectorUsesRepositoryPatients();
     void segmentedTreatmentOptionIsHiddenOnPlanningPage();
     void activePlanChangesDoNotAutoLoadSeedHistory();
     void generateTargetsDoesNotAutoLoadSeedHistory();
@@ -191,6 +192,7 @@ private slots:
     void multipleAnnotationsGenerateTargetsForAllRegions();
     void treatmentPageAcceptsGeneratedLinePlan();
     void treatmentPageSelectsSingleLayer();
+    void treatmentTerminationDialogOffersContinuationAction();
     void addPathFallsBackWhenRobotPoseUnavailable();
     void mainWindowSwitchesFromDashboardToPlanningWithoutCrash();
     void mainWindowSwitchesFromTreatmentToPlanningWithoutCrash();
@@ -476,6 +478,55 @@ void PlanningPageRegressionTests::planningPageSectionsAreCollapsible()
             QVERIFY(!button->isVisible());
         }
     }
+}
+
+void PlanningPageRegressionTests::planningPatientSelectorUsesRepositoryPatients()
+{
+    EventBus eventBus;
+    AuditService auditService;
+    ApplicationContext context(&eventBus, &auditService);
+    SafetyKernel safetyKernel;
+    panthera::adapters::SeedClinicalDataRepository repository;
+    panthera::adapters::SimulationDeviceFacade simulationDevice;
+
+    PlanningPage planningPage(&context, &safetyKernel, &auditService, &repository, &simulationDevice);
+    planningPage.resize(1600, 900);
+    planningPage.show();
+    planningPage.applyPersonalizationProfile(QStringLiteral("\u5168\u5c55\u5f00"));
+    QCoreApplication::processEvents();
+
+    auto* patientSelector = planningPage.findChild<QComboBox*>(QStringLiteral("planningPatientSelector"));
+    QVERIFY(patientSelector != nullptr);
+    QVERIFY(patientSelector->isVisible());
+
+    const QVector<PatientRecord> patients = repository.listPatients();
+    QCOMPARE(patientSelector->count(), patients.size());
+    QVERIFY(patientSelector->count() >= 2);
+    QCOMPARE(patientSelector->itemData(0).toString(), patients.at(0).id);
+    QCOMPARE(patientSelector->itemText(0),
+             QStringLiteral("%1 | %2 | %3\u5c81")
+                 .arg(patients.at(0).name)
+                 .arg(patients.at(0).id)
+                 .arg(patients.at(0).age));
+
+    patientSelector->setCurrentIndex(1);
+    QCoreApplication::processEvents();
+
+    QVERIFY(context.hasSelectedPatient());
+    QCOMPARE(context.selectedPatient().id, patients.at(1).id);
+
+    QWidget* patientCard = patientSelector->parentWidget() != nullptr
+        ? patientSelector->parentWidget()->parentWidget()
+        : nullptr;
+    QVERIFY(patientCard != nullptr);
+    auto* patientCollapseButton = patientCard->findChild<QToolButton*>(QStringLiteral("planningCollapseButton"));
+    QVERIFY(patientCollapseButton != nullptr);
+    patientCollapseButton->setChecked(true);
+    QCoreApplication::processEvents();
+    QVERIFY(patientSelector->isVisible());
+    patientCollapseButton->click();
+    QCoreApplication::processEvents();
+    QVERIFY(!patientSelector->isVisible());
 }
 
 void PlanningPageRegressionTests::segmentedTreatmentOptionIsHiddenOnPlanningPage()
@@ -1752,6 +1803,63 @@ void PlanningPageRegressionTests::mainWindowSwitchesFromTreatmentToPlanningWitho
     QCoreApplication::processEvents();
 
     QVERIFY(mainWindow.findChild<PlanningPage*>() != nullptr);
+}
+
+void PlanningPageRegressionTests::treatmentTerminationDialogOffersContinuationAction()
+{
+    EventBus eventBus;
+    AuditService auditService;
+    ApplicationContext context(&eventBus, &auditService);
+    SafetyKernel safetyKernel;
+
+    PatientRecord patient;
+    patient.id = QStringLiteral("P-TERMINATION-TEST");
+    patient.name = QStringLiteral("Termination Test Patient");
+    patient.age = 45;
+    patient.gender = QStringLiteral("F");
+    patient.diagnosis = QStringLiteral("Regression diagnosis");
+    context.selectPatient(patient);
+
+    TherapyPlan plan = buildPreviewPlan(TreatmentPattern::Point);
+    plan.id = QStringLiteral("PLAN-TERMINATION-TEST");
+    plan.patientId = patient.id;
+    plan.approvalState = ApprovalState::Approved;
+    context.setActivePlan(plan);
+
+    TreatmentPage treatmentPage(&context, &safetyKernel, &auditService, nullptr, nullptr);
+    treatmentPage.resize(1280, 900);
+    treatmentPage.show();
+    QCoreApplication::processEvents();
+
+    auto* terminationButton = treatmentPage.findChild<QPushButton*>(QStringLiteral("treatmentTerminatePlanButton"));
+    QVERIFY(terminationButton != nullptr);
+    QCOMPARE(terminationButton->text(), QStringLiteral("\u7ec8\u6b62\u6cbb\u7597"));
+
+    bool dialogObserved = false;
+    bool continuationActionOffered = false;
+    bool finalTerminationActionOffered = false;
+    QTimer::singleShot(0, [&]() {
+        for (QWidget* widget : QApplication::topLevelWidgets()) {
+            auto* dialog = qobject_cast<QDialog*>(widget);
+            if (dialog == nullptr || dialog->objectName() != QStringLiteral("treatmentTerminationDialog")) {
+                continue;
+            }
+            dialogObserved = true;
+            for (QPushButton* button : dialog->findChildren<QPushButton*>()) {
+                continuationActionOffered = continuationActionOffered || button->text().contains(QStringLiteral("\u7ee7\u7eed\u6cbb\u7597"));
+                finalTerminationActionOffered = finalTerminationActionOffered
+                    || button->objectName() == QStringLiteral("treatmentTerminationEndButton");
+            }
+            dialog->reject();
+            return;
+        }
+    });
+
+    terminationButton->click();
+    QVERIFY(dialogObserved);
+    QVERIFY(continuationActionOffered);
+    QVERIFY(finalTerminationActionOffered);
+    QVERIFY(context.hasActivePlan());
 }
 
 void PlanningPageRegressionTests::addPathFallsBackWhenRobotPoseUnavailable()

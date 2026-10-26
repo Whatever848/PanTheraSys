@@ -16,68 +16,52 @@ LoginDialog::LoginDialog(panthera::adapters::MySqlAuthRepository* authRepository
     : QDialog(parent)
     , m_authRepository(authRepository)
 {
+    setObjectName(QStringLiteral("authLoginDialog"));
     setWindowTitle(QStringLiteral("医生登录"));
     setModal(true);
-    resize(920, 560);
+    setMinimumSize(820, 700);
+    resize(900, 720);
 
-    auto* rootLayout = new QHBoxLayout(this);
+    auto* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(28, 28, 28, 28);
-    rootLayout->setSpacing(24);
+    rootLayout->setSpacing(0);
 
-    auto* brandPanel = new QFrame(this);
-    brandPanel->setObjectName(QStringLiteral("authBrandPanel"));
-    auto* brandLayout = new QVBoxLayout(brandPanel);
-    brandLayout->setContentsMargins(30, 34, 30, 34);
-    brandLayout->setSpacing(18);
+    auto* loginPanel = new QFrame(this);
+    loginPanel->setObjectName(QStringLiteral("authLoginPanel"));
+    auto* panelLayout = new QVBoxLayout(loginPanel);
+    panelLayout->setContentsMargins(42, 32, 42, 26);
+    panelLayout->setSpacing(14);
 
-    auto* appTitle = new QLabel(QStringLiteral("低强度超声系统 V1.0"), brandPanel);
+    auto* appTitle = new QLabel(QStringLiteral("低强度超声系统 V1.0"), loginPanel);
     appTitle->setObjectName(QStringLiteral("authTitleLabel"));
-    auto* subtitle = new QLabel(QStringLiteral("医生身份认证"), brandPanel);
-    subtitle->setObjectName(QStringLiteral("authSubtitleLabel"));
-    subtitle->setWordWrap(true);
-    auto* description = new QLabel(QStringLiteral("登录后系统会记录当前医生身份，用于方案审批、治疗操作和医疗责任追溯。"), brandPanel);
-    description->setObjectName(QStringLiteral("authDescriptionLabel"));
-    description->setWordWrap(true);
-    brandLayout->addWidget(appTitle);
-    brandLayout->addWidget(subtitle);
-    brandLayout->addSpacing(24);
-    brandLayout->addWidget(description);
-    brandLayout->addStretch();
+    auto* titleDivider = new QFrame(loginPanel);
+    titleDivider->setObjectName(QStringLiteral("authTitleDivider"));
+    titleDivider->setFrameShape(QFrame::HLine);
 
-    auto* status = new QLabel(QStringLiteral("MySQL 账号库 | 医生信息绑定 | 加密口令"), brandPanel);
-    status->setObjectName(QStringLiteral("authDescriptionLabel"));
-    status->setWordWrap(true);
-    brandLayout->addWidget(status);
-
-    auto* formPanel = new QFrame(this);
-    formPanel->setObjectName(QStringLiteral("authFormPanel"));
-    auto* formLayout = new QVBoxLayout(formPanel);
-    formLayout->setContentsMargins(26, 24, 26, 24);
-    formLayout->setSpacing(14);
-
-    auto* formTitle = new QLabel(QStringLiteral("进入临床工作站"), formPanel);
-    formTitle->setObjectName(QStringLiteral("authSectionTitleLabel"));
-    formLayout->addWidget(formTitle);
-
-    m_messageLabel = new QLabel(formPanel);
-    m_messageLabel->setObjectName(QStringLiteral("authMessageLabel"));
-    m_messageLabel->setWordWrap(true);
-    formLayout->addWidget(m_messageLabel);
-
-    m_tabs = new QTabWidget(formPanel);
+    m_tabs = new QTabWidget(loginPanel);
     m_tabs->setObjectName(QStringLiteral("authTabWidget"));
+    m_tabs->setMinimumHeight(440);
     m_tabs->addTab(createLoginPage(), QStringLiteral("登录"));
     m_tabs->addTab(createRegisterPage(), QStringLiteral("注册医生"));
-    formLayout->addWidget(m_tabs, 1);
 
-    rootLayout->addWidget(brandPanel, 5);
-    rootLayout->addWidget(formPanel, 6);
+    m_messageLabel = new QLabel(loginPanel);
+    m_messageLabel->setObjectName(QStringLiteral("authMessageLabel"));
+    m_messageLabel->setWordWrap(true);
+    m_messageLabel->setVisible(false);
+
+    auto* securityFooter = new QLabel(QStringLiteral("MySQL 账号库  ·  医生信息绑定  ·  加密口令"), loginPanel);
+    securityFooter->setObjectName(QStringLiteral("authFooterLabel"));
+    securityFooter->setAlignment(Qt::AlignCenter);
+
+    panelLayout->addWidget(appTitle);
+    panelLayout->addWidget(titleDivider);
+    panelLayout->addWidget(m_tabs, 1);
+    panelLayout->addWidget(m_messageLabel);
+    panelLayout->addWidget(securityFooter);
+    rootLayout->addWidget(loginPanel, 1);
 
     if (m_authRepository != nullptr && !m_authRepository->hasAnyActiveUser()) {
         m_tabs->setCurrentIndex(1);
-        showMessage(QStringLiteral("尚未创建医生账号，请先注册第一位医生。"), false);
-    } else {
-        showMessage(QStringLiteral("请输入医生账号和密码。"), false);
     }
 }
 
@@ -89,13 +73,15 @@ panthera::core::AuthenticatedOperator LoginDialog::authenticatedOperator() const
 QWidget* LoginDialog::createLoginPage()
 {
     auto* page = new QWidget(this);
+    page->setObjectName(QStringLiteral("authLoginPage"));
     auto* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(0, 18, 0, 0);
-    layout->setSpacing(16);
+    layout->setContentsMargins(14, 26, 14, 12);
+    layout->setSpacing(18);
 
     auto* form = new QFormLayout();
     form->setContentsMargins(0, 0, 0, 0);
-    form->setSpacing(12);
+    form->setHorizontalSpacing(18);
+    form->setVerticalSpacing(14);
     form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
     m_loginUsernameEdit = createLineEdit(QStringLiteral("医生账号"));
@@ -104,12 +90,10 @@ QWidget* LoginDialog::createLoginPage()
     form->addRow(createFieldLabel(QStringLiteral("密码")), m_loginPasswordEdit);
     layout->addLayout(form);
 
-    auto* buttonLayout = new QHBoxLayout();
-    buttonLayout->addStretch();
     auto* loginButton = new QPushButton(QStringLiteral("登录系统"), page);
-    loginButton->setObjectName(QStringLiteral("panelActionButton"));
-    buttonLayout->addWidget(loginButton);
-    layout->addLayout(buttonLayout);
+    loginButton->setObjectName(QStringLiteral("authPrimaryButton"));
+    loginButton->setMinimumHeight(44);
+    layout->addWidget(loginButton);
     layout->addStretch();
 
     connect(loginButton, &QPushButton::clicked, this, &LoginDialog::attemptLogin);
@@ -122,13 +106,15 @@ QWidget* LoginDialog::createLoginPage()
 QWidget* LoginDialog::createRegisterPage()
 {
     auto* page = new QWidget(this);
+    page->setObjectName(QStringLiteral("authRegisterPage"));
     auto* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(0, 18, 0, 0);
-    layout->setSpacing(16);
+    layout->setContentsMargins(14, 18, 14, 10);
+    layout->setSpacing(10);
 
     auto* form = new QFormLayout();
     form->setContentsMargins(0, 0, 0, 0);
-    form->setSpacing(10);
+    form->setHorizontalSpacing(18);
+    form->setVerticalSpacing(7);
     form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
     m_doctorNameEdit = createLineEdit(QStringLiteral("例如：王医生"));
@@ -139,6 +125,18 @@ QWidget* LoginDialog::createRegisterPage()
     m_registerUsernameEdit = createLineEdit(QStringLiteral("用于登录的账号"));
     m_registerPasswordEdit = createLineEdit(QStringLiteral("至少 8 位密码"), true);
     m_registerConfirmPasswordEdit = createLineEdit(QStringLiteral("再次输入密码"), true);
+    for (QLineEdit* field : {
+             m_doctorNameEdit,
+             m_departmentEdit,
+             m_titleEdit,
+             m_licenseEdit,
+             m_phoneEdit,
+             m_registerUsernameEdit,
+             m_registerPasswordEdit,
+             m_registerConfirmPasswordEdit}) {
+        field->setMinimumHeight(36);
+        field->setMaximumHeight(38);
+    }
 
     form->addRow(createFieldLabel(QStringLiteral("医生姓名")), m_doctorNameEdit);
     form->addRow(createFieldLabel(QStringLiteral("科室")), m_departmentEdit);
@@ -150,12 +148,10 @@ QWidget* LoginDialog::createRegisterPage()
     form->addRow(createFieldLabel(QStringLiteral("确认密码")), m_registerConfirmPasswordEdit);
     layout->addLayout(form);
 
-    auto* buttonLayout = new QHBoxLayout();
-    buttonLayout->addStretch();
     auto* registerButton = new QPushButton(QStringLiteral("注册并登录"), page);
-    registerButton->setObjectName(QStringLiteral("panelActionButton"));
-    buttonLayout->addWidget(registerButton);
-    layout->addLayout(buttonLayout);
+    registerButton->setObjectName(QStringLiteral("authPrimaryButton"));
+    registerButton->setMinimumHeight(42);
+    layout->addWidget(registerButton);
 
     connect(registerButton, &QPushButton::clicked, this, &LoginDialog::attemptRegistration);
     connect(m_registerConfirmPasswordEdit, &QLineEdit::returnPressed, this, &LoginDialog::attemptRegistration);
@@ -166,8 +162,9 @@ QWidget* LoginDialog::createRegisterPage()
 QLineEdit* LoginDialog::createLineEdit(const QString& placeholder, bool password)
 {
     auto* edit = new QLineEdit(this);
+    edit->setObjectName(QStringLiteral("authInputEdit"));
     edit->setPlaceholderText(placeholder);
-    edit->setMinimumHeight(38);
+    edit->setMinimumHeight(42);
     if (password) {
         edit->setEchoMode(QLineEdit::Password);
     }
@@ -188,6 +185,7 @@ void LoginDialog::showMessage(const QString& message, bool error)
     }
     m_messageLabel->setText(message);
     m_messageLabel->setProperty("error", error);
+    m_messageLabel->setVisible(!message.trimmed().isEmpty());
     m_messageLabel->style()->unpolish(m_messageLabel);
     m_messageLabel->style()->polish(m_messageLabel);
 }

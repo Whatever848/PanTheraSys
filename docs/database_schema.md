@@ -1,516 +1,189 @@
 # PanTheraSys MySQL 数据库表结构说明
 
-文档状态：维护中  
-最近更新：2026-07-10  
-数据库名称：`panthera_sys`  
-初始化脚本：[db/schema/mysql_5_7_init.sql](../db/schema/mysql_5_7_init.sql)  
-推荐字符集：`utf8mb4`  
-推荐排序规则：`utf8mb4_unicode_ci`  
-推荐引擎：`InnoDB`
+## 文档用途
 
-## 维护要求
+本文档记录 PanTheraSys 当前 MySQL 数据库的表、字段职责、关键关联关系和临床数据留存流程。数据库结构每次新增或调整后，必须同步更新本文档及 `db/schema/mysql_5_7_init.sql`。
 
-本项目会用于真实医疗操作，数据库表结构会直接影响患者档案、治疗方案、治疗执行数据、报告生成、医生责任追溯和设备安全记录。因此后续任何数据库变更必须同步更新本文档。
+当前数据库：`panthera_sys`
+字符集：`utf8mb4`
+排序规则：`utf8mb4_unicode_ci`
+存储引擎：`InnoDB`
+证据文件根目录：`runtime/evidence_documents`
 
-变更时至少记录以下内容：
+## 设计原则
 
-1. 变更日期。
-2. 变更人。
-3. 变更表名。
-4. 新增、删除或修改的字段。
-5. 变更原因。
-6. 是否涉及患者隐私、医疗责任追溯、治疗安全或审计合规。
-7. 是否需要数据迁移脚本。
-8. 是否需要更新代码中的读写逻辑。
+1. 患者、医生、治疗方案、治疗过程、影像、设备数据和操作日志必须可关联、可追溯。
+2. 原始采集影像与靶点圈画影像必须分开保存，禁止用圈画结果覆盖原始影像。
+3. 治疗执行过程中产生的图层、点位、能量和时长数据必须保存到数据库。
+4. 结束整个治疗方案时，必须生成 `.docx` 证据文档，并将绝对路径和 SHA-256 哈希登记到数据库。
+5. 医疗证据相关数据不得由普通数据维护界面直接删除；真实临床部署前还需落实备份、权限、时间源和电子签名策略。
 
-禁止在未记录文档的情况下直接修改生产数据库结构。
+## 表总览
 
-## 当前表清单
-
-| 表名 | 所属模块 | 作用 |
+| 表名 | 模块 | 作用 |
 | --- | --- | --- |
-| `role` | 用户权限 | 存储系统角色，例如医生、操作员、工程师、管理员。 |
-| `doctor_profile` | 医生信息 | 存储医生实名身份、科室、职称、执业证号等医疗责任主体信息。 |
-| `user_account` | 登录认证 | 存储登录账号、密码哈希、账号状态，并绑定医生信息。 |
-| `patient` | 患者信息 | 存储患者基本档案，用于数据管理模块的患者信息页面。 |
-| `image_series` | 影像数据 | 存储患者影像序列及本地/网络存储路径。 |
-| `therapy_plan` | 治疗方案 | 存储治疗方案主表，包括方案状态、能量、间距、审批信息和序列化方案载荷。 |
-| `therapy_segment` | 治疗方案 | 存储治疗方案中的分段、层、路径或治疗片段。 |
-| `treatment_session` | 治疗执行 | 存储一次治疗会话的总体结果。 |
-| `treatment_record` | 治疗执行 | 存储治疗过程中的点位级、片段级执行记录。 |
-| `treatment_report` | 治疗报告 | 存储治疗报告内容和生成时间。 |
-| `device_snapshot` | 设备监控 | 存储设备运行状态快照。 |
-| `alarm_log` | 安全联锁 | 存储报警、联锁、安全事件。 |
-| `audit_log` | 审计追溯 | 存储系统操作审计日志。 |
-| `config_profile` | 配置管理 | 存储系统配置、医生习惯、方案配置等配置快照。 |
+| `role` | 权限 | 系统角色定义，例如医生、管理员。 |
+| `doctor_profile` | 医生 | 医生姓名、工号、科室、执业信息。 |
+| `user_account` | 登录 | 登录账号、密码哈希、角色和医生绑定。 |
+| `doctor_login_session` | 登录审计 | 医生登录、登出、工作站和会话状态。 |
+| `patient` | 患者 | 患者基础档案、诊断和联系方式。 |
+| `image_series` | 影像 | 数据管理页显示的影像序列及本地存储路径。 |
+| `historical_treatment_image` | 既往影像 | 用于治疗前对比的既往治疗影像。 |
+| `therapy_plan` | 方案 | 治疗方案主记录、审批状态和全局参数。 |
+| `therapy_segment` | 方案 | 按图层或切片保存治疗段、焦点和轨迹信息。 |
+| `therapy_plan_evaluation` | 方案评估 | 计划体积、治疗体积、进度和评估结论。 |
+| `robot_acquisition_path` | 采集路径 | 图像采集时机械臂坐标、轴 7 位置和路径顺序。 |
+| `treatment_image_capture` | 采集影像 | 图像采集后生成的原始当前治疗影像。 |
+| `treatment_image_annotation` | 靶点影像 | 圈画靶点后的影像、笔迹 JSON、靶区面积和体积。 |
+| `treatment_continue_import` | 历史续治 | 仅用于保留旧版本续治数据的追溯记录；当前界面不再发起续治。 |
+| `treatment_session` | 治疗数据 | 一次终止治疗时形成的会话汇总。 |
+| `treatment_record` | 治疗数据 | 按图层、按焦点保存实际输出能量和剂量。 |
+| `treatment_report` | 治疗报告 | 数据管理页的治疗报告正文和摘要。 |
+| `treatment_termination_log` | 治疗终止 | 医生确认“终止治疗”的操作与结果。 |
+| `medical_evidence_document` | 医疗证据 | `.docx` 文件路径、哈希、生成时间和状态。 |
+| `clinical_operation_log` | 临床审计 | 医生在各页面的操作、输入数据和执行结果。 |
+| `audit_log` | 系统审计 | 系统级一般审计日志。 |
+| `device_snapshot` | 设备 | 设备通用状态快照。 |
+| `device_control_event` | 设备 | 设备控制命令及执行结果。 |
+| `water_pump_status` | 水泵 | 水泵状态、流量、工作模式和通信结果。 |
+| `temperature_control_status` | 温控 | 温度设定、当前温度、通道和通信结果。 |
+| `liquid_level_status` | 液位 | 液位值、上下限状态和通信结果。 |
+| `robot_arm_status` | 机械臂 | 机械臂连接、坐标、使能和轨迹执行状态。 |
+| `three_motor_status` | 三电机 | 6、7、8 号电机节点、位置、限位和使能状态。 |
+| `power_device_status` | 功放/信号源 | 信号源、功率放大器、占空比和输出状态。 |
+| `alarm_log` | 安全 | 报警、联锁、确认人与确认时间。 |
+| `config_profile` | 配置 | 设备与系统配置版本。 |
 
-## 表关系概览
+## 身份与权限
 
-核心关系如下：
+### `role`
+
+主要列：`id`、`code`、`name`、`description`、`created_at`。
+用于定义系统权限角色。
+
+### `doctor_profile`
+
+主要列：`id`、`name`、`employee_no`、`department`、`title`、`license_no`、`phone`、`email`、`status`、`created_at`、`updated_at`。
+医生资料与 `user_account.doctor_id`、治疗操作日志和证据文档关联。
+
+### `user_account`
+
+主要列：`id`、`username`、`password_hash`、`password_salt`、`role_id`、`doctor_id`、`status`、`last_login_at`、`created_at`、`updated_at`。
+必须保存密码哈希，不得保存明文密码。当前登录用户通过该表绑定医生身份。
+
+### `doctor_login_session`
+
+主要列：`id`、`user_id`、`doctor_id`、`login_at`、`logout_at`、`workstation_name`、`client_ip`、`login_result`、`failure_reason`。
+用于回答“何人、何时、在哪台工作站登录系统”。
+
+## 患者、方案与影像
+
+### `patient`
+
+主要列：`id`、`name`、`age`、`gender`、`diagnosis`、`contact`、`deleted_at`、`created_at`、`updated_at`。
+`deleted_at` 用于逻辑归档；不得因为界面归档而删除治疗和证据数据。
+
+### `image_series` 与 `historical_treatment_image`
+
+`image_series` 保存患者影像序列：`id`、`patient_id`、`series_type`、`storage_path`、`study_date`、`notes`、`created_at`。
+`historical_treatment_image` 保存既往治疗影像：`id`、`patient_id`、`treatment_session_id`、`image_series_id`、`storage_path`、`image_type`、`imported_by`、`imported_at`、`notes`。
+
+### `therapy_plan` 与 `therapy_segment`
+
+`therapy_plan` 是方案主表，主要列：`id`、`patient_id`、`name`、`approval_state`、`planned_power_watts`、`spacing_mm`、`dwell_seconds`、`delivery_mode`、`created_by`、`approved_by`、`created_at`、`updated_at`。
+`therapy_segment` 是图层或切片表，主要列：`id`、`plan_id`、`order_index`、`label`、`axis7_position_steps`、`source_image_path`、`target_points_payload`、`planned_duration_seconds`、`created_at`。
+
+### `robot_acquisition_path`
+
+主要列：`id`、`patient_id`、`plan_id`、`path_name`、`path_order`、`robot_x`、`robot_y`、`robot_z`、`robot_rx`、`robot_ry`、`robot_rz`、`axis7_position_steps`、`path_payload`、`created_at`。
+该表保存图像采集时的机械臂坐标，使后续治疗、复核和采集路径复现有依据。
+
+### 原始影像：`treatment_image_capture`
+
+主要列：`id`、`patient_id`、`plan_id`、`treatment_session_id`、`captured_by`、`layer_index`、`slice_index`、`storage_path`、`captured_at`、`acquisition_parameters`。
+该表只记录采集后的原始影像。`storage_path` 必须指向未被靶点标注覆盖的源文件。
+
+### 圈画靶点影像：`treatment_image_annotation`
+
+主要列：`id`、`captured_image_id`、`patient_id`、`plan_id`、`treatment_session_id`、`annotated_by`、`annotation_state`、`target_label`、`annotated_image_path`、`mask_path`、`annotation_payload`、`target_area_mm2`、`target_volume_mm3`、`saved_reason`、`created_at`、`updated_at`。
+该表与原始影像严格分离：`annotated_image_path` 指向带圈画结果的影像；`annotation_payload` 保存笔迹、颜色、靶点和点线治疗参数。医生从一张影像切换到下一张影像时，当前切片必须立即写入或更新本表。
+
+## 治疗执行与方案终止
+
+### 图层结束与治疗终止
+
+治疗执行页提供两个不同的操作：
+
+1. **结束**：仅安全停止当前图层的输出，不关闭方案。已完成点位保留，医生可切换到其他图层继续治疗，也可回到当前图层继续未完成点位。
+2. **终止治疗**：结束当前方案的全部图层。打开确认框后只能“确认终止治疗”或“取消”。确认前系统必须先停止治疗输出；确认后清除当前活动方案，不提供继续治疗路径。
+
+确认“终止治疗”时：
+
+1. 汇总方案全部图层的已执行焦点、实际能量、剂量与时长，写入 `treatment_session`。
+2. 将每个图层、每个焦点分别写入 `treatment_record.segment_index` 和 `treatment_record.point_index`。
+3. 创建 `treatment_report`，供数据管理页的治疗报告区域显示。
+4. 写入 `clinical_operation_log` 与 `treatment_termination_log`，包括患者、医生、时间、操作和结果。
+5. 写入 `device_snapshot` 以及水循环、温控、液位、机械臂、三电机和功率链路的专属状态表，关联本次治疗会话并保留采样时间、关键读数、通信状态和原始摘要。
+6. 生成 `.docx` 医疗证据文档，写入 `runtime/evidence_documents/<治疗会话ID>/<治疗会话ID>.docx`；文档包含患者、操作医生、已执行靶点位置、影像路径、圈画靶区量化信息和终止时的硬件快照。
+7. 对文档计算 SHA-256，并将绝对路径及哈希写入 `medical_evidence_document`。
+
+### `treatment_session`、`treatment_record` 与 `treatment_report`
+
+`treatment_session` 主要列：`id`、`patient_id`、`plan_id`、`treatment_date`、`lesion_type`、`total_energy_j`、`total_duration_seconds`、`path_summary`、`dose`、`status`、`created_at`。
+`treatment_record` 主要列：`id`、`session_id`、`segment_index`、`point_index`、`delivered_energy_j`、`delivered_dose`、`executed_at`。
+`treatment_report` 主要列：`id`、`patient_id`、`treatment_session_id`、`generated_at`、`title`、`content_html`、`notes`。
+
+### `treatment_continue_import`
+
+主要列：`id`、`previous_session_id`、`new_session_id`、`annotation_id`、`imported_by`、`imported_at`、`import_reason`。
+用于保留历史续治数据的关联证据；当前临床界面不再创建续治记录。
+
+### `treatment_termination_log`
+
+主要列：`id`、`treatment_session_id`、`patient_id`、`doctor_id`、`login_user_id`、`login_session_id`、`terminated_at`、`termination_type`、`reason_text`、`final_status`、`continue_treatment_selected`、`summary_payload`。
+当前流程固定写入 `continue_treatment_selected=0`，表示已终止整个方案；`1` 仅兼容历史数据。
+
+## 医疗证据与文档查看
+
+### `clinical_operation_log`
+
+主要列：`id`、`login_session_id`、`login_user_id`、`doctor_id`、`patient_id`、`treatment_session_id`、`occurred_at`、`screen_name`、`module_name`、`function_name`、`operation_name`、`operation_payload`、`result_state`、`result_message`、`evidence_level`、`workstation_name`、`created_at`。
+用于记录医生在什么时间、通过哪个页面、执行了什么操作、输入或产生了哪些数据以及执行结果。
+
+### `medical_evidence_document`
+
+主要列：`id`、`treatment_session_id`、`patient_id`、`doctor_id`、`login_user_id`、`generated_at`、`document_type`、`docx_path`、`source_log_start_at`、`source_log_end_at`、`checksum_sha256`、`generation_state`、`generated_by`、`notes`。
+`docx_path` 保存绝对路径。数据管理页的“证据文档”列只对已存在文档显示“查看文档”；对于数据库记录丢失但本地文件仍存在的旧记录，系统会尝试从本地证据目录找到文件并补登记。
+
+历史 `待继续治疗` 会话不会生成最终结束证据文档，因此其“证据文档”按钮保持不可用，避免将历史中间记录误当作完整治疗证据。
+
+## 设备、报警与配置
+
+`device_snapshot` 保存通用快照；`device_control_event` 保存每个设备控制命令和执行结果。
+`water_pump_status`、`temperature_control_status`、`liquid_level_status`、`robot_arm_status`、`three_motor_status`、`power_device_status` 分别保存水泵、温控、液位、机械臂、三电机和功率链路的专属状态。每类状态记录都应含采样时间、通信状态、关键读数、执行结果或错误消息。
+
+`alarm_log` 保存安全报警、联锁和确认过程；`audit_log` 保存系统级审计；`config_profile` 保存系统配置版本。
+
+## 关键关系
 
 ```text
-role
-  └── user_account.role_id
+doctor_profile -> user_account.doctor_id -> doctor_login_session.doctor_id
+doctor_profile -> clinical_operation_log.doctor_id
+doctor_profile -> treatment_termination_log.doctor_id
+doctor_profile -> medical_evidence_document.doctor_id
 
-doctor_profile
-  └── user_account.doctor_id
-
-patient
-  ├── image_series.patient_id
-  ├── therapy_plan.patient_id
-  ├── treatment_session.patient_id
-  └── treatment_report.patient_id
-
-user_account
-  └── therapy_plan.approved_by
-
-therapy_plan
-  ├── therapy_segment.plan_id
-  └── treatment_session.plan_id
-
-treatment_session
-  ├── treatment_record.session_id
-  └── treatment_report.treatment_session_id
+patient -> therapy_plan.patient_id -> therapy_segment.plan_id
+patient -> treatment_session.patient_id -> treatment_record.session_id
+therapy_plan -> treatment_image_capture.plan_id -> treatment_image_annotation.plan_id
+treatment_image_capture -> treatment_image_annotation.captured_image_id
+treatment_session -> treatment_report.treatment_session_id
+treatment_session -> treatment_termination_log.treatment_session_id
+treatment_session -> medical_evidence_document.treatment_session_id
+treatment_image_annotation -> treatment_continue_import.annotation_id
 ```
 
-登录身份链路：
+## 更新记录
 
-```text
-医生实名信息 doctor_profile
-    ↓ doctor_id
-登录账号 user_account
-    ↓ 当前登录用户进入 ApplicationContext
-系统操作、方案审批、治疗执行、审计记录
-```
-
-患者治疗链路：
-
-```text
-patient
-    ↓
-therapy_plan + therapy_segment
-    ↓
-treatment_session
-    ↓
-treatment_record + treatment_report
-```
-
-## 表结构详情
-
-### 1. `role`
-
-用途：系统角色字典表。用于描述账号权限类别。当前代码中主要用于区分医生、操作员、工程师、管理员。
-
-医疗意义：真实医疗环境中，不同角色应对应不同操作权限。例如医生可审批方案，工程师只能维护设备，不应执行治疗。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `VARCHAR(64)` | 主键 | 角色唯一 ID。建议固定为 `operator`、`physician`、`engineer`、`administrator`。 |
-| `name` | `VARCHAR(64)` | 非空 | 角色显示名称。 |
-| `description` | `VARCHAR(255)` | 可空 | 角色说明。 |
-
-默认角色：
-
-| id | 含义 |
+| 日期 | 变更 |
 | --- | --- |
-| `operator` | 设备操作与治疗执行人员。 |
-| `physician` | 临床医生账号。 |
-| `engineer` | 设备维护与工程调试人员。 |
-| `administrator` | 系统管理人员。 |
-
-维护注意：
-
-- 不建议随意删除角色，否则可能破坏 `user_account.role_id` 外键。
-- 新增角色时，需要同步更新代码中的权限判断逻辑。
-
-### 2. `doctor_profile`
-
-用途：医生实名信息表。用于记录医生身份，并和登录账号绑定。
-
-医疗意义：这是医疗责任划分的关键表。系统必须能追溯“哪个医生登录系统并进行了某项操作”。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `VARCHAR(64)` | 主键 | 医生唯一 ID。当前代码生成格式为 `D-<uuid>`。 |
-| `full_name` | `VARCHAR(128)` | 非空 | 医生真实姓名。 |
-| `department` | `VARCHAR(128)` | 非空 | 医生所属科室，例如肿瘤科、超声科。 |
-| `title_name` | `VARCHAR(128)` | 非空 | 医生职称，例如主治医师、副主任医师。 |
-| `license_number` | `VARCHAR(64)` | 可空，唯一索引 | 医师执业证号或院内资质编号。建议生产环境必填。 |
-| `phone` | `VARCHAR(64)` | 可空 | 联系方式。 |
-| `is_active` | `TINYINT(1)` | 非空，默认 `1` | 医生信息是否有效。`1` 表示有效，`0` 表示停用。 |
-| `created_at` | `DATETIME` | 非空 | 创建时间。 |
-| `updated_at` | `DATETIME` | 非空 | 最近更新时间。 |
-
-索引：
-
-| 索引 | 字段 | 含义 |
-| --- | --- | --- |
-| `PRIMARY KEY` | `id` | 医生主键。 |
-| `uk_doctor_license` | `license_number` | 执业证号唯一，防止同一证号重复注册。 |
-
-维护注意：
-
-- 医生离职或停用时，建议设置 `is_active = 0`，不要物理删除。
-- 真实临床环境中建议强制填写 `license_number`。
-- 后续若需要医院多院区支持，可增加 `hospital_id` 或 `organization_id`。
-
-### 3. `user_account`
-
-用途：登录账号表。存储登录用户名、密码哈希、角色、账号状态，并通过 `doctor_id` 绑定医生实名信息。
-
-医疗意义：该表连接“登录账号”和“医生实名身份”。账号不是医疗责任主体，医生实名信息才是责任主体，因此必须绑定 `doctor_profile`。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `VARCHAR(64)` | 主键 | 登录用户唯一 ID。当前代码生成格式为 `U-<uuid>`。 |
-| `username` | `VARCHAR(64)` | 非空，唯一 | 登录账号。当前注册逻辑会转为小写保存。 |
-| `display_name` | `VARCHAR(128)` | 非空 | 用户显示名，默认使用医生姓名。 |
-| `role_id` | `VARCHAR(64)` | 非空，外键 | 关联 `role.id`。医生注册默认使用 `physician`。 |
-| `doctor_id` | `VARCHAR(64)` | 可空，外键 | 关联 `doctor_profile.id`。医生账号必须绑定该字段。 |
-| `password_hash` | `VARCHAR(255)` | 非空 | 密码哈希，不存储明文密码。当前格式为 `pbkdf2-sha256$iterations$salt$hash`。 |
-| `is_active` | `TINYINT(1)` | 非空，默认 `1` | 账号是否启用。`1` 表示启用，`0` 表示禁用。 |
-| `created_at` | `DATETIME` | 非空 | 账号创建时间。 |
-| `updated_at` | `DATETIME` | 非空 | 账号最近更新时间。 |
-| `last_login_at` | `DATETIME` | 可空 | 最近一次成功登录时间。 |
-
-外键：
-
-| 外键 | 字段 | 关联表 | 含义 |
-| --- | --- | --- | --- |
-| `fk_user_role` | `role_id` | `role(id)` | 用户角色。 |
-| `fk_user_doctor` | `doctor_id` | `doctor_profile(id)` | 账号绑定医生。 |
-
-安全要求：
-
-- 禁止存储明文密码。
-- 禁止把开发密码用于生产。
-- 生产环境应增加密码复杂度、登录失败次数限制、账号锁定、密码过期策略。
-- 管理员重置密码应写入审计日志。
-
-### 4. `patient`
-
-用途：患者基本档案表。对应数据管理模块中的“患者信息”。
-
-医疗意义：患者信息是所有影像、方案、治疗、报告的根数据。真实临床系统中必须保证患者 ID 唯一、不可混淆。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `VARCHAR(64)` | 主键 | 患者唯一 ID。示例：`P2026001` 或 `P-<uuid>`。 |
-| `name` | `VARCHAR(128)` | 非空 | 患者姓名。 |
-| `age` | `INT` | 非空 | 患者年龄。 |
-| `gender` | `VARCHAR(32)` | 非空 | 患者性别。 |
-| `diagnosis` | `VARCHAR(255)` | 非空 | 诊断结果，例如病灶类型、分期。 |
-| `contact` | `VARCHAR(64)` | 可空 | 联系方式。 |
-| `deleted_at` | `DATETIME` | 可空 | 软删除时间。为空表示当前有效。 |
-| `created_at` | `DATETIME` | 非空 | 创建时间。 |
-| `updated_at` | `DATETIME` | 非空 | 最近更新时间。 |
-
-维护注意：
-
-- 当前系统删除患者采用软删除，即写入 `deleted_at`，不是物理删除。
-- 医疗系统中建议保留软删除策略，避免责任追溯数据丢失。
-- 后续建议增加患者院内编号、身份证/病历号脱敏字段、出生日期等字段。
-
-### 5. `image_series`
-
-用途：影像序列表。对应数据管理模块中的“影像数据”。
-
-医疗意义：治疗方案设计依赖影像数据，必须记录影像来源和存储路径，确保治疗方案可追溯到使用的影像。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `VARCHAR(64)` | 主键 | 影像序列唯一 ID。 |
-| `patient_id` | `VARCHAR(64)` | 非空，外键 | 关联患者 `patient.id`。 |
-| `type` | `VARCHAR(32)` | 非空 | 影像类型，例如超声、CT、MRI 或内部类型枚举。 |
-| `storage_path` | `VARCHAR(255)` | 非空 | 影像文件或目录的本地/网络路径。治疗方案采集图片的本地路径应记录在此类路径字段或后续专门字段中。 |
-| `acquisition_date` | `DATE` | 非空 | 影像采集日期。 |
-| `notes` | `VARCHAR(255)` | 可空 | 影像说明。 |
-| `created_at` | `DATETIME` | 非空 | 入库时间。 |
-
-外键：
-
-| 外键 | 字段 | 关联表 |
-| --- | --- | --- |
-| `fk_image_series_patient` | `patient_id` | `patient(id)` |
-
-维护注意：
-
-- 数据库只保存路径，不建议直接保存大体积影像二进制。
-- 路径必须稳定，生产环境建议使用受控存储目录或 PACS/对象存储引用。
-- 后续如治疗方案会采集多张图片，建议新增 `plan_image_asset` 或 `therapy_plan_image` 表，而不是把多路径拼接进一个字段。
-
-### 6. `therapy_plan`
-
-用途：治疗方案主表。记录某患者的一份治疗方案。
-
-医疗意义：治疗方案决定实际治疗路径和能量，是医疗责任划分的核心数据之一。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `VARCHAR(64)` | 主键 | 治疗方案唯一 ID。 |
-| `patient_id` | `VARCHAR(64)` | 非空，外键 | 关联患者 `patient.id`。 |
-| `name` | `VARCHAR(128)` | 非空 | 方案名称。 |
-| `pattern` | `VARCHAR(32)` | 非空 | 治疗模式，例如点治疗、线治疗、分段治疗等。 |
-| `approval_state` | `VARCHAR(32)` | 非空 | 审批状态，例如草稿、待审批、已审批。 |
-| `planned_power_watts` | `DOUBLE` | 非空 | 计划功率，单位瓦。 |
-| `spacing_mm` | `DOUBLE` | 非空 | 点位/路径间距，单位毫米。 |
-| `respiratory_tracking_enabled` | `TINYINT(1)` | 非空，默认 `0` | 是否启用呼吸跟踪。 |
-| `serialized_payload` | `MEDIUMTEXT` | 非空 | 方案完整序列化数据，保存复杂参数、路径、图层等。 |
-| `created_at` | `DATETIME` | 非空 | 创建时间。 |
-| `approved_at` | `DATETIME` | 可空 | 审批时间。 |
-| `approved_by` | `VARCHAR(64)` | 可空，外键 | 审批人账号 ID，关联 `user_account.id`。 |
-
-外键：
-
-| 外键 | 字段 | 关联表 | 含义 |
-| --- | --- | --- | --- |
-| `fk_therapy_plan_patient` | `patient_id` | `patient(id)` | 方案所属患者。 |
-| `fk_therapy_plan_approver` | `approved_by` | `user_account(id)` | 方案审批账号。 |
-
-维护注意：
-
-- `serialized_payload` 必须保持向后兼容，建议内部带版本号。
-- 生产环境中已审批方案不应被静默覆盖，应生成新版本。
-- 后续建议增加 `created_by`、`updated_by`、`version_no`、`locked_at` 字段，加强责任追溯。
-
-### 7. `therapy_segment`
-
-用途：治疗方案分段表。记录方案中的每个治疗片段、层、路径段或执行段。
-
-医疗意义：用于还原治疗方案的细粒度执行计划。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `VARCHAR(64)` | 主键 | 治疗片段唯一 ID。 |
-| `plan_id` | `VARCHAR(64)` | 非空，外键 | 关联 `therapy_plan.id`。 |
-| `order_index` | `INT` | 非空 | 片段顺序，从小到大执行或展示。 |
-| `label_name` | `VARCHAR(128)` | 非空 | 片段名称或标签。 |
-| `planned_duration_seconds` | `DOUBLE` | 非空 | 计划持续时间，单位秒。 |
-| `serialized_payload` | `MEDIUMTEXT` | 非空 | 片段完整序列化数据，例如点位、路径、层信息。 |
-
-外键：
-
-| 外键 | 字段 | 关联表 |
-| --- | --- | --- |
-| `fk_therapy_segment_plan` | `plan_id` | `therapy_plan(id)` |
-
-维护注意：
-
-- 应保证同一 `plan_id` 下 `order_index` 顺序稳定。
-- 后续建议增加唯一约束：`UNIQUE(plan_id, order_index)`。
-
-### 8. `treatment_session`
-
-用途：治疗会话主表。记录一次治疗执行的总体结果。
-
-医疗意义：用于划分一次真实治疗行为，包括患者、方案、治疗时间、剂量、状态等。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `VARCHAR(64)` | 主键 | 治疗会话唯一 ID。 |
-| `patient_id` | `VARCHAR(64)` | 非空，外键 | 关联患者 `patient.id`。 |
-| `plan_id` | `VARCHAR(64)` | 非空，外键 | 关联治疗方案 `therapy_plan.id`。 |
-| `treatment_date` | `DATETIME` | 非空 | 治疗发生时间。 |
-| `lesion_type` | `VARCHAR(128)` | 非空 | 病灶类型。 |
-| `total_energy_j` | `DOUBLE` | 非空 | 实际总能量，单位焦耳。 |
-| `total_duration_seconds` | `DOUBLE` | 非空 | 实际总时长，单位秒。 |
-| `path_summary` | `VARCHAR(255)` | 非空 | 治疗路径摘要。 |
-| `dose` | `DOUBLE` | 非空 | 治疗剂量或系统定义的剂量指标。 |
-| `status` | `VARCHAR(32)` | 非空 | 治疗状态，例如完成、中止、异常。 |
-| `created_at` | `DATETIME` | 非空 | 入库时间。 |
-
-外键：
-
-| 外键 | 字段 | 关联表 |
-| --- | --- | --- |
-| `fk_treatment_session_patient` | `patient_id` | `patient(id)` |
-| `fk_treatment_session_plan` | `plan_id` | `therapy_plan(id)` |
-
-维护注意：
-
-- 后续建议增加 `operator_user_id` 或 `doctor_user_id`，直接记录执行治疗的登录用户。
-- 若治疗中止，应记录中止原因、报警状态和操作者确认信息。
-
-### 9. `treatment_record`
-
-用途：治疗过程明细表。记录治疗会话中的片段和点位执行数据。
-
-医疗意义：这是责任划分中最重要的过程数据之一，用于证明某个时间、某个点位实际输出了多少能量和剂量。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `VARCHAR(64)` | 主键 | 治疗记录唯一 ID。 |
-| `session_id` | `VARCHAR(64)` | 非空，外键 | 关联治疗会话 `treatment_session.id`。 |
-| `segment_index` | `INT` | 非空 | 所属治疗片段序号。 |
-| `point_index` | `INT` | 非空 | 片段内点位序号。 |
-| `delivered_energy_j` | `DOUBLE` | 非空 | 实际释放能量，单位焦耳。 |
-| `delivered_dose` | `DOUBLE` | 非空 | 实际剂量。 |
-| `executed_at` | `DATETIME` | 非空 | 点位执行时间。 |
-
-外键：
-
-| 外键 | 字段 | 关联表 |
-| --- | --- | --- |
-| `fk_treatment_record_session` | `session_id` | `treatment_session(id)` |
-
-维护注意：
-
-- 真实治疗执行时应持续写入该表或以事务/缓冲方式可靠落库。
-- 后续建议补充实际坐标、设备状态快照 ID、温度、功率、频率、水流、水压等关键字段，或通过外键关联 `device_snapshot`。
-- 建议增加唯一约束：`UNIQUE(session_id, segment_index, point_index)`。
-
-### 10. `treatment_report`
-
-用途：治疗报告表。对应数据管理模块中的“治疗报告”。
-
-医疗意义：报告是治疗结果归档和医患沟通的重要文档，应能追溯到患者和具体治疗会话。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `VARCHAR(64)` | 主键 | 报告唯一 ID。 |
-| `patient_id` | `VARCHAR(64)` | 非空，外键 | 关联患者 `patient.id`。 |
-| `treatment_session_id` | `VARCHAR(64)` | 非空，外键 | 关联治疗会话 `treatment_session.id`。 |
-| `generated_at` | `DATETIME` | 非空 | 报告生成时间。 |
-| `title` | `VARCHAR(128)` | 非空 | 报告标题。 |
-| `content_html` | `MEDIUMTEXT` | 非空 | 报告正文 HTML。 |
-| `notes` | `VARCHAR(255)` | 可空 | 报告备注。 |
-
-外键：
-
-| 外键 | 字段 | 关联表 |
-| --- | --- | --- |
-| `fk_treatment_report_patient` | `patient_id` | `patient(id)` |
-| `fk_treatment_report_session` | `treatment_session_id` | `treatment_session(id)` |
-
-维护注意：
-
-- 报告正文使用 HTML，应注意 XSS 和外部资源引用风险。
-- 生产环境建议增加报告 PDF 路径、签名医生、签发时间、报告版本号。
-
-### 11. `device_snapshot`
-
-用途：设备状态快照表。记录设备监控页面中的实时关键参数。
-
-医疗意义：治疗责任划分不仅需要治疗参数，还需要设备当时状态。该表可用于追溯治疗时设备是否处于安全状态。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `BIGINT` | 主键，自增 | 快照自增 ID。 |
-| `captured_at` | `DATETIME` | 非空 | 快照采集时间。 |
-| `voltage` | `DOUBLE` | 非空 | 电压。 |
-| `current` | `DOUBLE` | 非空 | 电流。 |
-| `power_watts` | `DOUBLE` | 非空 | 功率，单位瓦。 |
-| `water_pressure_mpa` | `DOUBLE` | 非空 | 水压，单位 MPa。 |
-| `water_flow_lpm` | `DOUBLE` | 非空 | 水流量，单位 L/min。 |
-| `transducer_temp_c` | `DOUBLE` | 非空 | 换能器温度，单位摄氏度。 |
-| `vibration_frequency_mhz` | `DOUBLE` | 非空 | 振动/超声频率，单位 MHz。 |
-| `motor_load_percent` | `DOUBLE` | 非空 | 电机负载百分比。 |
-| `position_x` | `DOUBLE` | 非空 | 运动轴 X 坐标。 |
-| `position_y` | `DOUBLE` | 非空 | 运动轴 Y 坐标。 |
-| `position_z` | `DOUBLE` | 非空 | 运动轴 Z 坐标。 |
-| `position_a` | `DOUBLE` | 非空 | 运动轴 A 坐标或姿态参数。 |
-| `position_b` | `DOUBLE` | 非空 | 运动轴 B 坐标或姿态参数。 |
-| `position_c` | `DOUBLE` | 非空 | 运动轴 C 坐标或姿态参数。 |
-
-维护注意：
-
-- 如果用于治疗追溯，需要明确采样频率和保留策略。
-- 后续建议增加 `session_id`，将快照绑定到治疗会话。
-- 建议区分模拟数据和真实设备数据，可增加 `source_name` 或 `is_simulated`。
-
-### 12. `alarm_log`
-
-用途：报警和联锁日志表。记录设备、安全、流程异常。
-
-医疗意义：任何治疗中止、设备异常、安全联锁都应可追溯。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `BIGINT` | 主键，自增 | 报警日志 ID。 |
-| `raised_at` | `DATETIME` | 非空 | 报警发生时间。 |
-| `level_name` | `VARCHAR(32)` | 非空 | 报警级别，例如 info、warning、critical。 |
-| `reason_code` | `VARCHAR(64)` | 非空 | 报警原因代码。 |
-| `message_text` | `VARCHAR(255)` | 非空 | 报警描述。 |
-| `source_name` | `VARCHAR(64)` | 非空 | 报警来源，例如水冷、电源、运动控制、温度模块。 |
-
-维护注意：
-
-- 后续建议增加 `session_id` 和 `operator_user_id`，记录报警发生于哪次治疗、由谁确认。
-- 报警日志不应被普通用户删除。
-
-### 13. `audit_log`
-
-用途：系统审计日志表。记录操作者、操作类别、操作详情。
-
-医疗意义：用于追溯谁在什么时间做了什么操作。真实医疗系统中非常关键。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `BIGINT` | 主键，自增 | 审计日志 ID。 |
-| `occurred_at` | `DATETIME` | 非空 | 操作发生时间。 |
-| `actor_name` | `VARCHAR(128)` | 非空 | 操作者名称或账号。 |
-| `category_name` | `VARCHAR(64)` | 非空 | 操作类别，例如 auth、patient、plan、treatment、database。 |
-| `details` | `TEXT` | 非空 | 操作详情。 |
-
-维护注意：
-
-- 当前审计字段较基础，后续建议增加 `actor_user_id`、`doctor_id`、`patient_id`、`session_id`、`ip_address`、`workstation_id`。
-- 审计日志应追加写，不应普通删除。
-- 生产环境建议启用数据库备份和不可抵赖策略。
-
-### 14. `config_profile`
-
-用途：配置快照表。保存系统配置、医生习惯、治疗方案设计偏好或其他配置资料。
-
-医疗意义：如果医生使用了某套配置或系统参数，应能追溯当时配置内容。
-
-| 字段 | 类型 | 约束 | 含义 |
-| --- | --- | --- | --- |
-| `id` | `VARCHAR(64)` | 主键 | 配置记录唯一 ID。 |
-| `profile_name` | `VARCHAR(128)` | 非空 | 配置名称。 |
-| `category_name` | `VARCHAR(64)` | 非空 | 配置类别。 |
-| `version_name` | `VARCHAR(64)` | 非空 | 配置版本。 |
-| `checksum_value` | `VARCHAR(128)` | 非空 | 配置内容校验值，用于发现内容被修改。 |
-| `approval_state` | `VARCHAR(32)` | 非空 | 审批状态。 |
-| `serialized_payload` | `MEDIUMTEXT` | 非空 | 配置完整序列化内容。 |
-| `created_at` | `DATETIME` | 非空 | 创建时间。 |
-| `approved_at` | `DATETIME` | 可空 | 审批时间。 |
-
-维护注意：
-
-- `serialized_payload` 应带内部版本号。
-- 如果配置影响治疗安全，应增加审批人字段和审批记录。
-
-## 医疗安全与合规建议
-
-当前数据库已经具备患者、影像、方案、治疗、报告、医生登录的基础结构，但真实医疗应用仍建议继续增强：
-
-1. 所有治疗执行表应记录当前登录医生或操作员 ID。
-2. 治疗方案应记录创建人、修改人、审批人、版本号。
-3. 患者数据应避免物理删除，继续使用 `deleted_at` 软删除。
-4. 治疗过程数据应与设备快照和报警日志建立关联。
-5. 密码必须保持哈希存储，禁止明文密码。
-6. 对患者隐私字段应考虑脱敏、访问控制和备份加密。
-7. 关键治疗数据建议使用事务写入，避免断电或异常退出造成部分数据丢失。
-8. 数据库账号应按最小权限原则配置，生产环境不应使用 `root`。
-9. 应建立数据库备份、恢复演练和变更审批流程。
-10. 对用于医疗责任划分的数据，应明确保留年限和不可篡改策略。
-
-## 后续建议新增或增强的表
-
-| 建议表名 | 目的 | 优先级 |
-| --- | --- | --- |
-| `therapy_plan_image` | 存储治疗方案采集图片路径，与方案、患者、医生绑定。 | 高 |
-| `treatment_device_snapshot_link` | 将治疗记录与设备快照建立关联。 | 高 |
-| `doctor_operation_log` | 更结构化地记录医生操作。 | 中 |
-| `patient_identifier` | 存储院内病历号、就诊号等多标识。 | 中 |
-| `database_migration_log` | 记录数据库迁移脚本执行历史。 | 中 |
-
-## 变更记录
-
-| 日期 | 变更人 | 变更内容 | 影响 |
-| --- | --- | --- | --- |
-| 2026-07-10 | Codex | 建立数据库说明文档，记录当前 `panthera_sys` 所有表结构和维护规范。 | 文档化数据库结构。 |
-| 2026-07-10 | Codex | 增加 `doctor_profile` 医生信息表；扩展 `user_account`，新增 `doctor_id`、`last_login_at`；账号与医生信息绑定。 | 支持医生登录注册和医疗责任追溯。 |
-| 2026-07-10 | Codex | 当前 schema 包含患者、影像、治疗方案、治疗会话、治疗记录、治疗报告、设备快照、报警、审计、配置等基础表。 | 支撑数据管理和治疗数据持久化。 |
-
+| 2026-07-16 | 区分“结束当前图层”和“终止治疗”；终止治疗不再提供继续治疗路径，终止后汇总全部图层并生成、登记 `.docx` 证据文档。 |

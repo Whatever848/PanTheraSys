@@ -12,6 +12,7 @@ class ClinicalDataServiceTests final : public QObject {
 
 private slots:
     void savePatientGeneratesIdAndPersistsRecord();
+    void savePatientDefaultsUnspecifiedGender();
     void archivePatientRemovesItFromActiveListing();
     void saveImageSeriesRequiresExistingPatient();
     void saveImageSeriesGeneratesIdAndPersistsRecord();
@@ -44,6 +45,24 @@ void ClinicalDataServiceTests::savePatientGeneratesIdAndPersistsRecord()
     QVERIFY(repository.findPatientById(patient.id, &persisted));
     QCOMPARE(persisted.name, patient.name);
     QCOMPARE(persisted.diagnosis, patient.diagnosis);
+}
+
+void ClinicalDataServiceTests::savePatientDefaultsUnspecifiedGender()
+{
+    panthera::adapters::SeedClinicalDataRepository repository;
+    ClinicalDataService service(&repository);
+
+    PatientRecord patient;
+    patient.name = QStringLiteral("No gender supplied");
+    patient.age = 35;
+    patient.diagnosis = QStringLiteral("Diagnosis-C");
+
+    QVERIFY(service.savePatient(&patient));
+    QCOMPARE(patient.gender, QStringLiteral("\u672a\u8bf4\u660e"));
+
+    PatientRecord persisted;
+    QVERIFY(repository.findPatientById(patient.id, &persisted));
+    QCOMPARE(persisted.gender, patient.gender);
 }
 
 void ClinicalDataServiceTests::archivePatientRemovesItFromActiveListing()

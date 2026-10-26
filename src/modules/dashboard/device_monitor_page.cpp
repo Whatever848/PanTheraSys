@@ -71,6 +71,7 @@ constexpr int kThreeAxisAxis8MaximumSteps = 152314;
 constexpr int kThreeAxisLargeMoveConfirmSteps = kThreeAxisStepsPerTurn * 5;
 constexpr int kThreeAxisDefaultSpeed = 2400;
 constexpr int kThreeAxisRefreshIntervalMs = 1000;
+constexpr unsigned long kUimSensorCommandSpacingMs = 20;
 constexpr int kThreeAxisSensorDecelerateToStopAction = 3;
 constexpr int kThreeAxisLinearZeroToleranceSteps = 500;
 constexpr int kThreeAxisSwingZeroToleranceSteps = 20;
@@ -103,6 +104,7 @@ const std::array<const char*, 3> kThreeAxisNegativeActions {"左摆", "左移", 
 const std::array<const char*, 3> kThreeAxisPositiveActions {"右摆", "右移", "下移"};
 const std::array<int, 3> kThreeAxisNegativeButtonDirections {1, -1, -1};
 const std::array<int, 3> kThreeAxisPositiveButtonDirections {-1, 1, 1};
+
 const adapters::dobot::DobotPose kRobotDefaultSafeOriginPose {
     568.4855,
     -652.5055,
@@ -1030,7 +1032,7 @@ QWidget* DeviceMonitorPage::createLiquidLevelSensorCard()
     commandLayout->addWidget(m_liquidLevelReadButton, 1, 2);
     layout->addLayout(commandLayout);
 
-    m_waterTankLimitStatusLabel = new QLabel(QStringLiteral("水箱限位保护：等待三电机限位反馈"), groupBox);
+    m_waterTankLimitStatusLabel = new QLabel(QStringLiteral("水箱限位保护：等待 UIM 网关读取 S3"), groupBox);
     m_waterTankLimitStatusLabel->setWordWrap(true);
     m_waterTankLimitStatusLabel->setMinimumHeight(72);
     m_waterTankLimitStatusLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
@@ -1389,8 +1391,7 @@ QWidget* DeviceMonitorPage::createThreeAxisMotorControlCard()
     axisLayout->addWidget(new QLabel(QStringLiteral("移动位置"), groupBox), 0, 3);
     axisLayout->addWidget(new QLabel(QStringLiteral("点动距离"), groupBox), 0, 5);
     axisLayout->addWidget(new QLabel(QStringLiteral("点动"), groupBox), 0, 6, 1, 2);
-    axisLayout->addWidget(new QLabel(QStringLiteral("持续移动距离"), groupBox), 0, 8);
-    axisLayout->addWidget(new QLabel(QStringLiteral("持续移动"), groupBox), 0, 9, 1, 2);
+    axisLayout->addWidget(new QLabel(QStringLiteral("持续移动（按住）"), groupBox), 0, 8, 1, 2);
 
     for (int index = 0; index < static_cast<int>(kThreeAxisNodeIds.size()); ++index) {
         auto* axisLabel = new QLabel(threeAxisAxisTitle(index), groupBox);
@@ -1427,16 +1428,6 @@ QWidget* DeviceMonitorPage::createThreeAxisMotorControlCard()
         setStableColumnWidget(jogDistanceSpin, 86);
         m_threeAxisJogDistanceSpins[static_cast<size_t>(index)] = jogDistanceSpin;
 
-        auto* continuousDistanceSpin = new QDoubleSpinBox(groupBox);
-        continuousDistanceSpin->setDecimals(2);
-        continuousDistanceSpin->setRange(0.01, threeAxisMaximumDisplayUnits(index) - threeAxisMinimumDisplayUnits(index));
-        continuousDistanceSpin->setSingleStep(index == 0 ? 0.1 : 0.1);
-        continuousDistanceSpin->setValue(1.0);
-        continuousDistanceSpin->setSuffix(QStringLiteral(" %1").arg(threeAxisDisplayUnitText(index)));
-        continuousDistanceSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
-        setStableColumnWidget(continuousDistanceSpin, 80);
-        m_threeAxisContinuousDistanceSpins[static_cast<size_t>(index)] = continuousDistanceSpin;
-
         m_threeAxisNegativeButtons[static_cast<size_t>(index)] = new QPushButton(QString::fromUtf8(kThreeAxisNegativeActions.at(static_cast<size_t>(index))), groupBox);
         m_threeAxisPositiveButtons[static_cast<size_t>(index)] = new QPushButton(QString::fromUtf8(kThreeAxisPositiveActions.at(static_cast<size_t>(index))), groupBox);
         setStableColumnWidget(m_threeAxisNegativeButtons[static_cast<size_t>(index)], 70);
@@ -1456,9 +1447,8 @@ QWidget* DeviceMonitorPage::createThreeAxisMotorControlCard()
         axisLayout->addWidget(jogDistanceSpin, row, 5);
         axisLayout->addWidget(m_threeAxisNegativeButtons[static_cast<size_t>(index)], row, 6);
         axisLayout->addWidget(m_threeAxisPositiveButtons[static_cast<size_t>(index)], row, 7);
-        axisLayout->addWidget(continuousDistanceSpin, row, 8);
-        axisLayout->addWidget(m_threeAxisContinuousNegativeButtons[static_cast<size_t>(index)], row, 9);
-        axisLayout->addWidget(m_threeAxisContinuousPositiveButtons[static_cast<size_t>(index)], row, 10);
+        axisLayout->addWidget(m_threeAxisContinuousNegativeButtons[static_cast<size_t>(index)], row, 8);
+        axisLayout->addWidget(m_threeAxisContinuousPositiveButtons[static_cast<size_t>(index)], row, 9);
 
         connect(m_threeAxisNegativeButtons[static_cast<size_t>(index)], &QPushButton::clicked, this, [this, index]() {
             moveThreeAxisMotor(index, kThreeAxisNegativeButtonDirections.at(static_cast<size_t>(index)));
@@ -1470,13 +1460,17 @@ QWidget* DeviceMonitorPage::createThreeAxisMotorControlCard()
             startThreeAxisContinuousMove(index, kThreeAxisNegativeButtonDirections.at(static_cast<size_t>(index)));
         });
         connect(m_threeAxisContinuousNegativeButtons[static_cast<size_t>(index)], &QPushButton::released, this, [this, index]() {
-            stopThreeAxisContinuousMove(index);
+            if (m_threeAxisContinuousDirections[static_cast<size_t>(index)] == kThreeAxisNegativeButtonDirections[static_cast<size_t>(index)]) {
+                stopThreeAxisContinuousMove(index);
+            }
         });
         connect(m_threeAxisContinuousPositiveButtons[static_cast<size_t>(index)], &QPushButton::pressed, this, [this, index]() {
             startThreeAxisContinuousMove(index, kThreeAxisPositiveButtonDirections.at(static_cast<size_t>(index)));
         });
         connect(m_threeAxisContinuousPositiveButtons[static_cast<size_t>(index)], &QPushButton::released, this, [this, index]() {
-            stopThreeAxisContinuousMove(index);
+            if (m_threeAxisContinuousDirections[static_cast<size_t>(index)] == kThreeAxisPositiveButtonDirections[static_cast<size_t>(index)]) {
+                stopThreeAxisContinuousMove(index);
+            }
         });
         connect(m_threeAxisMoveToButtons[static_cast<size_t>(index)], &QPushButton::clicked, this, [this, index]() {
             moveThreeAxisMotorToAbsolute(index);
@@ -1485,9 +1479,6 @@ QWidget* DeviceMonitorPage::createThreeAxisMotorControlCard()
             refreshThreeAxisUi();
         });
         connect(jogDistanceSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this]() {
-            refreshThreeAxisUi();
-        });
-        connect(continuousDistanceSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this]() {
             refreshThreeAxisUi();
         });
     }
@@ -2914,6 +2905,9 @@ void DeviceMonitorPage::releaseThreeAxisGatewayForSharedUse()
         return;
     }
 
+    m_threeAxisContinuousMoving.fill(false);
+    m_threeAxisContinuousDirections.fill(0);
+    m_threeAxisMotionReady = false;
     m_threeAxisGateway.closeGateway();
     m_threeAxisNodes.clear();
     setThreeAxisStatus(QStringLiteral("三电机网关已释放，当前位置保持不变，可在治疗方案页从当前位置开始图像采集"));
@@ -2982,6 +2976,7 @@ void DeviceMonitorPage::toggleThreeAxisGateway()
         disableAllThreeAxisMotors();
         m_threeAxisGateway.closeGateway();
         m_threeAxisNodes.clear();
+        m_threeAxisMotionReady = false;
         m_waterTankHighLevelKnown = false;
         m_waterTankHighLevelActive = false;
         setProperty("waterTankHighLevelActiveSamples", 0);
@@ -2989,6 +2984,8 @@ void DeviceMonitorPage::toggleThreeAxisGateway()
         m_waterTankLowLevelActive = false;
         setProperty("waterTankLowLevelActiveSamples", 0);
         m_waterTankLowLevelAlarmLatched = false;
+        m_waterTankHighLevelReadError.clear();
+        m_waterTankLowLevelReadError.clear();
         updateWaterTankLimitStatus();
         setThreeAxisStatus(QStringLiteral("UIM 网关已关闭"));
         updateThreeAxisNodeStatus();
@@ -3022,13 +3019,26 @@ void DeviceMonitorPage::toggleThreeAxisGateway()
         return;
     }
 
+    // Closing a gateway does not clear a controller-retained STP command.
+    // Do not trust positions/sensors from the previous session or enable a
+    // command until every detected axis has been explicitly made stationary.
+    m_threeAxisContinuousMoving.fill(false);
+    m_threeAxisContinuousDirections.fill(0);
+    m_threeAxisPositionKnown.fill(false);
+    m_threeAxisSensorFeedbackKnown.fill(false);
+    m_threeAxisMotionReady = false;
+    m_waterTankHighLevelReadError.clear();
+    m_waterTankLowLevelReadError.clear();
     m_threeAxisNodes = m_threeAxisGateway.nodes();
     updateThreeAxisNodeStatus();
     const bool parametersConfigured = configureThreeAxisMotorParameters();
+    m_threeAxisMotionReady = parametersConfigured;
     setThreeAxisStatus(parametersConfigured
-            ? QStringLiteral("UIM 网关已打开，CAN 节点 %1 个，电流、固定速度和 S1/S2 下降沿动作已设置").arg(m_threeAxisNodes.size())
-            : QStringLiteral("UIM 网关已打开，CAN 节点 %1 个，部分电机参数设置失败").arg(m_threeAxisNodes.size()));
-    refreshThreeAxisMotors();
+            ? QStringLiteral("UIM 网关已打开，CAN 节点 %1 个；残余移动已取消、速度保持 0，电流和 S1/S2 下降沿动作已设置").arg(m_threeAxisNodes.size())
+            : QStringLiteral("UIM 网关已打开，但安全停机或参数设置未完成；已禁止电机移动"));
+    // Snapshot polling invokes multiple synchronous SDK calls. Start a fresh
+    // poll interval instead of blocking the opening action on those reads.
+    m_threeAxisRefreshTimer.start(kThreeAxisRefreshIntervalMs);
     refreshThreeAxisUi();
 }
 
@@ -3036,6 +3046,10 @@ void DeviceMonitorPage::enableAllThreeAxisMotors()
 {
     if (m_threeAxisEmergencyStopActive) {
         setThreeAxisStatus(QStringLiteral("急停未解除，禁止上电"));
+        return;
+    }
+    if (!m_threeAxisMotionReady) {
+        setThreeAxisStatus(QStringLiteral("打开后的安全停机或限位初始化未完成，禁止上电和移动"));
         return;
     }
 
@@ -3060,6 +3074,8 @@ void DeviceMonitorPage::disableAllThreeAxisMotors()
             issued = true;
         }
     }
+    m_threeAxisContinuousMoving.fill(false);
+    m_threeAxisContinuousDirections.fill(0);
     if (!issued && m_threeAxisGateway.isGatewayOpen()) {
         setThreeAxisStatus(QStringLiteral("未发现 6/7/8 号电机节点，无法断电"));
     }
@@ -3091,6 +3107,8 @@ void DeviceMonitorPage::emergencyStopThreeAxisMotors()
             appendThreeAxisLog(QStringLiteral("%1 急停速度已置 0，残余移动已取消").arg(threeAxisAxisTitle(index)));
         }
     }
+    m_threeAxisContinuousMoving.fill(false);
+    m_threeAxisContinuousDirections.fill(0);
 
     if (m_faultToggles.size() >= 5 && m_faultToggles.at(4) != nullptr) {
         m_faultToggles.at(4)->setChecked(true);
@@ -3204,8 +3222,18 @@ void DeviceMonitorPage::zeroAllThreeAxisMotors()
         setThreeAxisStatus(QStringLiteral("急停未解除，禁止一键归零"));
         return;
     }
+    if (std::any_of(m_threeAxisContinuousMoving.cbegin(), m_threeAxisContinuousMoving.cend(), [](bool moving) {
+            return moving;
+        })) {
+        setThreeAxisStatus(QStringLiteral("持续移动正在执行，请先松开持续移动按钮"));
+        return;
+    }
     if (!m_threeAxisGateway.isGatewayOpen()) {
         setThreeAxisStatus(QStringLiteral("UIM 网关尚未打开，无法一键归零"));
+        return;
+    }
+    if (!m_threeAxisMotionReady) {
+        setThreeAxisStatus(QStringLiteral("打开后的安全停机或限位初始化未完成，禁止一键归零"));
         return;
     }
 
@@ -3260,10 +3288,57 @@ void DeviceMonitorPage::refreshThreeAxisMotors()
         if (!selectThreeAxisNode(index, &errorMessage)) {
             continue;
         }
+        // SFBK is the authoritative read-only query for S1/S2/S3. Keep it
+        // separate from the burst of motor feedback commands and leave the
+        // controller a complete protocol-processing interval on both sides.
+        // This also removes the previous immediate duplicate SFBK request.
+        QThread::msleep(kUimSensorCommandSpacingMs);
         errorMessage.clear();
-        m_threeAxisGateway.refreshSnapshot(&errorMessage);
+        bool sensorFeedbackOk = false;
+        {
+            // Publish sensors together with position below. A sensor-only
+            // snapshot after switching nodes has no position and would reset
+            // a held button while a perfectly valid move is still running.
+            const QSignalBlocker blocker(&m_threeAxisGateway);
+            sensorFeedbackOk = m_threeAxisGateway.refreshSensorFeedback(&errorMessage);
+        }
+        if (sensorFeedbackOk) {
+            // S3 water-level protection does not depend on motor position;
+            // keep processing it immediately at the original polling cadence.
+            handleWaterTankLevelSensors(m_threeAxisGateway.latestSnapshot());
+        }
+        if (index == kWaterTankHighLevelAxisIndex || index == kWaterTankLowLevelAxisIndex) {
+            QString& storedError = index == kWaterTankHighLevelAxisIndex
+                ? m_waterTankHighLevelReadError
+                : m_waterTankLowLevelReadError;
+            if (sensorFeedbackOk) {
+                storedError.clear();
+            } else {
+                const QString normalizedError = errorMessage.trimmed().isEmpty()
+                    ? QStringLiteral("UimSFBK 未返回传感器状态")
+                    : errorMessage.trimmed();
+                if (storedError != normalizedError) {
+                    appendThreeAxisLog(QStringLiteral("%1 水箱 S3 读取失败：%2")
+                                           .arg(threeAxisAxisTitle(index), normalizedError));
+                }
+                storedError = normalizedError;
+                updateWaterTankLimitStatus();
+            }
+        }
+
+        QThread::msleep(kUimSensorCommandSpacingMs);
         errorMessage.clear();
-        m_threeAxisGateway.refreshSensorFeedback(&errorMessage);
+        // Sensor feedback was already queried above. Do not issue SFBK again
+        // at the end of the general motor snapshot request.
+        if (m_threeAxisGateway.refreshSnapshot(&errorMessage, false)) {
+            reconcileThreeAxisContinuousMove(index, m_threeAxisGateway.latestSnapshot());
+        } else if (m_threeAxisContinuousMoving[static_cast<size_t>(index)]) {
+            stopThreeAxisContinuousMove(index);
+        } else {
+            m_threeAxisPositionKnown[static_cast<size_t>(index)] = false;
+            m_threeAxisSensorFeedbackKnown[static_cast<size_t>(index)] = false;
+            refreshThreeAxisUi();
+        }
     }
 }
 
@@ -3273,8 +3348,19 @@ void DeviceMonitorPage::moveThreeAxisMotor(int axisIndex, int direction)
         setThreeAxisStatus(QStringLiteral("急停未解除，禁止运动"));
         return;
     }
-    if (direction == 0) {
+    if (!m_threeAxisMotionReady) {
+        setThreeAxisStatus(QStringLiteral("打开后的安全停机或限位初始化未完成，禁止运动"));
         return;
+    }
+    if (m_threeAxisZeroingActive || axisIndex < 0 || axisIndex >= static_cast<int>(kThreeAxisNodeIds.size()) || direction == 0) {
+        return;
+    }
+
+    if (m_threeAxisContinuousMoving[static_cast<size_t>(axisIndex)]) {
+        stopThreeAxisContinuousMove(axisIndex);
+        if (m_threeAxisContinuousMoving[static_cast<size_t>(axisIndex)]) {
+            return;
+        }
     }
 
     const double stepAmount = threeAxisJogAmountForAxis(axisIndex);
@@ -3283,8 +3369,6 @@ void DeviceMonitorPage::moveThreeAxisMotor(int axisIndex, int direction)
         setThreeAxisStatus(QStringLiteral("点动量必须大于 0"));
         return;
     }
-
-    const int signedSteps = direction > 0 ? requestedSteps : -requestedSteps;
 
     QString errorMessage;
     if (!selectThreeAxisNode(axisIndex, &errorMessage)) {
@@ -3308,6 +3392,13 @@ void DeviceMonitorPage::moveThreeAxisMotor(int axisIndex, int direction)
     const int currentSteps = snapshot.position;
     m_threeAxisSoftPositionSteps[static_cast<size_t>(axisIndex)] = currentSteps;
     m_threeAxisPositionKnown[static_cast<size_t>(axisIndex)] = true;
+    const int signedSteps = threeAxisJogDeltaSteps(axisIndex, currentSteps, direction, requestedSteps);
+    if (signedSteps == 0) {
+        setThreeAxisStatus(QStringLiteral("%1 已在该方向的软件限位，禁止继续%2")
+                               .arg(threeAxisAxisTitle(axisIndex), threeAxisJogActionTitle(axisIndex, direction)));
+        refreshThreeAxisUi();
+        return;
+    }
     const int projectedSteps = currentSteps + signedSteps;
     if (!threeAxisAbsoluteTargetAllowed(axisIndex, projectedSteps, &errorMessage)) {
         setThreeAxisStatus(errorMessage);
@@ -3327,7 +3418,7 @@ void DeviceMonitorPage::moveThreeAxisMotor(int axisIndex, int direction)
 
     const QString actionName = QStringLiteral("%1 %2 %3 / %4 步")
                                    .arg(threeAxisJogActionTitle(axisIndex, direction))
-                                   .arg(stepAmount, 0, 'f', 2)
+                                   .arg(threeAxisStepsToDisplayUnits(axisIndex, std::abs(signedSteps)), 0, 'f', threeAxisDisplayDecimals(axisIndex))
                                    .arg(threeAxisDisplayUnitText(axisIndex))
                                    .arg(std::abs(signedSteps));
 
@@ -3337,15 +3428,15 @@ void DeviceMonitorPage::moveThreeAxisMotor(int axisIndex, int direction)
         refreshThreeAxisUi();
         return;
     }
-    if (!m_threeAxisGateway.setSpeed(threeAxisSpeedForAxis(axisIndex), &errorMessage)) {
+    if (!sendThreeAxisMove(axisIndex, signedSteps, &errorMessage)) {
         setThreeAxisStatus(QStringLiteral("%1 %2 失败：%3").arg(threeAxisAxisTitle(axisIndex), actionName, errorMessage));
         refreshThreeAxisUi();
         return;
     }
-    if (!m_threeAxisGateway.setStep(signedSteps, &errorMessage)) {
-        setThreeAxisStatus(QStringLiteral("%1 %2 失败：%3").arg(threeAxisAxisTitle(axisIndex), actionName, errorMessage));
-        refreshThreeAxisUi();
-        return;
+
+    if (std::abs(signedSteps) < requestedSteps) {
+        appendThreeAxisLog(QStringLiteral("%1 剩余行程不足设定点动距离，本次已限制到安全边界")
+                               .arg(threeAxisAxisTitle(axisIndex)));
     }
 
     appendThreeAxisLog(QStringLiteral("%1：%2，当前位置 %3，目标 %4 => OK")
@@ -3367,6 +3458,10 @@ void DeviceMonitorPage::startThreeAxisContinuousMove(int axisIndex, int directio
         setThreeAxisStatus(QStringLiteral("急停未解除，禁止持续移动"));
         return;
     }
+    if (!m_threeAxisMotionReady) {
+        setThreeAxisStatus(QStringLiteral("打开后的安全停机或限位初始化未完成，禁止持续移动"));
+        return;
+    }
     if (m_threeAxisZeroingActive) {
         setThreeAxisStatus(QStringLiteral("一键归零正在执行，禁止持续移动"));
         return;
@@ -3378,15 +3473,10 @@ void DeviceMonitorPage::startThreeAxisContinuousMove(int axisIndex, int directio
     if (direction == 0) {
         return;
     }
-
-    const double moveAmount = threeAxisContinuousAmountForAxis(axisIndex);
-    const int requestedSteps = threeAxisMoveSteps(axisIndex, moveAmount);
-    if (requestedSteps <= 0) {
-        setThreeAxisStatus(QStringLiteral("持续移动距离必须大于 0"));
+    const size_t arrayIndex = static_cast<size_t>(axisIndex);
+    if (m_threeAxisContinuousMoving[arrayIndex]) {
         return;
     }
-
-    const int signedSteps = direction > 0 ? requestedSteps : -requestedSteps;
 
     QString errorMessage;
     if (!selectThreeAxisNode(axisIndex, &errorMessage)) {
@@ -3411,7 +3501,18 @@ void DeviceMonitorPage::startThreeAxisContinuousMove(int axisIndex, int directio
     const int currentSteps = snapshot.position;
     m_threeAxisSoftPositionSteps[static_cast<size_t>(axisIndex)] = currentSteps;
     m_threeAxisPositionKnown[static_cast<size_t>(axisIndex)] = true;
-    const int projectedSteps = currentSteps + signedSteps;
+    // UIM only exposes relative-position commands.  Command the permitted end
+    // of travel, then cancel that command when the button is released.
+    const int projectedSteps = direction > 0
+        ? threeAxisMaximumSteps(axisIndex)
+        : threeAxisMinimumSteps(axisIndex);
+    const int signedSteps = projectedSteps - currentSteps;
+    if ((direction > 0 && signedSteps <= 0) || (direction < 0 && signedSteps >= 0)) {
+        setThreeAxisStatus(QStringLiteral("%1 已在该方向的软件限位，无法持续移动")
+                               .arg(threeAxisAxisTitle(axisIndex)));
+        refreshThreeAxisUi();
+        return;
+    }
     if (!threeAxisAbsoluteTargetAllowed(axisIndex, projectedSteps, &errorMessage)) {
         setThreeAxisStatus(errorMessage);
         refreshThreeAxisUi();
@@ -3423,11 +3524,9 @@ void DeviceMonitorPage::startThreeAxisContinuousMove(int axisIndex, int directio
         return;
     }
 
-    const QString actionName = QStringLiteral("持续%1 %2 %3 / %4 步")
+    const QString actionName = QStringLiteral("持续%1（按住移动，松开停止，目标 %2）")
                                    .arg(threeAxisJogActionTitle(axisIndex, direction))
-                                   .arg(moveAmount, 0, 'f', 2)
-                                   .arg(threeAxisDisplayUnitText(axisIndex))
-                                   .arg(std::abs(signedSteps));
+                                   .arg(threeAxisPositionText(axisIndex, projectedSteps));
 
     errorMessage.clear();
     if (!selectThreeAxisNode(axisIndex, &errorMessage)) {
@@ -3435,23 +3534,19 @@ void DeviceMonitorPage::startThreeAxisContinuousMove(int axisIndex, int directio
         refreshThreeAxisUi();
         return;
     }
-    if (!m_threeAxisGateway.setSpeed(threeAxisSpeedForAxis(axisIndex), &errorMessage)) {
-        setThreeAxisStatus(QStringLiteral("%1 %2 失败：%3").arg(threeAxisAxisTitle(axisIndex), actionName, errorMessage));
-        refreshThreeAxisUi();
-        return;
-    }
-    if (!m_threeAxisGateway.setStep(signedSteps, &errorMessage)) {
+    if (!sendThreeAxisMove(axisIndex, signedSteps, &errorMessage)) {
         setThreeAxisStatus(QStringLiteral("%1 %2 失败：%3").arg(threeAxisAxisTitle(axisIndex), actionName, errorMessage));
         refreshThreeAxisUi();
         return;
     }
 
-    m_threeAxisContinuousMoving[static_cast<size_t>(axisIndex)] = true;
-    appendThreeAxisLog(QStringLiteral("%1：%2，当前位置 %3，目标 %4 => 已开始")
+    m_threeAxisContinuousMoving[arrayIndex] = true;
+    m_threeAxisContinuousDirections[arrayIndex] = direction;
+    appendThreeAxisLog(QStringLiteral("%1：%2，当前位置 %3，预计最大行程 %4 步 => 已开始")
                            .arg(threeAxisAxisTitle(axisIndex))
                            .arg(actionName)
                            .arg(currentSteps)
-                           .arg(projectedSteps));
+                           .arg(std::abs(signedSteps)));
     refreshThreeAxisUi();
 }
 
@@ -3467,21 +3562,54 @@ void DeviceMonitorPage::stopThreeAxisContinuousMove(int axisIndex)
     }
 
     QString errorMessage;
-    if (!stopThreeAxisMotorAndRestoreSpeed(axisIndex, &errorMessage)) {
+    if (!stopThreeAxisMotor(axisIndex, &errorMessage)) {
         setThreeAxisStatus(QStringLiteral("%1 持续移动停止失败：%2").arg(threeAxisAxisTitle(axisIndex), errorMessage));
-    } else {
-        appendThreeAxisLog(QStringLiteral("%1 持续移动已停止").arg(threeAxisAxisTitle(axisIndex)));
+        // Keep the motion locked until cancellation succeeds. The next poll
+        // retries even if the mouse release was lost.
+        refreshThreeAxisUi();
+        return;
     }
 
+    appendThreeAxisLog(QStringLiteral("%1 持续移动已停止").arg(threeAxisAxisTitle(axisIndex)));
     m_threeAxisContinuousMoving[arrayIndex] = false;
-    refreshThreeAxisMotors();
+    m_threeAxisContinuousDirections[arrayIndex] = 0;
+    m_threeAxisContinuousNegativeButtons[arrayIndex]->setDown(false);
+    m_threeAxisContinuousPositiveButtons[arrayIndex]->setDown(false);
     refreshThreeAxisUi();
+}
+
+void DeviceMonitorPage::reconcileThreeAxisContinuousMove(
+    int axisIndex, const diji::adapters::uim::UimMotorSnapshot& snapshot)
+{
+    const size_t arrayIndex = static_cast<size_t>(axisIndex);
+    if (!m_threeAxisContinuousMoving[arrayIndex]) {
+        return;
+    }
+
+    const int direction = m_threeAxisContinuousDirections[arrayIndex];
+    const bool reachedTarget = snapshot.hasPosition && (direction > 0
+        ? snapshot.position >= threeAxisMaximumSteps(axisIndex)
+        : snapshot.position <= threeAxisMinimumSteps(axisIndex));
+    const auto* pressedButton = direction == kThreeAxisNegativeButtonDirections[arrayIndex]
+        ? m_threeAxisContinuousNegativeButtons[arrayIndex]
+        : m_threeAxisContinuousPositiveButtons[arrayIndex];
+    // Run only after a full poll, not inside snapshotChanged: cancelling a
+    // move itself emits snapshots and must not recursively cancel again.
+    if (reachedTarget || !snapshot.hasPosition
+        || !threeAxisFeedbackAllowsDirection(axisIndex, direction, snapshot)
+        || !pressedButton->isDown()) {
+        stopThreeAxisContinuousMove(axisIndex);
+    }
 }
 
 void DeviceMonitorPage::moveThreeAxisMotorToAbsolute(int axisIndex)
 {
     if (m_threeAxisEmergencyStopActive) {
         setThreeAxisStatus(QStringLiteral("急停未解除，禁止运动"));
+        return;
+    }
+    if (!m_threeAxisMotionReady) {
+        setThreeAxisStatus(QStringLiteral("打开后的安全停机或限位初始化未完成，禁止运动"));
         return;
     }
     if (axisIndex < 0 || axisIndex >= static_cast<int>(kThreeAxisNodeIds.size())) {
@@ -3552,12 +3680,7 @@ void DeviceMonitorPage::moveThreeAxisMotorToAbsolute(int axisIndex)
         refreshThreeAxisUi();
         return;
     }
-    if (!m_threeAxisGateway.setSpeed(threeAxisSpeedForAxis(axisIndex), &errorMessage)) {
-        setThreeAxisStatus(QStringLiteral("%1 %2 失败：%3").arg(threeAxisAxisTitle(axisIndex), actionName, errorMessage));
-        refreshThreeAxisUi();
-        return;
-    }
-    if (!m_threeAxisGateway.setStep(deltaSteps, &errorMessage)) {
+    if (!sendThreeAxisMove(axisIndex, deltaSteps, &errorMessage)) {
         setThreeAxisStatus(QStringLiteral("%1 %2 失败：%3").arg(threeAxisAxisTitle(axisIndex), actionName, errorMessage));
         refreshThreeAxisUi();
         return;
@@ -3589,6 +3712,14 @@ void DeviceMonitorPage::enableThreeAxisMotor(int axisIndex)
 
 void DeviceMonitorPage::disableThreeAxisMotor(int axisIndex)
 {
+    QString stopError;
+    if (!stopThreeAxisMotor(axisIndex, &stopError)) {
+        setThreeAxisStatus(
+            QStringLiteral("%1 \u65ad\u7535\u524d\u5b89\u5168\u505c\u673a\u5931\u8d25\uff1a%2")
+                .arg(threeAxisAxisTitle(axisIndex), stopError));
+        refreshThreeAxisUi();
+        return;
+    }
     runThreeAxisCommand(axisIndex, QStringLiteral("断电"), [this](QString* error) {
         return m_threeAxisGateway.disableMotor(error);
     });
@@ -3614,6 +3745,19 @@ bool DeviceMonitorPage::configureThreeAxisMotorParameters()
         }
         issued = true;
 
+        // Set SPD to zero before clearing STP. A controller can retain a
+        // relative move across gateway close/open; restoring a non-zero speed
+        // before STP is cleared resumes that move toward a limit.
+        errorMessage.clear();
+        if (!cancelThreeAxisMotorMotion(index, &errorMessage)) {
+            appendThreeAxisLog(QStringLiteral("%1 打开时安全停机失败：%2；已禁止该次打开后的所有运动")
+                                   .arg(threeAxisAxisTitle(index), errorMessage));
+            allOk = false;
+            continue;
+        }
+        appendThreeAxisLog(QStringLiteral("%1 打开时已清除残余位移，速度保持 0")
+                               .arg(threeAxisAxisTitle(index)));
+
         const double currentAmps = kThreeAxisCurrentAmps.at(static_cast<size_t>(index));
         errorMessage.clear();
         if (!m_threeAxisGateway.setCurrentAmps(currentAmps, &errorMessage)) {
@@ -3629,29 +3773,7 @@ bool DeviceMonitorPage::configureThreeAxisMotorParameters()
         }
 
         errorMessage.clear();
-        if (!m_threeAxisGateway.setSpeed(kThreeAxisDefaultSpeed, &errorMessage)) {
-            appendThreeAxisLog(QStringLiteral("%1 固定期望速度设置为 %2 失败：%3")
-                                   .arg(threeAxisAxisTitle(index))
-                                   .arg(kThreeAxisDefaultSpeed)
-                                   .arg(errorMessage));
-            allOk = false;
-        } else {
-            appendThreeAxisLog(QStringLiteral("%1 固定期望速度设置为 %2 => OK")
-                                   .arg(threeAxisAxisTitle(index))
-                                   .arg(kThreeAxisDefaultSpeed));
-        }
-
-        diji::adapters::uim::UimSensorActionConfig actionConfig {};
-        errorMessage.clear();
-        if (!m_threeAxisGateway.readSensorActionConfig(&actionConfig, &errorMessage)) {
-            appendThreeAxisLog(QStringLiteral("%1 读取 S1/S2 动作失败，将使用上升沿无动作继续写入：%2")
-                                   .arg(threeAxisAxisTitle(index), errorMessage));
-        }
-
-        actionConfig.sensor1FallingAction = kThreeAxisSensorDecelerateToStopAction;
-        actionConfig.sensor2FallingAction = kThreeAxisSensorDecelerateToStopAction;
-        errorMessage.clear();
-        if (!m_threeAxisGateway.setSensorActionConfig(actionConfig, &errorMessage)) {
+        if (!m_threeAxisGateway.setSensor12FallingAction(kThreeAxisSensorDecelerateToStopAction, &errorMessage)) {
             appendThreeAxisLog(QStringLiteral("%1 S1/S2 下降沿绑定“减速直到停止”失败：%2")
                                    .arg(threeAxisAxisTitle(index), errorMessage));
             allOk = false;
@@ -3666,6 +3788,22 @@ bool DeviceMonitorPage::configureThreeAxisMotorParameters()
         return false;
     }
     return allOk;
+}
+
+bool DeviceMonitorPage::sendThreeAxisMove(int axisIndex, int deltaSteps, QString* errorMessage)
+{
+    // A limit stop can leave STP pending in the controller. Clear it at
+    // zero speed before restoring speed for the new (retreat) command.
+    if (!cancelThreeAxisMotorMotion(axisIndex, errorMessage)
+        || !m_threeAxisGateway.setSpeed(threeAxisSpeedForAxis(axisIndex), errorMessage)) {
+        return false;
+    }
+    if (!m_threeAxisGateway.setStep(deltaSteps, errorMessage)) {
+        QString ignoredError;
+        cancelThreeAxisMotorMotion(axisIndex, &ignoredError);
+        return false;
+    }
+    return true;
 }
 
 bool DeviceMonitorPage::cancelThreeAxisMotorMotion(int axisIndex, QString* errorMessage)
@@ -3739,25 +3877,13 @@ bool DeviceMonitorPage::refreshThreeAxisMotorSnapshot(
     return true;
 }
 
-bool DeviceMonitorPage::stopThreeAxisMotorAndRestoreSpeed(int axisIndex, QString* errorMessage)
+bool DeviceMonitorPage::stopThreeAxisMotor(int axisIndex, QString* errorMessage)
 {
     QString localError;
     if (!cancelThreeAxisMotorMotion(axisIndex, &localError)) {
         if (errorMessage != nullptr) {
             *errorMessage = QStringLiteral("%1 停止失败：%2")
                                 .arg(threeAxisAxisTitle(axisIndex), localError);
-        }
-        return false;
-    }
-
-    localError.clear();
-    if (!selectThreeAxisNode(axisIndex, &localError)
-        || !m_threeAxisGateway.setSpeed(kThreeAxisDefaultSpeed, &localError)) {
-        if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("%1 停止后恢复固定速度 %2 失败：%3")
-                                .arg(threeAxisAxisTitle(axisIndex))
-                                .arg(kThreeAxisDefaultSpeed)
-                                .arg(localError);
         }
         return false;
     }
@@ -3797,7 +3923,7 @@ bool DeviceMonitorPage::zeroThreeAxisLinearMotorToS2(int axisIndex, QString* err
             || (value.hasPosition && std::abs(value.position) <= kThreeAxisLinearZeroToleranceSteps);
     };
     if (reachedLinearZero(snapshot)) {
-        if (!stopThreeAxisMotorAndRestoreSpeed(axisIndex, errorMessage)) {
+        if (!stopThreeAxisMotor(axisIndex, errorMessage)) {
             return false;
         }
         appendThreeAxisLog(QStringLiteral("%1 一键归零：已在 S2 零点范围，当前位置 %2 步，S2=%3")
@@ -3864,7 +3990,7 @@ bool DeviceMonitorPage::zeroThreeAxisLinearMotorToS2(int axisIndex, QString* err
             return false;
         }
         if (reachedLinearZero(snapshot)) {
-            if (!stopThreeAxisMotorAndRestoreSpeed(axisIndex, errorMessage)) {
+            if (!stopThreeAxisMotor(axisIndex, errorMessage)) {
                 return false;
             }
             appendThreeAxisLog(QStringLiteral("%1 一键归零完成：当前位置 %2 步，S2=%3")
@@ -3903,7 +4029,7 @@ bool DeviceMonitorPage::zeroThreeAxisSwingMotor(QString* errorMessage)
 
     const int startPosition = snapshot.position;
     if (std::abs(startPosition) <= kThreeAxisSwingZeroToleranceSteps) {
-        if (!stopThreeAxisMotorAndRestoreSpeed(kSwingAxisIndex, errorMessage)) {
+        if (!stopThreeAxisMotor(kSwingAxisIndex, errorMessage)) {
             return false;
         }
         appendThreeAxisLog(QStringLiteral("%1 一键归零：已在 0° 零点范围，当前位置 %2 步")
@@ -3970,7 +4096,7 @@ bool DeviceMonitorPage::zeroThreeAxisSwingMotor(QString* errorMessage)
         const bool crossedZero = (startPosition > 0 && snapshot.position <= 0)
             || (startPosition < 0 && snapshot.position >= 0);
         if (std::abs(snapshot.position) <= kThreeAxisSwingZeroToleranceSteps || crossedZero) {
-            if (!stopThreeAxisMotorAndRestoreSpeed(kSwingAxisIndex, errorMessage)) {
+            if (!stopThreeAxisMotor(kSwingAxisIndex, errorMessage)) {
                 return false;
             }
             appendThreeAxisLog(QStringLiteral("%1 一键归零完成：当前位置 %2 步（0°）")
@@ -4029,6 +4155,10 @@ bool DeviceMonitorPage::selectThreeAxisNode(int axisIndex, QString* errorMessage
         }
         return false;
     }
+    // Selecting a node invalidates the gateway's previous-node feedback but
+    // is not a position read. Publish only the subsequent measured snapshot;
+    // otherwise the temporary empty snapshot releases a held UI button.
+    const QSignalBlocker blocker(&m_threeAxisGateway);
     return m_threeAxisGateway.selectNode(static_cast<quint32>(kThreeAxisNodeIds.at(static_cast<size_t>(axisIndex))), errorMessage);
 }
 
@@ -4131,15 +4261,6 @@ double DeviceMonitorPage::threeAxisJogAmountForAxis(int axisIndex) const
     return jogSpin != nullptr ? jogSpin->value() : 0.0;
 }
 
-double DeviceMonitorPage::threeAxisContinuousAmountForAxis(int axisIndex) const
-{
-    if (axisIndex < 0 || axisIndex >= static_cast<int>(m_threeAxisContinuousDistanceSpins.size())) {
-        return 0.0;
-    }
-    QDoubleSpinBox* continuousSpin = m_threeAxisContinuousDistanceSpins[static_cast<size_t>(axisIndex)];
-    return continuousSpin != nullptr ? continuousSpin->value() : 0.0;
-}
-
 QString DeviceMonitorPage::threeAxisJogActionTitle(int axisIndex, int direction) const
 {
     if (axisIndex == 1) {
@@ -4163,7 +4284,7 @@ bool DeviceMonitorPage::threeAxisAbsoluteTargetAllowed(int axisIndex, int target
     const int minimumSteps = threeAxisMinimumSteps(axisIndex);
     const int maximumSteps = threeAxisMaximumSteps(axisIndex);
     const int decimals = threeAxisDisplayDecimals(axisIndex);
-    const QString rangeText = QStringLiteral("S2=%1 %2 到 S1=%3 %2（%4 到 %5 步）")
+    const QString rangeText = QStringLiteral("最小=%1 %2 到 最大=%3 %2（%4 到 %5 步）")
                                   .arg(threeAxisMinimumDisplayUnits(axisIndex), 0, 'f', decimals)
                                   .arg(threeAxisDisplayUnitText(axisIndex))
                                   .arg(threeAxisMaximumDisplayUnits(axisIndex), 0, 'f', decimals)
@@ -4181,7 +4302,20 @@ bool DeviceMonitorPage::threeAxisAbsoluteTargetAllowed(int axisIndex, int target
     return true;
 }
 
-bool DeviceMonitorPage::threeAxisCachedSensorLimitAllowsMove(int axisIndex, int deltaSteps) const
+int DeviceMonitorPage::threeAxisJogDeltaSteps(int axisIndex, int currentSteps, int direction, int requestedSteps) const
+{
+    if (axisIndex < 0 || axisIndex >= static_cast<int>(kThreeAxisNodeIds.size()) || direction == 0 || requestedSteps <= 0) {
+        return 0;
+    }
+    const qint64 target = std::clamp<qint64>(
+        static_cast<qint64>(currentSteps) + (direction > 0 ? requestedSteps : -requestedSteps),
+        threeAxisMinimumSteps(axisIndex), threeAxisMaximumSteps(axisIndex));
+    const qint64 delta = target - currentSteps;
+    return ((direction > 0 && delta > 0) || (direction < 0 && delta < 0)) ? static_cast<int>(delta) : 0;
+}
+
+bool DeviceMonitorPage::threeAxisFeedbackAllowsDirection(
+    int axisIndex, int deltaSteps, const diji::adapters::uim::UimMotorSnapshot& snapshot) const
 {
     if (deltaSteps == 0) {
         return true;
@@ -4190,20 +4324,41 @@ bool DeviceMonitorPage::threeAxisCachedSensorLimitAllowsMove(int axisIndex, int 
         return false;
     }
 
-    const size_t arrayIndex = static_cast<size_t>(axisIndex);
-    if (!m_threeAxisSensorFeedbackKnown[arrayIndex]) {
+    if (snapshot.nodeId != static_cast<quint32>(kThreeAxisNodeIds[static_cast<size_t>(axisIndex)])
+        || !snapshot.hasSensorFeedback) {
         return false;
     }
 
-    const bool movingTowardS1 = deltaSteps > 0;
-    const bool movingTowardS2 = deltaSteps < 0;
-    if (movingTowardS1 && !m_threeAxisSensor1High[arrayIndex]) {
-        return false;
-    }
-    if (movingTowardS2 && !m_threeAxisSensor2High[arrayIndex]) {
-        return false;
+    if (!snapshot.sensor1 || !snapshot.sensor2) {
+        // The observed S1 signal is not a reliable indication of which end
+        // was reached (including node 8 at 0.100 cm). All axes determine
+        // retreat from measured position within their calibrated travel.
+        if ((!snapshot.sensor1 && !snapshot.sensor2) || !snapshot.hasPosition) {
+            return false;
+        }
+        const int center = axisIndex == 0 ? 0 : (threeAxisMinimumSteps(axisIndex) + threeAxisMaximumSteps(axisIndex)) / 2;
+        const int tolerance = axisIndex == 0 ? kThreeAxisSwingZeroToleranceSteps : kThreeAxisLinearZeroToleranceSteps;
+        // A limit at the center is ambiguous; keep both directions blocked.
+        return (snapshot.position > center + tolerance && deltaSteps < 0)
+            || (snapshot.position < center - tolerance && deltaSteps > 0);
     }
     return true;
+}
+
+bool DeviceMonitorPage::threeAxisCachedSensorLimitAllowsMove(int axisIndex, int deltaSteps) const
+{
+    if (axisIndex < 0 || axisIndex >= static_cast<int>(kThreeAxisNodeIds.size())) {
+        return false;
+    }
+    const size_t arrayIndex = static_cast<size_t>(axisIndex);
+    diji::adapters::uim::UimMotorSnapshot snapshot;
+    snapshot.nodeId = kThreeAxisNodeIds[arrayIndex];
+    snapshot.hasPosition = m_threeAxisPositionKnown[arrayIndex];
+    snapshot.position = m_threeAxisSoftPositionSteps[arrayIndex];
+    snapshot.hasSensorFeedback = m_threeAxisSensorFeedbackKnown[arrayIndex];
+    snapshot.sensor1 = m_threeAxisSensor1High[arrayIndex];
+    snapshot.sensor2 = m_threeAxisSensor2High[arrayIndex];
+    return threeAxisFeedbackAllowsDirection(axisIndex, deltaSteps, snapshot);
 }
 
 bool DeviceMonitorPage::threeAxisSensorLimitAllowsMove(int axisIndex, int deltaSteps, QString* errorMessage)
@@ -4236,28 +4391,17 @@ bool DeviceMonitorPage::threeAxisSensorLimitAllowsMove(int axisIndex, int deltaS
         return false;
     }
 
-    const bool movingTowardS1 = deltaSteps > 0;
-    const bool movingTowardS2 = deltaSteps < 0;
-    if (movingTowardS1 && !snapshot.sensor1) {
+    if (!threeAxisFeedbackAllowsDirection(axisIndex, deltaSteps, snapshot)) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("%1 S1=0，当前位置已在 S1 限位，禁止继续向 S1 移动")
-                                .arg(threeAxisAxisTitle(axisIndex));
+            *errorMessage = QStringLiteral("%1 限位保护：当前位置 %2，禁止%3；仅允许朝安全范围内退回")
+                                .arg(threeAxisAxisTitle(axisIndex))
+                                .arg(threeAxisPositionText(axisIndex, snapshot.position))
+                                .arg(threeAxisJogActionTitle(axisIndex, deltaSteps));
         }
-        appendThreeAxisLog(QStringLiteral("%1 限位保护：S1=0, S2=%2, S3=%3, delta=%4")
-                               .arg(threeAxisAxisTitle(axisIndex))
-                               .arg(snapshot.sensor2 ? 1 : 0)
-                               .arg(snapshot.sensor3 ? 1 : 0)
-                               .arg(deltaSteps));
-        return false;
-    }
-    if (movingTowardS2 && !snapshot.sensor2) {
-        if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("%1 S2=0，当前位置已在 S2 限位，禁止继续向 S2 移动")
-                                .arg(threeAxisAxisTitle(axisIndex));
-        }
-        appendThreeAxisLog(QStringLiteral("%1 限位保护：S1=%2, S2=0, S3=%3, delta=%4")
+        appendThreeAxisLog(QStringLiteral("%1 限位保护：S1=%2, S2=%3, S3=%4, delta=%5")
                                .arg(threeAxisAxisTitle(axisIndex))
                                .arg(snapshot.sensor1 ? 1 : 0)
+                               .arg(snapshot.sensor2 ? 1 : 0)
                                .arg(snapshot.sensor3 ? 1 : 0)
                                .arg(deltaSteps));
         return false;
@@ -4366,6 +4510,7 @@ void DeviceMonitorPage::updateThreeAxisNodeStatus()
             m_threeAxisPositionKnown[static_cast<size_t>(index)] = false;
             m_threeAxisSensorFeedbackKnown[static_cast<size_t>(index)] = false;
             m_threeAxisContinuousMoving[static_cast<size_t>(index)] = false;
+            m_threeAxisContinuousDirections[static_cast<size_t>(index)] = 0;
             if (m_threeAxisSoftPositionLabels[static_cast<size_t>(index)] != nullptr) {
                 setStableElidedText(m_threeAxisSoftPositionLabels[static_cast<size_t>(index)], QStringLiteral("未查询"));
             }
@@ -4412,7 +4557,8 @@ void DeviceMonitorPage::refreshThreeAxisUi()
         m_threeAxisGatewayButton->setEnabled(!m_threeAxisZeroingActive && (gatewayOpen || hasDevice));
     }
     if (m_threeAxisEnableAllButton != nullptr) {
-        m_threeAxisEnableAllButton->setEnabled(gatewayOpen && !m_threeAxisEmergencyStopActive && !m_threeAxisZeroingActive);
+        m_threeAxisEnableAllButton->setEnabled(
+            gatewayOpen && m_threeAxisMotionReady && !m_threeAxisEmergencyStopActive && !m_threeAxisZeroingActive);
     }
     if (m_threeAxisDisableAllButton != nullptr) {
         m_threeAxisDisableAllButton->setEnabled(gatewayOpen && !m_threeAxisZeroingActive);
@@ -4426,8 +4572,12 @@ void DeviceMonitorPage::refreshThreeAxisUi()
     if (m_threeAxisZeroAllButton != nullptr) {
         m_threeAxisZeroAllButton->setEnabled(
             gatewayOpen
+            && m_threeAxisMotionReady
             && !m_threeAxisEmergencyStopActive
             && !m_threeAxisZeroingActive
+            && std::none_of(m_threeAxisContinuousMoving.cbegin(), m_threeAxisContinuousMoving.cend(), [](bool moving) {
+                return moving;
+            })
             && threeAxisNodeAvailable(0)
             && threeAxisNodeAvailable(1)
             && threeAxisNodeAvailable(2));
@@ -4435,15 +4585,17 @@ void DeviceMonitorPage::refreshThreeAxisUi()
 
     for (int index = 0; index < static_cast<int>(kThreeAxisNodeIds.size()); ++index) {
         const bool available = gatewayOpen && threeAxisNodeAvailable(index);
-        const bool canMove = available && !m_threeAxisEmergencyStopActive && !m_threeAxisZeroingActive;
+        const bool canMove = available && m_threeAxisMotionReady && !m_threeAxisEmergencyStopActive && !m_threeAxisZeroingActive;
         const size_t arrayIndex = static_cast<size_t>(index);
+        const bool continuousMoveActive = m_threeAxisContinuousMoving[arrayIndex];
+        const bool canStartIndependentMove = canMove && !continuousMoveActive;
 
         const bool positionKnown = m_threeAxisPositionKnown[arrayIndex];
         const int currentSteps = m_threeAxisSoftPositionSteps[arrayIndex];
         bool targetAllowed = false;
         QDoubleSpinBox* targetSpin = m_threeAxisTargetPositionSpins[arrayIndex];
         if (targetSpin != nullptr) {
-            targetSpin->setEnabled(canMove);
+            targetSpin->setEnabled(canStartIndependentMove);
             const double targetValue = targetSpin->value();
             const double displayTolerance = std::pow(10.0, -threeAxisDisplayDecimals(index)) * 0.5;
             targetAllowed = targetValue >= threeAxisMinimumDisplayUnits(index) - displayTolerance
@@ -4456,52 +4608,42 @@ void DeviceMonitorPage::refreshThreeAxisUi()
             }
         }
         if (m_threeAxisMoveToButtons[arrayIndex] != nullptr) {
-            m_threeAxisMoveToButtons[arrayIndex]->setEnabled(canMove && positionKnown && targetAllowed);
+            m_threeAxisMoveToButtons[arrayIndex]->setEnabled(canStartIndependentMove && positionKnown && targetAllowed);
         }
 
         bool negativeAllowed = false;
         bool positiveAllowed = false;
         QDoubleSpinBox* jogSpin = m_threeAxisJogDistanceSpins[arrayIndex];
         if (jogSpin != nullptr) {
-            jogSpin->setEnabled(canMove);
+            jogSpin->setEnabled(canStartIndependentMove);
             const int jogSteps = threeAxisMoveSteps(index, jogSpin->value());
             if (positionKnown && jogSteps > 0) {
-                const int negativeDeltaSteps = kThreeAxisNegativeButtonDirections.at(arrayIndex) * jogSteps;
-                const int positiveDeltaSteps = kThreeAxisPositiveButtonDirections.at(arrayIndex) * jogSteps;
-                negativeAllowed = threeAxisAbsoluteTargetAllowed(index, currentSteps + negativeDeltaSteps, nullptr)
+                const int negativeDeltaSteps = threeAxisJogDeltaSteps(index, currentSteps, kThreeAxisNegativeButtonDirections[arrayIndex], jogSteps);
+                const int positiveDeltaSteps = threeAxisJogDeltaSteps(index, currentSteps, kThreeAxisPositiveButtonDirections[arrayIndex], jogSteps);
+                negativeAllowed = negativeDeltaSteps != 0
                     && threeAxisCachedSensorLimitAllowsMove(index, negativeDeltaSteps);
-                positiveAllowed = threeAxisAbsoluteTargetAllowed(index, currentSteps + positiveDeltaSteps, nullptr)
+                positiveAllowed = positiveDeltaSteps != 0
                     && threeAxisCachedSensorLimitAllowsMove(index, positiveDeltaSteps);
             }
         }
-        if (m_threeAxisNegativeButtons[arrayIndex] != nullptr) {
-            m_threeAxisNegativeButtons[arrayIndex]->setEnabled(canMove && negativeAllowed);
-        }
-        if (m_threeAxisPositiveButtons[arrayIndex] != nullptr) {
-            m_threeAxisPositiveButtons[arrayIndex]->setEnabled(canMove && positiveAllowed);
-        }
-
-        bool continuousNegativeAllowed = false;
-        bool continuousPositiveAllowed = false;
-        QDoubleSpinBox* continuousSpin = m_threeAxisContinuousDistanceSpins[arrayIndex];
-        if (continuousSpin != nullptr) {
-            continuousSpin->setEnabled(canMove);
-            const int continuousSteps = threeAxisMoveSteps(index, continuousSpin->value());
-            if (positionKnown && continuousSteps > 0) {
-                const int negativeDeltaSteps = kThreeAxisNegativeButtonDirections.at(arrayIndex) * continuousSteps;
-                const int positiveDeltaSteps = kThreeAxisPositiveButtonDirections.at(arrayIndex) * continuousSteps;
-                continuousNegativeAllowed = threeAxisAbsoluteTargetAllowed(index, currentSteps + negativeDeltaSteps, nullptr)
-                    && threeAxisCachedSensorLimitAllowsMove(index, negativeDeltaSteps);
-                continuousPositiveAllowed = threeAxisAbsoluteTargetAllowed(index, currentSteps + positiveDeltaSteps, nullptr)
-                    && threeAxisCachedSensorLimitAllowsMove(index, positiveDeltaSteps);
+        // Jog and hold controls share exactly the same directional decision.
+        // A pressed button never overrides a limit. Cancel after the full
+        // poll instead of re-entering SDK commands from a UI state change.
+        const auto setDirectionButtons = [](QPushButton* jogButton, QPushButton* holdButton, bool enabled) {
+            if (jogButton != nullptr) {
+                jogButton->setEnabled(enabled);
             }
-        }
-        if (m_threeAxisContinuousNegativeButtons[arrayIndex] != nullptr) {
-            m_threeAxisContinuousNegativeButtons[arrayIndex]->setEnabled(canMove && continuousNegativeAllowed);
-        }
-        if (m_threeAxisContinuousPositiveButtons[arrayIndex] != nullptr) {
-            m_threeAxisContinuousPositiveButtons[arrayIndex]->setEnabled(canMove && continuousPositiveAllowed);
-        }
+            if (holdButton != nullptr) {
+                const QSignalBlocker blocker(holdButton);
+                holdButton->setEnabled(enabled);
+            }
+        };
+        const bool negativeEnabled = canMove && negativeAllowed
+            && (!continuousMoveActive || m_threeAxisContinuousDirections[arrayIndex] == kThreeAxisNegativeButtonDirections[arrayIndex]);
+        const bool positiveEnabled = canMove && positiveAllowed
+            && (!continuousMoveActive || m_threeAxisContinuousDirections[arrayIndex] == kThreeAxisPositiveButtonDirections[arrayIndex]);
+        setDirectionButtons(m_threeAxisNegativeButtons[arrayIndex], m_threeAxisContinuousNegativeButtons[arrayIndex], negativeEnabled);
+        setDirectionButtons(m_threeAxisPositiveButtons[arrayIndex], m_threeAxisContinuousPositiveButtons[arrayIndex], positiveEnabled);
     }
 }
 
@@ -5814,6 +5956,7 @@ void DeviceMonitorPage::handleWaterTankLevelSensors(const diji::adapters::uim::U
 
     const int nodeId = static_cast<int>(snapshot.nodeId);
     if (nodeId == kThreeAxisNodeIds.at(static_cast<size_t>(kWaterTankHighLevelAxisIndex))) {
+        m_waterTankHighLevelReadError.clear();
         m_waterTankHighLevelKnown = true;
         const bool highLevelActive = motorSensorTriggered(snapshot, kWaterTankUpperLimitSensorIndex);
         m_waterTankHighLevelActive =
@@ -5826,6 +5969,7 @@ void DeviceMonitorPage::handleWaterTankLevelSensors(const diji::adapters::uim::U
         return;
     }
 
+    m_waterTankLowLevelReadError.clear();
     m_waterTankLowLevelKnown = true;
     const bool lowLevelActive = motorSensorTriggered(snapshot, kWaterTankLowerLimitSensorIndex);
     m_waterTankLowLevelActive =
@@ -5847,12 +5991,47 @@ void DeviceMonitorPage::updateWaterTankLimitStatus()
         return;
     }
 
-    const QString highText = m_waterTankHighLevelKnown
-        ? (m_waterTankHighLevelActive ? QStringLiteral("已触发") : QStringLiteral("正常"))
-        : QStringLiteral("未读取");
-    const QString lowText = m_waterTankLowLevelKnown
-        ? (m_waterTankLowLevelActive ? QStringLiteral("报警") : QStringLiteral("正常"))
-        : QStringLiteral("未读取");
+    const auto statusText = [this](
+                                int axisIndex,
+                                bool known,
+                                bool active,
+                                const QString& activeText,
+                                const QString& readError) {
+        QString text;
+        if (known) {
+            text = active
+                ? QStringLiteral("%1（S3=0，低电平）").arg(activeText)
+                : QStringLiteral("正常（S3=1，高电平）");
+            if (!readError.isEmpty()) {
+                text += QStringLiteral("；刷新失败，保留上次值：%1").arg(readError);
+            }
+            return text;
+        }
+        if (!m_threeAxisGateway.isGatewayOpen()) {
+            return QStringLiteral("未读取（UIM 网关未打开）");
+        }
+        if (!threeAxisNodeAvailable(axisIndex)) {
+            return QStringLiteral("未读取（未发现 CAN 节点 %1）")
+                .arg(kThreeAxisNodeIds.at(static_cast<size_t>(axisIndex)));
+        }
+        if (!readError.isEmpty()) {
+            return QStringLiteral("读取失败：%1").arg(readError);
+        }
+        return QStringLiteral("正在读取 S3");
+    };
+
+    const QString highText = statusText(
+        kWaterTankHighLevelAxisIndex,
+        m_waterTankHighLevelKnown,
+        m_waterTankHighLevelActive,
+        QStringLiteral("已触发"),
+        m_waterTankHighLevelReadError);
+    const QString lowText = statusText(
+        kWaterTankLowLevelAxisIndex,
+        m_waterTankLowLevelKnown,
+        m_waterTankLowLevelActive,
+        QStringLiteral("报警"),
+        m_waterTankLowLevelReadError);
 
     const QString prefix = m_waterTankLowLevelActive
         ? QStringLiteral("水箱下限位报警：液位过低")

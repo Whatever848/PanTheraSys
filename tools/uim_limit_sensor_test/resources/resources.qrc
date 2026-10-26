@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/styles">
+        <file alias="panthera.qss">panthera.qss</file>
+    </qresource>
+</RCC>
+

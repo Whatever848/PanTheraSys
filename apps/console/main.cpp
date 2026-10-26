@@ -415,11 +415,15 @@ public:
             headerLayout->addWidget(roleBlock);
         }
 
-        headerLayout->addStretch();
-
         m_statusLabel = new QLabel();
         m_statusLabel->setObjectName(QStringLiteral("navStatusLabel"));
-        headerLayout->addWidget(m_statusLabel);
+        // Approval can turn a short interlock message into a much longer one.
+        // The status text must never increase a clinical window's minimum
+        // width, otherwise a full-screen window can spill onto another panel.
+        m_statusLabel->setMinimumWidth(0);
+        m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        m_statusLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        headerLayout->addWidget(m_statusLabel, 1);
         headerLayout->addSpacing(8);
 
         if (role == ClinicalDisplayRole::Planning) {
@@ -788,9 +792,11 @@ private:
     void updateStatusSummary()
     {
         const panthera::core::SafetySnapshot snapshot = m_safetyKernel->snapshot();
-        m_statusLabel->setText(
+        const QString summary =
             QStringLiteral("医生：%1 | 系统%2 | 模式：%3 | 联锁：%4")
-                .arg(m_context->currentOperatorLabel(), panthera::core::toDisplayString(snapshot.state), panthera::core::toDisplayString(m_safetyKernel->mode()), snapshot.message));
+                .arg(m_context->currentOperatorLabel(), panthera::core::toDisplayString(snapshot.state), panthera::core::toDisplayString(m_safetyKernel->mode()), snapshot.message);
+        m_statusLabel->setText(summary);
+        m_statusLabel->setToolTip(summary);
     }
 
     panthera::core::ApplicationContext* m_context {nullptr};

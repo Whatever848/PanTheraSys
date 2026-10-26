@@ -1,6 +1,8 @@
 #include "modules/treatment/treatment_page.h"
 
 #include "adapters/anthone/lu926_temperature_protocol.h"
+#include "adapters/mysql/medical_evidence_document_writer.h"
+#include "adapters/mysql/mysql_treatment_workflow_repository.h"
 #include "modules/shared/system_sound_guard.h"
 #include "modules/shared/therapy_imaging_algorithms.h"
 #include "modules/shared/ultrasound_geometry.h"
@@ -10,12 +12,14 @@
 
 #include <QAbstractSpinBox>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QFile>
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
@@ -617,6 +621,16 @@ QString treatmentResolveRuntimePath(const QString& relativePath)
     return QDir::cleanPath(QDir::current().absoluteFilePath(relativePath));
 }
 
+QString treatmentProjectRuntimePath(const QString& relativePath)
+{
+    const QFileInfo defaultsInfo(treatmentResolveRuntimePath(QStringLiteral("config/defaults.ini")));
+    if (defaultsInfo.exists()) {
+        const QDir projectRoot(defaultsInfo.absoluteDir());
+        return QDir::cleanPath(projectRoot.absoluteFilePath(QStringLiteral("../%1").arg(relativePath)));
+    }
+    return QDir::cleanPath(QDir::current().absoluteFilePath(relativePath));
+}
+
 int treatmentSafePort(int value, int fallback)
 {
     return value >= 1 && value <= 65535 ? value : fallback;
@@ -824,10 +838,14 @@ TreatmentPage::TreatmentPage(
 
     m_startButton = new QPushButton(QStringLiteral("\u5f00\u59cb"));
     m_pauseButton = new QPushButton(QStringLiteral("\u6682\u505c"));
-    m_stopButton = new QPushButton(QStringLiteral("\u7ec8\u6b62"));
+    m_stopButton = new QPushButton(QStringLiteral("\u7ed3\u675f"));
     m_startButton->setObjectName(QStringLiteral("treatmentControlButton"));
     m_pauseButton->setObjectName(QStringLiteral("treatmentControlButton"));
     m_stopButton->setObjectName(QStringLiteral("treatmentControlButton"));
+    m_stopButton->setToolTip(QStringLiteral("\u5b89\u5168\u505c\u6b62\u5f53\u524d\u56fe\u5c42\u6cbb\u7597\uff0c\u53ef\u4ee5\u5207\u6362\u5230\u5176\u4ed6\u56fe\u5c42\u7ee7\u7eed\u6cbb\u7597"));
+    m_terminatePlanButton = new QPushButton(QStringLiteral("\u7ec8\u6b62\u6cbb\u7597"));
+    m_terminatePlanButton->setObjectName(QStringLiteral("treatmentTerminatePlanButton"));
+    m_terminatePlanButton->setToolTip(QStringLiteral("\u5b89\u5168\u505c\u6b62\u5e76\u7ec8\u6b62\u5f53\u524d\u6cbb\u7597\u65b9\u6848\u7684\u5168\u90e8\u56fe\u5c42\u3002\u786e\u8ba4\u540e\u4e0d\u4f1a\u7ee7\u7eed\u6cbb\u7597\uff0c\u5e76\u4f1a\u751f\u6210\u60a3\u8005\u5173\u8054\u7684\u6cbb\u7597\u62a5\u544a\u548c\u8bc1\u636e\u8bb0\u5f55\u3002"));
     m_generate3dButton = new QPushButton(QStringLiteral("\u4e09\u7ef4\u56fe\u5f62\u751f\u6210"));
     m_generate3dButton->setObjectName(QStringLiteral("treatmentVolumeButton"));
     m_generate3dButton->setEnabled(false);
@@ -837,6 +855,10 @@ TreatmentPage::TreatmentPage(
     buttonRow->addWidget(m_startButton);
     buttonRow->addWidget(m_pauseButton);
     buttonRow->addWidget(m_stopButton);
+
+    auto* terminationRow = new QHBoxLayout();
+    terminationRow->setContentsMargins(0, 2, 0, 0);
+    terminationRow->addWidget(m_terminatePlanButton);
 
     auto* layerSliderRow = new QHBoxLayout();
     layerSliderRow->setContentsMargins(0, 0, 0, 0);
@@ -857,6 +879,7 @@ TreatmentPage::TreatmentPage(
     controlLayout->addWidget(m_progressBar);
     controlLayout->addWidget(m_generate3dButton);
     controlLayout->addLayout(buttonRow);
+    controlLayout->addLayout(terminationRow);
     controlLayout->addWidget(logTitle);
     controlLayout->addWidget(m_logView);
     rootLayout->addWidget(controlCard, 1);
@@ -874,6 +897,7 @@ TreatmentPage::TreatmentPage(
         pauseTreatment();
     });
     connect(m_stopButton, &QPushButton::clicked, this, &TreatmentPage::stopTreatment);
+    connect(m_terminatePlanButton, &QPushButton::clicked, this, &TreatmentPage::terminateTreatmentPlan);
     connect(m_generate3dButton, &QPushButton::clicked, this, &TreatmentPage::generateThreeDimensionalImage);
     connect(&m_progressTimer, &QTimer::timeout, this, &TreatmentPage::advanceProgress);
     connect(&m_fluidControlTimer, &QTimer::timeout, this, &TreatmentPage::onFluidControlTick);
@@ -2501,14 +2525,21 @@ void TreatmentPage::startTreatment()
         appendLog(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u5c42\u6ca1\u6709\u9776\u70b9\uff0c\u8bf7\u9009\u62e9\u5176\u4ed6\u5c42"));
         return;
     }
+    if (!canTreatSelectedLayer()) {
+        appendLog(QStringLiteral("\u5f53\u524d\u6cbb\u7597\u5c42\u5df2\u5b8c\u6210\uff0c\u8bf7\u9009\u62e9\u5176\u4ed6\u56fe\u5c42\u6216\u7ec8\u6b62\u65b9\u6848"));
+        return;
+    }
 
     const int requestedLayerIndex = m_selectedLayerIndex;
     TherapyPlan executionPlan = m_context->activePlan();
     if (applySerpentinePointExecutionOrder(&executionPlan)) {
         m_context->setActivePlan(executionPlan);
         m_selectedLayerIndex = std::clamp(requestedLayerIndex, 0, std::max(0, static_cast<int>(executionPlan.segments.size()) - 1));
-        m_completedPointCount = 0;
         ensureLayerProgressStorage(executionPlan);
+        m_completedPointCount = completedPointCountForLayer(m_selectedLayerIndex, executionPlan);
+        m_deliveredEnergyJ = m_selectedLayerIndex >= 0 && m_selectedLayerIndex < m_layerDeliveredEnergyJ.size()
+            ? m_layerDeliveredEnergyJ.at(m_selectedLayerIndex)
+            : 0.0;
         updateLayerPreview();
     }
 
@@ -2542,10 +2573,13 @@ void TreatmentPage::startTreatment()
 
     const TherapyPlan& plan = m_context->activePlan();
     ensureLayerProgressStorage(plan);
-    m_completedPointCount = 0;
-    m_deliveredEnergyJ = 0.0;
-    if (m_selectedLayerIndex >= 0 && m_selectedLayerIndex < m_layerCompletedPointCounts.size()) {
-        m_layerCompletedPointCounts[m_selectedLayerIndex] = 0;
+    m_completedPointCount = completedPointCountForLayer(m_selectedLayerIndex, plan);
+    m_deliveredEnergyJ = m_selectedLayerIndex >= 0 && m_selectedLayerIndex < m_layerDeliveredEnergyJ.size()
+        ? m_layerDeliveredEnergyJ.at(m_selectedLayerIndex)
+        : 0.0;
+    m_treatmentStartedAt = QDateTime::currentDateTime();
+    if (!m_planTreatmentStartedAt.isValid()) {
+        m_planTreatmentStartedAt = m_treatmentStartedAt;
     }
     updateLayerPreview();
     m_context->requestTreatmentLayerVisualization(plan.id, visualizationSliceIndexForSelectedLayer(plan), true);
@@ -2609,8 +2643,153 @@ void TreatmentPage::resumeTreatment()
 
 void TreatmentPage::stopTreatment()
 {
-    appendLog(QStringLiteral("\u6cbb\u7597\u88ab\u624b\u52a8\u7ec8\u6b62"));
-    finalizeTreatment(QStringLiteral("\u7ec8\u6b62"));
+    if (m_context == nullptr || !m_context->hasActivePlan() || !m_context->hasSelectedPatient()) {
+        appendLog(QStringLiteral("\u6cbb\u7597\u88ab\u624b\u52a8\u7ed3\u675f"));
+        finalizeTreatment(QStringLiteral("\u7ed3\u675f"));
+        return;
+    }
+
+    const TherapyPlan& plan = m_context->activePlan();
+    const int layerIndex = normalizedLayerIndex(plan);
+    appendLog(
+        QStringLiteral("\u533b\u751f\u7ed3\u675f\u7b2c%1/%2\u5c42\u6cbb\u7597\uff0c\u53ef\u5207\u6362\u5176\u4ed6\u56fe\u5c42\u7ee7\u7eed\u6cbb\u7597")
+            .arg(layerIndex + 1)
+            .arg(layerCount(&plan)));
+    finalizeTreatment(QStringLiteral("\u7b2c%1\u5c42\u5df2\u7ed3\u675f").arg(layerIndex + 1));
+    m_treatmentStartedAt = QDateTime {};
+}
+
+TreatmentPage::PlanTerminationChoice TreatmentPage::promptForPlanTermination()
+{
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("treatmentTerminationDialog"));
+    dialog.setWindowTitle(QStringLiteral("\u7ec8\u6b62\u6cbb\u7597"));
+    dialog.setModal(true);
+    dialog.setMinimumWidth(600);
+
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(26, 24, 26, 22);
+    layout->setSpacing(14);
+
+    auto* title = new QLabel(QStringLiteral("\u7ec8\u6b62\u5f53\u524d\u6cbb\u7597"));
+    title->setObjectName(QStringLiteral("treatmentTerminationTitle"));
+    layout->addWidget(title);
+
+    auto* description = new QLabel(
+        QStringLiteral("\u8be5\u64cd\u4f5c\u4f1a\u5b89\u5168\u505c\u6b62\u5f53\u524d\u65b9\u6848\u7684\u5168\u90e8\u56fe\u5c42\u6cbb\u7597\u3002\n"
+                       "\u9009\u62e9\u786e\u8ba4\u7ec8\u6b62\u6cbb\u7597\u540e\uff0c\u672c\u65b9\u6848\u4e0d\u80fd\u7ee7\u7eed\u6cbb\u7597\uff0c\u7cfb\u7edf\u5c06\u4fdd\u5b58\u5f53\u524d\u6cbb\u7597\u8fc7\u7a0b\u5e76\u751f\u6210\u6cbb\u7597\u62a5\u544a\u4e0e\u8bc1\u636e\u8bb0\u5f55\u3002\n"
+                       "\u9009\u62e9\u7ee7\u7eed\u6cbb\u7597\u5c06\u7ed3\u675f\u672c\u6b21\u6cbb\u7597\u5e76\u6062\u590d\u5df2\u4fdd\u5b58\u7684\u5f71\u50cf\u4e0e\u5708\u753b\u5230\u6cbb\u7597\u65b9\u6848\u5c4f\uff0c\u7528\u4e8e\u91cd\u65b0\u89c4\u5212\u548c\u5ba1\u6838\u3002"));
+    description->setObjectName(QStringLiteral("treatmentTerminationDescription"));
+    description->setWordWrap(true);
+    layout->addWidget(description);
+
+    auto* notice = new QFrame();
+    notice->setObjectName(QStringLiteral("treatmentTerminationNotice"));
+    auto* noticeLayout = new QVBoxLayout(notice);
+    noticeLayout->setContentsMargins(14, 12, 14, 12);
+    noticeLayout->setSpacing(6);
+    const QString planName = m_context != nullptr && m_context->hasActivePlan()
+        ? m_context->activePlan().name
+        : QString();
+    const QString patientName = m_context != nullptr && m_context->hasSelectedPatient()
+        ? m_context->selectedPatient().name
+        : QString();
+    auto* planLabel = new QLabel(
+        QStringLiteral("\u5f53\u524d\u65b9\u6848\uff1a%1").arg(planName.trimmed().isEmpty() ? QStringLiteral("\u672a\u547d\u540d\u65b9\u6848") : planName));
+    planLabel->setObjectName(QStringLiteral("treatmentTerminationNoticeLabel"));
+    auto* patientLabel = new QLabel(
+        QStringLiteral("\u5f53\u524d\u60a3\u8005\uff1a%1").arg(patientName.trimmed().isEmpty() ? QStringLiteral("\u672a\u9009\u62e9") : patientName));
+    patientLabel->setObjectName(QStringLiteral("treatmentTerminationNoticeLabel"));
+    auto* guidanceLabel = new QLabel(
+        QStringLiteral("\u7ec8\u6b62\u540e\u5c06\u767b\u8bb0\u60a3\u8005\u3001\u64cd\u4f5c\u533b\u751f\u3001\u6cbb\u7597\u6b65\u9aa4\u3001\u9776\u70b9\u4e0e\u5f71\u50cf\u8d44\u6599\uff0c\u5e76\u4fdd\u5b58\u5f53\u524d\u786c\u4ef6\u72b6\u6001\u3002"));
+    guidanceLabel->setObjectName(QStringLiteral("treatmentTerminationGuidanceLabel"));
+    guidanceLabel->setWordWrap(true);
+    noticeLayout->addWidget(planLabel);
+    noticeLayout->addWidget(patientLabel);
+    noticeLayout->addWidget(guidanceLabel);
+    layout->addWidget(notice);
+
+    auto* buttonRow = new QHBoxLayout();
+    buttonRow->setSpacing(10);
+    auto* cancelButton = new QPushButton(QStringLiteral("\u53d6\u6d88"));
+    cancelButton->setObjectName(QStringLiteral("treatmentTerminationCancelButton"));
+    auto* continueButton = new QPushButton(QStringLiteral("\u7ee7\u7eed\u6cbb\u7597"));
+    continueButton->setObjectName(QStringLiteral("treatmentTerminationContinueButton"));
+    continueButton->setToolTip(QStringLiteral("\u7ed3\u675f\u5f53\u524d\u6cbb\u7597\u4f1a\u8bdd\uff0c\u5c06\u6570\u636e\u5e93\u4e2d\u7684\u5f71\u50cf\u3001\u5708\u753b\u548c\u65b9\u6848\u53c2\u6570\u6062\u590d\u4e3a\u65b0\u7684\u7ee7\u7eed\u6cbb\u7597\u8349\u6848\u3002"));
+    auto* endPlanButton = new QPushButton(QStringLiteral("\u786e\u8ba4\u7ec8\u6b62\u6cbb\u7597"));
+    endPlanButton->setObjectName(QStringLiteral("treatmentTerminationEndButton"));
+    buttonRow->addWidget(cancelButton);
+    buttonRow->addStretch();
+    buttonRow->addWidget(continueButton);
+    buttonRow->addWidget(endPlanButton);
+    layout->addLayout(buttonRow);
+
+    PlanTerminationChoice choice = PlanTerminationChoice::Cancel;
+    connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+    connect(continueButton, &QPushButton::clicked, &dialog, [&dialog, &choice]() {
+        choice = PlanTerminationChoice::ContinueTreatment;
+        dialog.accept();
+    });
+    connect(endPlanButton, &QPushButton::clicked, &dialog, [&dialog, &choice]() {
+        choice = PlanTerminationChoice::TerminateTreatment;
+        dialog.accept();
+    });
+    cancelButton->setDefault(true);
+    cancelButton->setFocus();
+
+    return dialog.exec() == QDialog::Accepted ? choice : PlanTerminationChoice::Cancel;
+}
+
+void TreatmentPage::terminateTreatmentPlan()
+{
+    if (m_context == nullptr || !m_context->hasActivePlan() || !m_context->hasSelectedPatient()) {
+        appendLog(QStringLiteral("\u65e0\u53ef\u7ec8\u6b62\u7684\u6cbb\u7597\u65b9\u6848"));
+        return;
+    }
+
+    if (m_progressTimer.isActive()) {
+        appendLog(QStringLiteral("\u533b\u751f\u8bf7\u6c42\u7ec8\u6b62\u65b9\u6848\uff0c\u5df2\u5148\u505c\u6b62\u6cbb\u7597\u8f93\u51fa\u7b49\u5f85\u786e\u8ba4"));
+        finalizeTreatment(QStringLiteral("\u7b49\u5f85\u7ec8\u6b62\u65b9\u6848\u786e\u8ba4"));
+    }
+
+    const PlanTerminationChoice choice = promptForPlanTermination();
+    if (choice == PlanTerminationChoice::Cancel) {
+        appendLog(QStringLiteral("\u533b\u751f\u53d6\u6d88\u7ec8\u6b62\u65b9\u6848\uff0c\u6cbb\u7597\u8f93\u51fa\u4fdd\u6301\u505c\u6b62\uff0c\u53ef\u91cd\u65b0\u5f00\u59cb\u5f53\u524d\u6216\u5176\u4ed6\u56fe\u5c42"));
+        return;
+    }
+
+    const bool continueTreatment = choice == PlanTerminationChoice::ContinueTreatment;
+    const QString finalStatus = continueTreatment
+        ? QStringLiteral("\u5df2\u7ed3\u675f\uff0c\u5f85\u7ee7\u7eed\u6cbb\u7597\u89c4\u5212")
+        : QStringLiteral("\u5df2\u7ec8\u6b62");
+    const TherapyPlan plan = m_context->activePlan();
+    const QString patientId = m_context->selectedPatient().id;
+    QString treatmentSessionId;
+    const bool outcomePersisted = persistManualTreatmentOutcome(continueTreatment, finalStatus, &treatmentSessionId);
+    if (!outcomePersisted) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("\u6cbb\u7597\u6536\u5c3e\u8bb0\u5f55\u5931\u8d25"),
+            QStringLiteral("\u6cbb\u7597\u8f93\u51fa\u5df2\u505c\u6b62\uff0c\u4f46\u6cbb\u7597\u6570\u636e\u3001\u65e5\u5fd7\u6216\u8bc1\u636e\u6587\u6863\u672a\u5b8c\u6574\u5199\u5165\u3002\u8bf7\u7acb\u5373\u8054\u7cfb\u7cfb\u7edf\u7ba1\u7406\u5458\u5e76\u4fdd\u7559\u5f53\u524d\u754c\u9762\u4e0e\u8bbe\u5907\u72b6\u6001\u3002"));
+        if (continueTreatment) {
+            appendLog(QStringLiteral("\u7ee7\u7eed\u6cbb\u7597\u4e2d\u65ad\uff1a\u672a\u5b8c\u6574\u5b58\u6863\uff0c\u4e0d\u6062\u590d\u65b0\u7684\u89c4\u5212\u8349\u6848"));
+            return;
+        }
+    }
+
+    appendLog(continueTreatment
+        ? QStringLiteral("\u533b\u751f\u9009\u62e9\u7ee7\u7eed\u6cbb\u7597\uff0c\u5c06\u6062\u590d\u5df2\u5b58\u6863\u5f71\u50cf\u4e0e\u5708\u753b\u4e3a\u65b0\u7684\u89c4\u5212\u8349\u6848")
+        : QStringLiteral("\u533b\u751f\u786e\u8ba4\u7ec8\u6b62\u5f53\u524d\u65b9\u6848\u7684\u5168\u90e8\u56fe\u5c42\u6cbb\u7597\uff0c\u540e\u7eed\u6cbb\u7597\u5df2\u9501\u5b9a"));
+    finalizeTreatment(finalStatus);
+
+    m_context->clearActivePlan();
+
+    m_treatmentStartedAt = QDateTime {};
+    m_planTreatmentStartedAt = QDateTime {};
+
+    if (continueTreatment) {
+        m_context->requestTreatmentContinuation(treatmentSessionId, patientId, plan.id);
+    }
 }
 
 void TreatmentPage::advanceProgress()
@@ -2660,6 +2839,9 @@ void TreatmentPage::advanceProgress()
         ? point->powerWatts
         : plan.plannedPowerWatts;
     m_deliveredEnergyJ += powerWatts * dwellSeconds;
+    if (m_selectedLayerIndex >= 0 && m_selectedLayerIndex < m_layerDeliveredEnergyJ.size()) {
+        m_layerDeliveredEnergyJ[m_selectedLayerIndex] = m_deliveredEnergyJ;
+    }
 
     updateProgressText();
     m_preview->setCompletedPointCount(m_completedPointCount);
@@ -2709,10 +2891,23 @@ void TreatmentPage::onActivePlanChanged(const TherapyPlan& plan)
         const QSignalBlocker blocker(m_planCombo);
         m_planCombo->setCurrentIndex(comboIndex);
     }
-    m_selectedLayerIndex = 0;
-    m_completedPointCount = 0;
-    m_deliveredEnergyJ = 0.0;
-    m_layerCompletedPointCounts.fill(0, plan.segments.size());
+    const bool isNewPlanProgress = m_progressPlanId != plan.id;
+    if (isNewPlanProgress) {
+        m_progressPlanId = plan.id;
+        m_selectedLayerIndex = 0;
+        m_completedPointCount = 0;
+        m_deliveredEnergyJ = 0.0;
+        m_layerCompletedPointCounts.fill(0, plan.segments.size());
+        m_layerDeliveredEnergyJ.fill(0.0, plan.segments.size());
+        m_treatmentStartedAt = QDateTime {};
+        m_planTreatmentStartedAt = QDateTime {};
+    }
+    ensureLayerProgressStorage(plan);
+    m_selectedLayerIndex = normalizedLayerIndex(plan);
+    m_completedPointCount = completedPointCountForLayer(m_selectedLayerIndex, plan);
+    m_deliveredEnergyJ = m_selectedLayerIndex >= 0 && m_selectedLayerIndex < m_layerDeliveredEnergyJ.size()
+        ? m_layerDeliveredEnergyJ.at(m_selectedLayerIndex)
+        : 0.0;
     updatePlanSummary(&plan);
     updateLayerPreview();
     m_planCombo->setEnabled(true);
@@ -2723,6 +2918,10 @@ void TreatmentPage::onActivePlanChanged(const TherapyPlan& plan)
 void TreatmentPage::onActivePlanCleared()
 {
     m_layerCompletedPointCounts.clear();
+    m_layerDeliveredEnergyJ.clear();
+    m_progressPlanId.clear();
+    m_treatmentStartedAt = QDateTime {};
+    m_planTreatmentStartedAt = QDateTime {};
     updatePlanSummary(nullptr);
     configureLayerSelector(nullptr);
     updateProgressText();
@@ -2834,7 +3033,11 @@ void TreatmentPage::onLayerSelectionChanged(int index)
     }
 
     const int safeIndex = std::clamp(index, 0, static_cast<int>(plan.segments.size()) - 1);
-    if (safeIndex == m_selectedLayerIndex && m_completedPointCount == 0 && m_deliveredEnergyJ == 0.0) {
+    if (safeIndex == m_selectedLayerIndex
+        && m_completedPointCount == completedPointCountForLayer(safeIndex, plan)
+        && m_deliveredEnergyJ == (safeIndex >= 0 && safeIndex < m_layerDeliveredEnergyJ.size()
+                ? m_layerDeliveredEnergyJ.at(safeIndex)
+                : 0.0)) {
         configureLayerSelector(&plan);
         return;
     }
@@ -2842,7 +3045,9 @@ void TreatmentPage::onLayerSelectionChanged(int index)
     m_selectedLayerIndex = safeIndex;
     ensureLayerProgressStorage(plan);
     m_completedPointCount = completedPointCountForLayer(safeIndex, plan);
-    m_deliveredEnergyJ = 0.0;
+    m_deliveredEnergyJ = safeIndex >= 0 && safeIndex < m_layerDeliveredEnergyJ.size()
+        ? m_layerDeliveredEnergyJ.at(safeIndex)
+        : 0.0;
     updatePlanSummary(&plan);
     updateLayerPreview();
     updateLayerNavigationButtons();
@@ -2997,6 +3202,10 @@ void TreatmentPage::setButtonState(bool canStart, bool canPause, bool canResume,
     m_pauseButton->style()->unpolish(m_pauseButton);
     m_pauseButton->style()->polish(m_pauseButton);
     m_stopButton->setEnabled(canStop);
+    if (m_terminatePlanButton != nullptr) {
+        m_terminatePlanButton->setEnabled(
+            m_context != nullptr && m_context->hasActivePlan() && !m_deferStartupPlanSelection);
+    }
 }
 
 bool TreatmentPage::isPlanTreatable(const TherapyPlan& plan) const
@@ -3010,10 +3219,16 @@ bool TreatmentPage::isPlanTreatable(const TherapyPlan& plan) const
 
 bool TreatmentPage::canTreatSelectedLayer() const
 {
-    return m_context->hasActivePlan()
-        && !m_deferStartupPlanSelection
-        && isPlanTreatable(m_context->activePlan())
-        && totalPointCount() > 0;
+    if (m_context == nullptr
+        || !m_context->hasActivePlan()
+        || m_deferStartupPlanSelection
+        || !isPlanTreatable(m_context->activePlan())
+        || totalPointCount() <= 0) {
+        return false;
+    }
+
+    const TherapyPlan& plan = m_context->activePlan();
+    return completedPointCountForLayer(normalizedLayerIndex(plan), plan) < totalPointCount();
 }
 
 int TreatmentPage::completedPointCountForLayer(int layerIndex, const TherapyPlan& plan) const
@@ -3029,12 +3244,41 @@ int TreatmentPage::completedPointCountForLayer(int layerIndex, const TherapyPlan
     return std::clamp(completedPoints, 0, static_cast<int>(plan.segments.at(layerIndex).points.size()));
 }
 
+int TreatmentPage::totalCompletedPointCount(const TherapyPlan& plan) const
+{
+    int completedPoints = 0;
+    for (int layerIndex = 0; layerIndex < plan.segments.size(); ++layerIndex) {
+        completedPoints += completedPointCountForLayer(layerIndex, plan);
+    }
+    return completedPoints;
+}
+
+int TreatmentPage::totalPointCountForPlan(const TherapyPlan& plan) const
+{
+    int pointCount = 0;
+    for (const TherapySegment& segment : plan.segments) {
+        pointCount += segment.points.size();
+    }
+    return pointCount;
+}
+
+double TreatmentPage::totalDeliveredEnergyJ() const
+{
+    double totalEnergyJ = 0.0;
+    for (const double layerEnergyJ : m_layerDeliveredEnergyJ) {
+        totalEnergyJ += std::max(0.0, layerEnergyJ);
+    }
+    return totalEnergyJ;
+}
+
 void TreatmentPage::ensureLayerProgressStorage(const TherapyPlan& plan)
 {
     const int layers = static_cast<int>(plan.segments.size());
     if (layers <= 0) {
         m_layerCompletedPointCounts.clear();
+        m_layerDeliveredEnergyJ.clear();
         m_completedPointCount = 0;
+        m_deliveredEnergyJ = 0.0;
         return;
     }
 
@@ -3045,6 +3289,15 @@ void TreatmentPage::ensureLayerProgressStorage(const TherapyPlan& plan)
             resizedProgress[index] = m_layerCompletedPointCounts.at(index);
         }
         m_layerCompletedPointCounts = resizedProgress;
+    }
+
+    if (m_layerDeliveredEnergyJ.size() != layers) {
+        QVector<double> resizedEnergy(layers, 0.0);
+        const int copyCount = std::min(layers, static_cast<int>(m_layerDeliveredEnergyJ.size()));
+        for (int index = 0; index < copyCount; ++index) {
+            resizedEnergy[index] = std::max(0.0, m_layerDeliveredEnergyJ.at(index));
+        }
+        m_layerDeliveredEnergyJ = resizedEnergy;
     }
 
     for (int index = 0; index < layers; ++index) {
@@ -3478,7 +3731,7 @@ void TreatmentPage::updateProgressText()
             .arg(layers)
             .arg(m_completedPointCount)
             .arg(totalPoints)
-            .arg(m_deliveredEnergyJ, 0, 'f', 0));
+            .arg(totalDeliveredEnergyJ(), 0, 'f', 0));
     m_timeSummaryLabel->setText(
         QStringLiteral("\u65f6\u95f4\uff1a\u672c\u5c42\u5269\u4f59 %1 | \u672c\u5c42\u603b\u65f6\u957f %2 | \u6cbb\u7597\u603b\u65f6\u957f %3 | \u672c\u5c42\u5df2\u7528 %4")
             .arg(formatTreatmentDuration(layerRemainingSeconds),
@@ -3507,6 +3760,290 @@ void TreatmentPage::appendLog(const QString& line)
     if (m_auditService != nullptr) {
         m_auditService->appendEntry(QStringLiteral("executor"), QStringLiteral("treatment"), line);
     }
+}
+
+QString TreatmentPage::treatmentPathSummary() const
+{
+    if (m_context == nullptr || !m_context->hasActivePlan()) {
+        return QStringLiteral("manual_treatment_stop");
+    }
+    const TherapyPlan& plan = m_context->activePlan();
+    return QStringLiteral("\u65b9\u6848=%1; \u5f53\u524d\u5c42=%2/%3; \u5f53\u524d\u5c42\u5df2\u5b8c\u6210\u9776\u70b9=%4/%5; \u5168\u90e8\u56fe\u5c42\u5df2\u5b8c\u6210\u9776\u70b9=%6/%7; \u7d2f\u8ba1\u8f93\u51fa\u80fd\u91cfJ=%8")
+        .arg(plan.id)
+        .arg(normalizedLayerIndex(plan) + 1)
+        .arg(layerCount(&plan))
+        .arg(m_completedPointCount)
+        .arg(totalPointCount())
+        .arg(totalCompletedPointCount(plan))
+        .arg(totalPointCountForPlan(plan))
+        .arg(totalDeliveredEnergyJ(), 0, 'f', 2);
+}
+
+QStringList TreatmentPage::treatmentEvidenceLines(
+    const TreatmentSessionRecord& treatmentSession,
+    const QString& finalStatus) const
+{
+    const QString patientName = m_context != nullptr && m_context->hasSelectedPatient()
+        ? m_context->selectedPatient().name
+        : QStringLiteral("\u672a\u77e5\u60a3\u8005");
+    QStringList lines {
+        QStringLiteral("\u6cbb\u7597\u4f1a\u8bdd\uff1a%1").arg(treatmentSession.id),
+        QStringLiteral("\u65b9\u6848\uff1a%1").arg(treatmentSession.planId),
+        QStringLiteral("\u60a3\u8005\uff1a%1\uff08ID\uff1a%2\uff09").arg(patientName, treatmentSession.patientId),
+        QStringLiteral("\u7ed3\u679c\uff1a%1").arg(finalStatus),
+        QStringLiteral("\u5f00\u59cb\u65f6\u95f4\uff1a%1").arg(treatmentSession.startedAt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))),
+        QStringLiteral("\u7ed3\u675f\u65f6\u95f4\uff1a%1").arg(treatmentSession.endedAt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))),
+        QStringLiteral("\u603b\u80fd\u91cf\uff1a%1 J").arg(treatmentSession.totalEnergyJ, 0, 'f', 2),
+        QStringLiteral("\u603b\u65f6\u957f\uff1a%1 s").arg(treatmentSession.totalDurationSeconds, 0, 'f', 2),
+        QStringLiteral("\u5df2\u6267\u884c\u9776\u70b9\uff1a%1/%2")
+            .arg(m_context != nullptr && m_context->hasActivePlan() ? totalCompletedPointCount(m_context->activePlan()) : 0)
+            .arg(m_context != nullptr && m_context->hasActivePlan() ? totalPointCountForPlan(m_context->activePlan()) : 0),
+        QStringLiteral("\u8def\u5f84\u6458\u8981\uff1a%1").arg(treatmentSession.pathSummary)
+    };
+    if (m_context != nullptr && m_context->hasCurrentOperator()) {
+        lines << QStringLiteral("\u64cd\u4f5c\u533b\u751f\uff1a%1\uff08%2\uff09")
+                     .arg(m_context->currentOperatorLabel(), m_context->currentOperator().username);
+    }
+
+    if (m_simulationDevice != nullptr) {
+        const DeviceSnapshot snapshot = m_simulationDevice->latestSnapshot();
+        lines << QStringLiteral("") << QStringLiteral("\u7ec8\u6b62\u65f6\u786c\u4ef6\u5feb\u7167\uff1a")
+              << QStringLiteral("\u6c34\u5faa\u73af\uff1a%1 | \u6d41\u91cf\uff1a%2 L/min | \u538b\u529b\uff1a%3 MPa | \u6db2\u4f4d\uff1a%4%%")
+                     .arg(snapshot.waterPumpOn ? QStringLiteral("\u8fd0\u884c") : QStringLiteral("\u505c\u6b62"))
+                     .arg(snapshot.flowRateLpm, 0, 'f', 3)
+                     .arg(snapshot.pressureMpa, 0, 'f', 3)
+                     .arg(snapshot.waterLevelPercent, 0, 'f', 1)
+              << QStringLiteral("\u6e29\u5ea6\uff1a\u5165\u6c34 %1\u00b0C | \u51fa\u6c34 %2\u00b0C | \u6362\u80fd\u5668 %3\u00b0C")
+                     .arg(snapshot.inletTemperatureCelsius, 0, 'f', 1)
+                     .arg(snapshot.outletTemperatureCelsius, 0, 'f', 1)
+                     .arg(snapshot.transducerTemperatureCelsius, 0, 'f', 1)
+              << QStringLiteral("\u673a\u68b0\u81c2\uff1aX=%1, Y=%2, Z=%3 | Rx=%4, Ry=%5, Rz=%6 | \u7d27\u6025\u505c\u6b62\uff1a%7")
+                     .arg(snapshot.position.x, 0, 'f', 2)
+                     .arg(snapshot.position.y, 0, 'f', 2)
+                     .arg(snapshot.position.z, 0, 'f', 2)
+                     .arg(snapshot.position.a, 0, 'f', 2)
+                     .arg(snapshot.position.b, 0, 'f', 2)
+                     .arg(snapshot.position.c, 0, 'f', 2)
+                     .arg(snapshot.emergencyStopEngaged ? QStringLiteral("\u5df2\u89e6\u53d1") : QStringLiteral("\u672a\u89e6\u53d1"))
+              << QStringLiteral("\u529f\u7387\u94fe\u8def\uff1a%1 W | \u5de5\u4f5c\u7535\u6d41\uff1a%2 A | \u8f6c\u6362\u6548\u7387\uff1a%3%%")
+                     .arg(snapshot.outputPowerWatts > 0.0 ? snapshot.outputPowerWatts : snapshot.realtimePowerWatts, 0, 'f', 2)
+                     .arg(snapshot.workingCurrentAmps, 0, 'f', 2)
+                     .arg(snapshot.conversionEfficiencyPercent, 0, 'f', 1);
+    }
+
+    lines << QStringLiteral("") << QStringLiteral("\u5df2\u6267\u884c\u9776\u70b9\u4f4d\u7f6e\uff1a");
+    if (m_context != nullptr && m_context->hasActivePlan()) {
+        const TherapyPlan& plan = m_context->activePlan();
+        int recordedPointCount = 0;
+        for (int segmentIndex = 0; segmentIndex < plan.segments.size(); ++segmentIndex) {
+            const TherapySegment& segment = plan.segments.at(segmentIndex);
+            const int completedPointCount = segmentIndex < m_layerCompletedPointCounts.size()
+                ? std::clamp(m_layerCompletedPointCounts.at(segmentIndex), 0, static_cast<int>(segment.points.size()))
+                : 0;
+            for (int pointIndex = 0; pointIndex < completedPointCount; ++pointIndex) {
+                const TherapyPoint& point = segment.points.at(pointIndex);
+                lines << QStringLiteral("\u56fe\u5c42 %1 | \u9776\u70b9 %2 | X=%3 mm, Y=%4 mm | \u8f74 7=%5 steps | \u529f\u7387=%6 W | \u65f6\u957f=%7 s")
+                             .arg(segmentIndex + 1)
+                             .arg(pointIndex + 1)
+                             .arg(point.positionMm.x(), 0, 'f', 2)
+                             .arg(point.positionMm.y(), 0, 'f', 2)
+                             .arg(segment.axis7PositionSteps)
+                             .arg(point.powerWatts, 0, 'f', 1)
+                             .arg(point.dwellSeconds, 0, 'f', 2);
+                ++recordedPointCount;
+            }
+        }
+        if (recordedPointCount == 0) {
+            lines << QStringLiteral("\u672c\u6b21\u7ec8\u6b62\u524d\u65e0\u5df2\u6267\u884c\u9776\u70b9\u3002");
+        }
+    } else {
+        lines << QStringLiteral("\u672c\u6b21\u7ec8\u6b62\u524d\u65e0\u53ef\u7528\u7684\u65b9\u6848\u9776\u70b9\u8bb0\u5f55\u3002");
+    }
+
+    lines << QStringLiteral("") << QStringLiteral("\u64cd\u4f5c\u5ba1\u8ba1\u65e5\u5fd7\uff1a");
+    if (m_auditService != nullptr) {
+        for (const AuditEntry& entry : m_auditService->entries()) {
+            lines << QStringLiteral("[%1] %2 | %3 | %4")
+                         .arg(entry.occurredAt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")), entry.actor, entry.category, entry.details);
+        }
+    }
+
+    adapters::MySqlTreatmentWorkflowRepository repository;
+    QVector<adapters::TreatmentImageAnnotationSnapshot> images = repository.loadPlanAnnotations(
+        treatmentSession.patientId,
+        treatmentSession.planId);
+    lines << QStringLiteral("") << QStringLiteral("\u5f71\u50cf\u8bc1\u636e\uff1a");
+    for (const adapters::TreatmentImageAnnotationSnapshot& image : images) {
+        lines << QStringLiteral("\u5207\u7247 %1 | \u539f\u59cb\uff1a%2 | \u5708\u753b\uff1a%3 | \u9776\u533a\u9762\u79ef\uff1a%4 mm2 | \u9776\u533a\u4f53\u79ef\uff1a%5 mm3")
+                     .arg(image.sliceIndex + 1)
+                     .arg(image.capturePath)
+                     .arg(image.annotatedImagePath)
+                     .arg(image.targetAreaMm2, 0, 'f', 2)
+                     .arg(image.targetVolumeMm3, 0, 'f', 2);
+    }
+    return lines;
+}
+
+bool TreatmentPage::persistManualTreatmentOutcome(
+    bool continueTreatment,
+    const QString& finalStatus,
+    QString* treatmentSessionId)
+{
+    if (treatmentSessionId != nullptr) {
+        treatmentSessionId->clear();
+    }
+    if (m_context == nullptr || !m_context->hasActivePlan() || !m_context->hasSelectedPatient()) {
+        return false;
+    }
+
+    const TherapyPlan& plan = m_context->activePlan();
+    const PatientRecord& patient = m_context->selectedPatient();
+    const QDateTime endedAt = QDateTime::currentDateTime();
+    const QDateTime startedAt = m_planTreatmentStartedAt.isValid()
+        ? m_planTreatmentStartedAt
+        : (m_treatmentStartedAt.isValid() ? m_treatmentStartedAt : endedAt);
+    const double elapsedSeconds = std::max(
+        static_cast<double>(startedAt.msecsTo(endedAt)) / 1000.0,
+        planElapsedDurationSeconds(plan));
+
+    TreatmentSessionRecord treatmentSession;
+    treatmentSession.patientId = patient.id;
+    treatmentSession.planId = plan.id;
+    treatmentSession.lesionType = patient.diagnosis.trimmed().isEmpty() ? plan.name : patient.diagnosis;
+    treatmentSession.pathSummary = treatmentPathSummary();
+    treatmentSession.treatmentDate = startedAt;
+    treatmentSession.startedAt = startedAt;
+    treatmentSession.endedAt = endedAt;
+    treatmentSession.totalEnergyJ = std::max(0.0, totalDeliveredEnergyJ());
+    treatmentSession.totalDurationSeconds = std::max(0.0, elapsedSeconds);
+    treatmentSession.dose = std::max(0.0, totalDeliveredEnergyJ());
+    treatmentSession.status = finalStatus;
+    if (!m_clinicalDataService.saveTreatmentSession(&treatmentSession)) {
+        appendLog(QStringLiteral("\u6cbb\u7597\u4f1a\u8bdd\u5199\u5165\u5931\u8d25\uff1a%1").arg(m_clinicalDataService.lastError()));
+        return false;
+    }
+
+    adapters::MySqlTreatmentWorkflowRepository workflowRepository;
+    QString workflowError;
+    bool workflowSucceeded = true;
+    if (!workflowRepository.attachPlanAnnotationsToTreatmentSession(plan.id, treatmentSession.id, &workflowError)) {
+        workflowSucceeded = false;
+        appendLog(QStringLiteral("\u6cbb\u7597\u5f71\u50cf\u4e0e\u4f1a\u8bdd\u5173\u8054\u5931\u8d25\uff1a%1").arg(workflowError));
+    }
+    if (!workflowRepository.recordTreatmentPointRecords(
+            treatmentSession.id,
+            m_layerCompletedPointCounts,
+            m_layerDeliveredEnergyJ,
+            treatmentSession.dose,
+            startedAt,
+            endedAt,
+            &workflowError)) {
+        workflowSucceeded = false;
+        appendLog(QStringLiteral("\u6cbb\u7597\u70b9\u4f4d\u8bb0\u5f55\u5199\u5165\u5931\u8d25\uff1a%1").arg(workflowError));
+    }
+
+    QVector<adapters::ClinicalOperationSnapshot> operationSnapshots;
+    if (m_auditService != nullptr) {
+        for (const AuditEntry& entry : m_auditService->entries()) {
+            operationSnapshots.push_back({entry.occurredAt, entry.actor, entry.category, entry.details});
+        }
+    }
+    const QString operatorUserId = m_context->hasCurrentOperator() ? m_context->currentOperator().userId : QString();
+    const QString operatorDoctorId = m_context->hasCurrentOperator() ? m_context->currentOperator().doctorId : QString();
+    if (m_simulationDevice != nullptr && !workflowRepository.recordTreatmentDeviceSnapshot(
+            m_simulationDevice->latestSnapshot(),
+            treatmentSession.id,
+            operatorUserId,
+            &workflowError)) {
+        workflowSucceeded = false;
+        appendLog(QStringLiteral("\u6cbb\u7597\u7ed3\u675f\u786c\u4ef6\u5feb\u7167\u5199\u5165\u5931\u8d25\uff1a%1").arg(workflowError));
+    }
+    if (!workflowRepository.recordClinicalOperationLogs(
+            operationSnapshots,
+            patient.id,
+            treatmentSession.id,
+            operatorUserId,
+            operatorDoctorId,
+            &workflowError)) {
+        workflowSucceeded = false;
+        appendLog(QStringLiteral("\u4e34\u5e8a\u64cd\u4f5c\u65e5\u5fd7\u5199\u5165\u5931\u8d25\uff1a%1").arg(workflowError));
+    }
+
+    if (!continueTreatment) {
+        TreatmentReportRecord report;
+        report.patientId = patient.id;
+        report.treatmentSessionId = treatmentSession.id;
+        report.generatedAt = endedAt;
+        report.title = QStringLiteral("\u6cbb\u7597\u7ec8\u6b62\u62a5\u544a");
+        report.notes = finalStatus;
+        const QString doctorLabel = m_context->hasCurrentOperator()
+            ? m_context->currentOperatorLabel()
+            : QStringLiteral("\u672a\u77e5\u64cd\u4f5c\u8005");
+        report.contentHtml = QStringLiteral("<h2>%1</h2><p>%2</p><p>%3</p><p>%4</p><p>%5</p><p>%6</p><p>%7</p>")
+                                 .arg(report.title.toHtmlEscaped(),
+                                      QStringLiteral("\u60a3\u8005\uff1a%1\uff08ID\uff1a%2\uff09").arg(patient.name, patient.id).toHtmlEscaped(),
+                                      QStringLiteral("\u64cd\u4f5c\u533b\u751f\uff1a%1").arg(doctorLabel).toHtmlEscaped(),
+                                      QStringLiteral("\u65b9\u6848\uff1a%1").arg(plan.id).toHtmlEscaped(),
+                                      QStringLiteral("\u6cbb\u7597\u72b6\u6001\uff1a%1").arg(finalStatus).toHtmlEscaped(),
+                                      QStringLiteral("\u603b\u80fd\u91cf\uff1a%1 J").arg(treatmentSession.totalEnergyJ, 0, 'f', 2).toHtmlEscaped(),
+                                      QStringLiteral("\u603b\u65f6\u957f\uff1a%1 s").arg(treatmentSession.totalDurationSeconds, 0, 'f', 2).toHtmlEscaped());
+        if (!m_clinicalDataService.saveTreatmentReport(&report)) {
+            appendLog(QStringLiteral("\u6cbb\u7597\u62a5\u544a\u5199\u5165\u5931\u8d25\uff1a%1").arg(m_clinicalDataService.lastError()));
+        }
+    }
+
+    QString documentPath;
+    QString checksum;
+    if (!continueTreatment) {
+        const QString documentDirectory = treatmentProjectRuntimePath(
+            QStringLiteral("runtime/evidence_documents/%1").arg(treatmentSession.id));
+        documentPath = QDir(documentDirectory).filePath(QStringLiteral("%1.docx").arg(treatmentSession.id));
+        QString documentError;
+        if (!adapters::MedicalEvidenceDocumentWriter::writeTreatmentEvidenceDocument(
+                documentPath,
+                QStringLiteral("\u6cbb\u7597\u64cd\u4f5c\u8bc1\u636e\u8bb0\u5f55"),
+                treatmentEvidenceLines(treatmentSession, finalStatus),
+                endedAt,
+                &documentError)) {
+            appendLog(QStringLiteral("\u8bc1\u636e\u6587\u6863\u751f\u6210\u5931\u8d25\uff1a%1").arg(documentError));
+            documentPath.clear();
+        } else {
+            documentPath = QFileInfo(documentPath).absoluteFilePath();
+            QFile documentFile(documentPath);
+            if (documentFile.open(QIODevice::ReadOnly)) {
+                checksum = QString::fromLatin1(QCryptographicHash::hash(documentFile.readAll(), QCryptographicHash::Sha256).toHex());
+            }
+        }
+    }
+
+    adapters::TreatmentTerminationEvidence evidence;
+    evidence.treatmentSessionId = treatmentSession.id;
+    evidence.patientId = patient.id;
+    evidence.planId = plan.id;
+    evidence.startedAt = startedAt;
+    evidence.endedAt = endedAt;
+    evidence.terminationType = continueTreatment ? QStringLiteral("continue") : QStringLiteral("terminate");
+    evidence.finalStatus = finalStatus;
+    evidence.continueTreatmentSelected = continueTreatment;
+    evidence.reason = continueTreatment
+        ? QStringLiteral("\u533b\u751f\u9009\u62e9\u7ee7\u7eed\u6cbb\u7597")
+        : QStringLiteral("\u533b\u751f\u9009\u62e9\u7ed3\u675f\u672c\u6b21\u6cbb\u7597");
+    evidence.summaryPayload = treatmentSession.pathSummary;
+    evidence.documentPath = documentPath;
+    evidence.documentChecksum = checksum;
+    if (m_context->hasCurrentOperator()) {
+        evidence.userId = operatorUserId;
+        evidence.doctorId = operatorDoctorId;
+    }
+    if (!workflowRepository.recordTerminationEvidence(evidence, &workflowError)) {
+        workflowSucceeded = false;
+        appendLog(QStringLiteral("\u7ec8\u6b62\u65e5\u5fd7\u5199\u5165\u5931\u8d25\uff1a%1").arg(workflowError));
+    }
+
+    if (treatmentSessionId != nullptr) {
+        *treatmentSessionId = treatmentSession.id;
+    }
+    return workflowSucceeded && (continueTreatment || !documentPath.isEmpty());
 }
 
 void TreatmentPage::finalizeTreatment(const QString& status)

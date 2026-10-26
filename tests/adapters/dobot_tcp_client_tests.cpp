@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 
+#include "adapters/dobot/DobotPayloadEnableService.h"
 #include "adapters/dobot/dobot_motion_controller.h"
 #include "adapters/dobot/dobot_tcp_client.h"
 
@@ -10,6 +11,7 @@ class DobotTcpClientTests final : public QObject {
 
 private slots:
     void formatsCommandsFromPdfSyntax();
+    void usesTwentyKilogramPayloadWhenEnabling();
     void parsesCommandResponses();
     void parsesPoseAndJointPayloads();
     void parsesGetPoseResponses();
@@ -124,6 +126,23 @@ void DobotTcpClientTests::formatsCommandsFromPdfSyntax()
                 formatDobotNumber(0.0),
             }),
         QStringLiteral("OffsetPara(10,10,10,0,0,0)"));
+}
+
+void DobotTcpClientTests::usesTwentyKilogramPayloadWhenEnabling()
+{
+    QString sentCommand;
+    DobotPayloadEnableService payloadService([&sentCommand](const QString& command) {
+        sentCommand = command;
+        return QStringLiteral("0,{},EnableRobot(20,0,0,0);");
+    });
+
+    bool enableRobotAlreadySent = false;
+    QString errorMessage;
+    QVERIFY(payloadService.applyPayloadBeforeEnable(&enableRobotAlreadySent, &errorMessage));
+    QVERIFY(enableRobotAlreadySent);
+    QVERIFY(errorMessage.isEmpty());
+    QCOMPARE(payloadService.options().loadKg, 20.0);
+    QCOMPARE(sentCommand, QStringLiteral("EnableRobot(20,0,0,0)"));
 }
 
 void DobotTcpClientTests::parsesCommandResponses()

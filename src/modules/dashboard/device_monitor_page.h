@@ -193,13 +193,17 @@ private:
     void moveThreeAxisMotor(int axisIndex, int direction);
     void startThreeAxisContinuousMove(int axisIndex, int direction);
     void stopThreeAxisContinuousMove(int axisIndex);
+    void reconcileThreeAxisContinuousMove(int axisIndex, const diji::adapters::uim::UimMotorSnapshot& snapshot);
     void moveThreeAxisMotorToAbsolute(int axisIndex);
     void enableThreeAxisMotor(int axisIndex);
     void disableThreeAxisMotor(int axisIndex);
     bool configureThreeAxisMotorParameters();
     bool cancelThreeAxisMotorMotion(int axisIndex, QString* errorMessage);
+    bool sendThreeAxisMove(int axisIndex, int deltaSteps, QString* errorMessage);
     bool refreshThreeAxisMotorSnapshot(int axisIndex, diji::adapters::uim::UimMotorSnapshot* snapshot, QString* errorMessage);
-    bool stopThreeAxisMotorAndRestoreSpeed(int axisIndex, QString* errorMessage);
+    // Keep the requested speed at zero after cancelling a move.  Restoring a
+    // non-zero speed can resume a controller-retained STP command.
+    bool stopThreeAxisMotor(int axisIndex, QString* errorMessage);
     bool zeroThreeAxisLinearMotorToS2(int axisIndex, QString* errorMessage);
     bool zeroThreeAxisSwingMotor(QString* errorMessage);
     bool runThreeAxisCommand(int axisIndex, const QString& action, const std::function<bool(QString*)>& command);
@@ -215,10 +219,11 @@ private:
     int threeAxisDisplayDecimals(int axisIndex) const;
     int threeAxisSpeedForAxis(int axisIndex) const;
     double threeAxisJogAmountForAxis(int axisIndex) const;
-    double threeAxisContinuousAmountForAxis(int axisIndex) const;
     QString threeAxisJogActionTitle(int axisIndex, int direction) const;
     bool threeAxisAbsoluteTargetAllowed(int axisIndex, int targetSteps, QString* errorMessage) const;
+    int threeAxisJogDeltaSteps(int axisIndex, int currentSteps, int direction, int requestedSteps) const;
     bool threeAxisCachedSensorLimitAllowsMove(int axisIndex, int deltaSteps) const;
+    bool threeAxisFeedbackAllowsDirection(int axisIndex, int deltaSteps, const diji::adapters::uim::UimMotorSnapshot& snapshot) const;
     bool threeAxisSensorLimitAllowsMove(int axisIndex, int deltaSteps, QString* errorMessage);
     QString threeAxisDisplayUnitText(int axisIndex) const;
     QString threeAxisPositionRangeText(int axisIndex) const;
@@ -280,6 +285,8 @@ private:
     bool m_waterTankLowLevelKnown {false};
     bool m_waterTankLowLevelActive {false};
     bool m_waterTankLowLevelAlarmLatched {false};
+    QString m_waterTankHighLevelReadError;
+    QString m_waterTankLowLevelReadError;
     bool m_updatingRobotArmSwitches {false};
     bool m_robotTrajectoryRefreshRunning {false};
     panthera::adapters::anthone::Lu926TemperatureModbusClient m_temperatureClient;
@@ -299,6 +306,10 @@ private:
     std::array<int, 3> m_threeAxisPreEmergencySpeeds {0, 0, 0};
     bool m_threeAxisEmergencyStopActive {false};
     bool m_threeAxisZeroingActive {false};
+    // Set only after gateway opening has cancelled every retained move and
+    // restored current/limit protection. Motion controls stay disabled if
+    // any part of that safe initialization fails.
+    bool m_threeAxisMotionReady {false};
     QHash<QString, QLabel*> m_valueLabels;
     QLabel* m_safetyStateLabel {nullptr};
     QLabel* m_interlockLabel {nullptr};
@@ -389,13 +400,13 @@ private:
     std::array<QLabel*, 3> m_threeAxisSoftPositionLabels {nullptr, nullptr, nullptr};
     std::array<QDoubleSpinBox*, 3> m_threeAxisTargetPositionSpins {nullptr, nullptr, nullptr};
     std::array<QDoubleSpinBox*, 3> m_threeAxisJogDistanceSpins {nullptr, nullptr, nullptr};
-    std::array<QDoubleSpinBox*, 3> m_threeAxisContinuousDistanceSpins {nullptr, nullptr, nullptr};
     std::array<QPushButton*, 3> m_threeAxisMoveToButtons {nullptr, nullptr, nullptr};
     std::array<QPushButton*, 3> m_threeAxisNegativeButtons {nullptr, nullptr, nullptr};
     std::array<QPushButton*, 3> m_threeAxisPositiveButtons {nullptr, nullptr, nullptr};
     std::array<QPushButton*, 3> m_threeAxisContinuousNegativeButtons {nullptr, nullptr, nullptr};
     std::array<QPushButton*, 3> m_threeAxisContinuousPositiveButtons {nullptr, nullptr, nullptr};
     std::array<bool, 3> m_threeAxisContinuousMoving {false, false, false};
+    std::array<int, 3> m_threeAxisContinuousDirections {0, 0, 0};
     QTimer m_threeAxisRefreshTimer;
     QVector<QCheckBox*> m_faultToggles;
 };

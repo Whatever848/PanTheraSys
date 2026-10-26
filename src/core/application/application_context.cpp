@@ -146,6 +146,14 @@ void ApplicationContext::requestTreatmentLayerVisualization(const QString& planI
     emit treatmentLayerVisualizationRequested(planId, layerIndex, treatmentActive);
 }
 
+void ApplicationContext::requestTreatmentContinuation(
+    const QString& previousTreatmentSessionId,
+    const QString& patientId,
+    const QString& planId)
+{
+    emit treatmentContinuationRequested(previousTreatmentSessionId, patientId, planId);
+}
+
 void ApplicationContext::updateTreatmentCameraFrame(const QImage& frame, const QString& cameraDescription)
 {
     if (frame.isNull()) {

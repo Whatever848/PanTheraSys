@@ -12,6 +12,7 @@
 #include <QUuid>
 
 #include "adapters/mysql/mysql_clinical_data_repository.h"
+#include "adapters/mysql/mysql_treatment_workflow_repository.h"
 #include "core/services/clinical_data_service.h"
 
 using namespace panthera::adapters;
@@ -103,6 +104,20 @@ QString quotedSchemaName(const QString& schema)
     return QStringLiteral("`%1`").arg(escaped);
 }
 
+int countRowsForTreatmentSession(
+    const QSqlDatabase& database,
+    const QString& tableName,
+    const QString& treatmentSessionId)
+{
+    QSqlQuery query(database);
+    query.prepare(QStringLiteral("SELECT COUNT(*) FROM %1 WHERE treatment_session_id = :treatment_session_id").arg(tableName));
+    query.bindValue(QStringLiteral(":treatment_session_id"), treatmentSessionId);
+    if (!query.exec() || !query.next()) {
+        return -1;
+    }
+    return query.value(0).toInt();
+}
+
 }  // namespace
 
 class MySqlClinicalDataIntegrationTests final : public QObject {
@@ -119,6 +134,7 @@ private slots:
     void saveUpdateTreatmentSessionAgainstMySql();
     void saveUpdateAndDeleteTreatmentReportAgainstMySql();
     void deleteTreatmentSessionCascadesReportsInMySql();
+    void recordTreatmentDeviceSnapshotAgainstMySql();
 
 private:
     bool recreateSchema(QString* error);
@@ -194,9 +210,12 @@ void MySqlClinicalDataIntegrationTests::saveUpdateAndArchivePatientAgainstMySql(
     PatientRecord persistedPatient;
     QVERIFY(m_repository.findPatientById(patient.id, &persistedPatient));
     QCOMPARE(persistedPatient.name, patient.name);
+    QCOMPARE(persistedPatient.gender, patient.gender);
     QCOMPARE(persistedPatient.diagnosis, patient.diagnosis);
+    QCOMPARE(persistedPatient.contact, patient.contact);
 
     persistedPatient.contact = QStringLiteral("400-800-1000");
+    persistedPatient.gender = QStringLiteral("X");
     persistedPatient.diagnosis = QStringLiteral("Updated diagnosis");
     QVERIFY2(m_service.savePatient(&persistedPatient), qPrintable(m_service.lastError()));
 
@@ -205,6 +224,7 @@ void MySqlClinicalDataIntegrationTests::saveUpdateAndArchivePatientAgainstMySql(
     PatientRecord updatedPatient;
     QVERIFY(m_repository.findPatientById(patient.id, &updatedPatient));
     QCOMPARE(updatedPatient.contact, persistedPatient.contact);
+    QCOMPARE(updatedPatient.gender, persistedPatient.gender);
     QCOMPARE(updatedPatient.diagnosis, persistedPatient.diagnosis);
 
     QVERIFY2(m_service.archivePatient(patient.id), qPrintable(m_service.lastError()));
@@ -364,6 +384,42 @@ void MySqlClinicalDataIntegrationTests::deleteTreatmentSessionCascadesReportsInM
     treatmentReport.contentHtml = QStringLiteral("<p>Cascade verification</p>");
     QVERIFY2(m_service.saveTreatmentReport(&treatmentReport), qPrintable(m_service.lastError()));
 
+    const QString capturedImageId = QStringLiteral("CAP-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    const QString annotationId = QStringLiteral("ANN-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    {
+        const QSqlDatabase database = QSqlDatabase::database(m_settings.connectionName, false);
+        QVERIFY(database.isOpen());
+        QSqlQuery insertCapturedImage(database);
+        insertCapturedImage.prepare(QStringLiteral(
+            "INSERT INTO treatment_image_capture (id, patient_id, plan_id, treatment_session_id, layer_index, slice_index, storage_path, captured_at) "
+            "VALUES (:id, :patient_id, :plan_id, :session_id, :layer_index, :slice_index, :storage_path, :captured_at)"));
+        insertCapturedImage.bindValue(QStringLiteral(":id"), capturedImageId);
+        insertCapturedImage.bindValue(QStringLiteral(":patient_id"), patient.id);
+        insertCapturedImage.bindValue(QStringLiteral(":plan_id"), treatmentSession.planId);
+        insertCapturedImage.bindValue(QStringLiteral(":session_id"), treatmentSession.id);
+        insertCapturedImage.bindValue(QStringLiteral(":layer_index"), 0);
+        insertCapturedImage.bindValue(QStringLiteral(":slice_index"), 0);
+        insertCapturedImage.bindValue(QStringLiteral(":storage_path"), QStringLiteral("D:/PanTheraSys/runtime/images/delete-session-source.png"));
+        insertCapturedImage.bindValue(QStringLiteral(":captured_at"), QDateTime::currentDateTime());
+        QVERIFY2(insertCapturedImage.exec(), qPrintable(insertCapturedImage.lastError().text()));
+
+        QSqlQuery insertAnnotation(database);
+        insertAnnotation.prepare(QStringLiteral(
+            "INSERT INTO treatment_image_annotation (id, captured_image_id, patient_id, plan_id, treatment_session_id, annotated_image_path, annotation_payload, saved_reason, created_at, updated_at) "
+            "VALUES (:id, :captured_image_id, :patient_id, :plan_id, :session_id, :annotated_path, :payload, :reason, :created_at, :updated_at)"));
+        insertAnnotation.bindValue(QStringLiteral(":id"), annotationId);
+        insertAnnotation.bindValue(QStringLiteral(":captured_image_id"), capturedImageId);
+        insertAnnotation.bindValue(QStringLiteral(":patient_id"), patient.id);
+        insertAnnotation.bindValue(QStringLiteral(":plan_id"), treatmentSession.planId);
+        insertAnnotation.bindValue(QStringLiteral(":session_id"), treatmentSession.id);
+        insertAnnotation.bindValue(QStringLiteral(":annotated_path"), QStringLiteral("D:/PanTheraSys/runtime/images/delete-session-annotation.png"));
+        insertAnnotation.bindValue(QStringLiteral(":payload"), QStringLiteral("{}"));
+        insertAnnotation.bindValue(QStringLiteral(":reason"), QStringLiteral("integration-test"));
+        insertAnnotation.bindValue(QStringLiteral(":created_at"), QDateTime::currentDateTime());
+        insertAnnotation.bindValue(QStringLiteral(":updated_at"), QDateTime::currentDateTime());
+        QVERIFY2(insertAnnotation.exec(), qPrintable(insertAnnotation.lastError().text()));
+    }
+
     QVERIFY2(m_service.deleteTreatmentSession(treatmentSession.id), qPrintable(m_service.lastError()));
     QVERIFY2(reopenRepository(&error), qPrintable(error));
 
@@ -375,6 +431,66 @@ void MySqlClinicalDataIntegrationTests::deleteTreatmentSessionCascadesReportsInM
         return report.treatmentSessionId == treatmentSession.id;
     });
     QVERIFY(!danglingReportExists);
+
+    const QSqlDatabase reopenedDatabase = QSqlDatabase::database(m_settings.connectionName, false);
+    QSqlQuery annotationQuery(reopenedDatabase);
+    annotationQuery.prepare(QStringLiteral("SELECT treatment_session_id FROM treatment_image_annotation WHERE id = :id"));
+    annotationQuery.bindValue(QStringLiteral(":id"), annotationId);
+    QVERIFY2(annotationQuery.exec(), qPrintable(annotationQuery.lastError().text()));
+    QVERIFY(annotationQuery.next());
+    QVERIFY(annotationQuery.value(0).isNull());
+}
+
+void MySqlClinicalDataIntegrationTests::recordTreatmentDeviceSnapshotAgainstMySql()
+{
+    PatientRecord patient;
+    QString error;
+    QVERIFY2(preparePatient(&patient, &error), qPrintable(error));
+
+    TreatmentSessionRecord treatmentSession;
+    QVERIFY2(prepareSession(patient.id, &treatmentSession, &error), qPrintable(error));
+    QVERIFY2(m_service.saveTreatmentSession(&treatmentSession), qPrintable(m_service.lastError()));
+
+    DeviceSnapshot snapshot;
+    snapshot.capturedAt = QDateTime::currentDateTime();
+    snapshot.position = {12.3, -4.5, 67.8, 1.2, 2.3, 3.4};
+    snapshot.inputVoltageVolts = 220.0;
+    snapshot.workingCurrentAmps = 2.4;
+    snapshot.outputPowerWatts = 400.0;
+    snapshot.waterLevelPercent = 76.0;
+    snapshot.inletTemperatureCelsius = 21.5;
+    snapshot.outletTemperatureCelsius = 24.0;
+    snapshot.flowRateLpm = 4.2;
+    snapshot.pressureMpa = 0.26;
+    snapshot.transducerTemperatureCelsius = 37.5;
+    snapshot.vibrationFrequencyMhz = 1.0;
+    snapshot.conversionEfficiencyPercent = 88.0;
+    snapshot.motorLoadPercent = 35.0;
+    snapshot.waterPumpOn = true;
+    snapshot.coolerOn = true;
+    snapshot.infusionPump.connected = true;
+    snapshot.temperatureModule.connected = true;
+    snapshot.temperatureModule.channels.at(0).setpointTemperatureCelsius = 38.0;
+
+    MySqlTreatmentWorkflowRepository workflowRepository(m_settings.connectionName);
+    QVERIFY2(workflowRepository.recordTreatmentDeviceSnapshot(snapshot, treatmentSession.id, QString(), &error), qPrintable(error));
+
+    const QSqlDatabase database = QSqlDatabase::database(m_settings.connectionName, false);
+    QVERIFY(database.isOpen());
+    for (const QString& tableName : {
+             QStringLiteral("water_pump_status"),
+             QStringLiteral("temperature_control_status"),
+             QStringLiteral("liquid_level_status"),
+             QStringLiteral("robot_arm_status"),
+             QStringLiteral("three_motor_status"),
+             QStringLiteral("power_device_status")}) {
+        QCOMPARE(countRowsForTreatmentSession(database, tableName, treatmentSession.id), 1);
+    }
+
+    QSqlQuery deviceSnapshotCount(database);
+    QVERIFY(deviceSnapshotCount.exec(QStringLiteral("SELECT COUNT(*) FROM device_snapshot")));
+    QVERIFY(deviceSnapshotCount.next());
+    QCOMPARE(deviceSnapshotCount.value(0).toInt(), 1);
 }
 
 bool MySqlClinicalDataIntegrationTests::recreateSchema(QString* error)

@@ -57,6 +57,7 @@ private slots:
     void onSaveTreatmentSessionClicked();
     void onDeleteTreatmentSessionClicked();
     void onTreatmentSelectionChanged();
+    void onOpenTreatmentEvidenceDocumentClicked();
     void onAddTreatmentReportClicked();
     void onSaveTreatmentReportClicked();
     void onDeleteTreatmentReportClicked();
@@ -68,7 +69,9 @@ private:
         QString id;
         QString name;
         int age {0};
+        QString gender;
         QString diagnosis;
+        QString contact;
     };
 
     enum class PatientPanelMode {
@@ -111,6 +114,7 @@ private:
     void setSelectedTreatmentSession(const QString& treatmentSessionId);
     bool saveCurrentTreatmentSession();
     bool deleteCurrentTreatmentSession();
+    void openTreatmentEvidenceDocument(const QString& treatmentSessionId);
 
     void fillReportList(const QVector<panthera::core::TreatmentReportRecord>& treatmentReports);
     void populateTreatmentReportEditor(const panthera::core::TreatmentReportRecord* treatmentReport);
@@ -143,7 +147,11 @@ private:
     QLineEdit* m_patientIdValue {nullptr};
     QLineEdit* m_patientNameEdit {nullptr};
     QSpinBox* m_patientAgeSpin {nullptr};
+    QComboBox* m_patientGenderCombo {nullptr};
+    QLineEdit* m_patientContactEdit {nullptr};
     QPlainTextEdit* m_patientDiagnosisEdit {nullptr};
+    QLineEdit* m_patientCreatedAtValue {nullptr};
+    QLineEdit* m_patientUpdatedAtValue {nullptr};
 
     QLabel* m_imagingPatientNameLabel {nullptr};
     QPushButton* m_addImageSeriesButton {nullptr};
