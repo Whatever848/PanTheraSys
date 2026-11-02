@@ -584,6 +584,10 @@ DeviceMonitorPage::DeviceMonitorPage(
     connect(&m_robotPhysicalDragPollTimer, &QTimer::timeout, this, &DeviceMonitorPage::pollRobotArmPhysicalDragButton);
     m_tank2FillTimer.setInterval(kTank2FillPollIntervalMs);
     connect(&m_tank2FillTimer, &QTimer::timeout, this, &DeviceMonitorPage::pollTank2FillLevel);
+    m_waterLoopMonitorThread = std::make_unique<WaterLoopMonitorThread>(
+        this,
+        [this]() { pollWaterLoopLevel(); },
+        kWaterLoopMonitorIntervalMs);
     m_temperatureRealtimeTimer.setInterval(kTemperatureRealtimeIntervalMs);
     connect(&m_temperatureRealtimeTimer, &QTimer::timeout, this, &DeviceMonitorPage::updateRealtimeTemperature);
     connect(&m_rigolSignalSourceClient, &panthera::adapters::rigol::RigolVisaClient::logMessage, this, [this](const QString& message) {
@@ -664,6 +668,13 @@ DeviceMonitorPage::DeviceMonitorPage(
     refreshPowerAmplifierUi();
     refreshRobotArmUi();
     refreshThreeAxisUi();
+}
+
+DeviceMonitorPage::~DeviceMonitorPage()
+{
+    if (m_waterLoopMonitorThread != nullptr) {
+        m_waterLoopMonitorThread->stopMonitoring();
+    }
 }
 
 void DeviceMonitorPage::updateSnapshot(const DeviceSnapshot& snapshot)
@@ -809,13 +820,13 @@ QWidget* DeviceMonitorPage::createWaterLoopControlCard()
 
     auto* loopButtonsLayout = new QHBoxLayout();
     loopButtonsLayout->setSpacing(8);
-    auto* startLoopButton = new QPushButton(QStringLiteral("启动循环"), groupBox);
-    auto* stopLoopButton = new QPushButton(QStringLiteral("停止循环"), groupBox);
-    loopButtonsLayout->addWidget(startLoopButton, 1);
-    loopButtonsLayout->addWidget(stopLoopButton, 1);
+    m_startWaterLoopButton = new QPushButton(QStringLiteral("启动循环"), groupBox);
+    m_stopWaterLoopButton = new QPushButton(QStringLiteral("停止循环"), groupBox);
+    loopButtonsLayout->addWidget(m_startWaterLoopButton, 1);
+    loopButtonsLayout->addWidget(m_stopWaterLoopButton, 1);
     layout->addLayout(loopButtonsLayout);
-    m_waterPumpCommandWidgets.push_back(startLoopButton);
-    m_waterPumpCommandWidgets.push_back(stopLoopButton);
+    m_waterPumpCommandWidgets.push_back(m_startWaterLoopButton);
+    m_waterPumpCommandWidgets.push_back(m_stopWaterLoopButton);
 
     auto* pumpLayout = new QGridLayout();
     pumpLayout->setHorizontalSpacing(8);
@@ -890,8 +901,8 @@ QWidget* DeviceMonitorPage::createWaterLoopControlCard()
     connect(m_waterPumpRefreshPortsButton, &QPushButton::clicked, this, &DeviceMonitorPage::refreshWaterPumpSerialPorts);
     connect(m_waterPumpConnectionButton, &QPushButton::clicked, this, &DeviceMonitorPage::toggleWaterPumpConnection);
     connect(m_tank2FillButton, &QPushButton::clicked, this, &DeviceMonitorPage::toggleTank2Fill);
-    connect(startLoopButton, &QPushButton::clicked, this, &DeviceMonitorPage::startWaterLoop);
-    connect(stopLoopButton, &QPushButton::clicked, this, &DeviceMonitorPage::stopWaterLoop);
+    connect(m_startWaterLoopButton, &QPushButton::clicked, this, &DeviceMonitorPage::startWaterLoop);
+    connect(m_stopWaterLoopButton, &QPushButton::clicked, this, &DeviceMonitorPage::stopWaterLoop);
     connect(robotForwardButton, &QPushButton::clicked, this, &DeviceMonitorPage::startRobotPumpForward);
     connect(robotReverseButton, &QPushButton::clicked, this, &DeviceMonitorPage::startRobotPumpReverse);
     connect(robotStopButton, &QPushButton::clicked, this, &DeviceMonitorPage::stopRobotPump);
@@ -2905,8 +2916,8 @@ void DeviceMonitorPage::releaseThreeAxisGatewayForSharedUse()
         return;
     }
 
-    m_threeAxisContinuousMoving.fill(false);
-    m_threeAxisContinuousDirections.fill(0);
+    resetThreeAxisContinuousMoveState();
+    m_threeAxisMotorEnabled.fill(false);
     m_threeAxisMotionReady = false;
     m_threeAxisGateway.closeGateway();
     m_threeAxisNodes.clear();
@@ -2976,6 +2987,7 @@ void DeviceMonitorPage::toggleThreeAxisGateway()
         disableAllThreeAxisMotors();
         m_threeAxisGateway.closeGateway();
         m_threeAxisNodes.clear();
+        m_threeAxisMotorEnabled.fill(false);
         m_threeAxisMotionReady = false;
         m_waterTankHighLevelKnown = false;
         m_waterTankHighLevelActive = false;
@@ -3022,8 +3034,8 @@ void DeviceMonitorPage::toggleThreeAxisGateway()
     // Closing a gateway does not clear a controller-retained STP command.
     // Do not trust positions/sensors from the previous session or enable a
     // command until every detected axis has been explicitly made stationary.
-    m_threeAxisContinuousMoving.fill(false);
-    m_threeAxisContinuousDirections.fill(0);
+    resetThreeAxisContinuousMoveState();
+    m_threeAxisMotorEnabled.fill(false);
     m_threeAxisPositionKnown.fill(false);
     m_threeAxisSensorFeedbackKnown.fill(false);
     m_threeAxisMotionReady = false;
@@ -3088,27 +3100,22 @@ void DeviceMonitorPage::emergencyStopThreeAxisMotors()
         return;
     }
 
-    for (int index = 0; index < static_cast<int>(kThreeAxisNodeIds.size()); ++index) {
-        m_threeAxisPreEmergencySpeeds[static_cast<size_t>(index)] = threeAxisSpeedForAxis(index);
-    }
-
     m_threeAxisEmergencyStopActive = true;
-    appendThreeAxisLog(QStringLiteral("急停触发：开始将 6/7/8 号电机速度置 0，并取消残余移动，电机保持上电状态"));
+    resetThreeAxisContinuousMoveState();
+    appendThreeAxisLog(QStringLiteral("急停触发：开始将 6/7/8 号电机速度置 0、下发 STP=0 停止命令，并强制断电"));
 
+    bool allSecured = true;
     for (int index = 0; index < static_cast<int>(kThreeAxisNodeIds.size()); ++index) {
-        if (!threeAxisNodeAvailable(index)) {
-            appendThreeAxisLog(QStringLiteral("%1 急停跳过：未发现节点").arg(threeAxisAxisTitle(index)));
-            continue;
-        }
         QString errorMessage;
-        if (!cancelThreeAxisMotorMotion(index, &errorMessage)) {
-            appendThreeAxisLog(QStringLiteral("%1 急停取消残余移动失败：%2").arg(threeAxisAxisTitle(index), errorMessage));
+        if (!forceThreeAxisMotorSafeDisabled(index, &errorMessage)) {
+            appendThreeAxisLog(QStringLiteral("%1 急停安全断电未确认：%2")
+                                   .arg(threeAxisAxisTitle(index), errorMessage));
+            allSecured = false;
         } else {
-            appendThreeAxisLog(QStringLiteral("%1 急停速度已置 0，残余移动已取消").arg(threeAxisAxisTitle(index)));
+            appendThreeAxisLog(QStringLiteral("%1 急停完成：SPD=0、已下发 STP=0、已断电")
+                                   .arg(threeAxisAxisTitle(index)));
         }
     }
-    m_threeAxisContinuousMoving.fill(false);
-    m_threeAxisContinuousDirections.fill(0);
 
     if (m_faultToggles.size() >= 5 && m_faultToggles.at(4) != nullptr) {
         m_faultToggles.at(4)->setChecked(true);
@@ -3116,7 +3123,9 @@ void DeviceMonitorPage::emergencyStopThreeAxisMotors()
         m_simulationDevice->injectFault(InterlockReason::EmergencyStop, true);
         m_safetyKernel->setEmergencyStopReleased(false);
     }
-    setThreeAxisStatus(QStringLiteral("三电机急停已触发，固定速度已置 0，残余移动已取消，电机未断电"));
+    setThreeAxisStatus(allSecured
+            ? QStringLiteral("三电机急停已触发：6/7/8 号均已清零并断电；解除急停不会恢复任何旧运动")
+            : QStringLiteral("三电机急停保持锁定：部分节点未确认清零断电，请立即检查设备并重试"));
     refreshThreeAxisMotors();
     refreshThreeAxisUi();
 }
@@ -3128,74 +3137,29 @@ void DeviceMonitorPage::releaseThreeAxisEmergencyStop()
         return;
     }
 
-    bool cancelFailed = false;
-    appendThreeAxisLog(QStringLiteral("解除急停：先保持速度 0 并取消 6/7/8 号电机残余移动"));
-    for (int index = 0; index < static_cast<int>(kThreeAxisNodeIds.size()); ++index) {
-        if (!m_threeAxisGateway.isGatewayOpen()) {
-            appendThreeAxisLog(QStringLiteral("%1 取消残余移动跳过：UIM 网关未打开").arg(threeAxisAxisTitle(index)));
-            continue;
-        }
-        if (!threeAxisNodeAvailable(index)) {
-            appendThreeAxisLog(QStringLiteral("%1 取消残余移动失败：未发现节点").arg(threeAxisAxisTitle(index)));
-            cancelFailed = true;
-            continue;
-        }
-
-        QString errorMessage;
-        if (!cancelThreeAxisMotorMotion(index, &errorMessage)) {
-            appendThreeAxisLog(QStringLiteral("%1 取消残余移动失败：%2").arg(threeAxisAxisTitle(index), errorMessage));
-            cancelFailed = true;
-            continue;
-        }
-        appendThreeAxisLog(QStringLiteral("%1 残余移动已取消").arg(threeAxisAxisTitle(index)));
-    }
-
-    if (cancelFailed) {
-        setThreeAxisStatus(QStringLiteral("三电机解除急停失败，部分电机残余移动未取消，已保持速度 0"));
+    if (!m_threeAxisGateway.isGatewayOpen()) {
+        setThreeAxisStatus(QStringLiteral("三电机解除急停失败：UIM 网关未打开，无法确认 6/7/8 号已安全停止；急停保持锁定"));
         refreshThreeAxisUi();
         return;
     }
 
-    bool restoreFailed = false;
-    appendThreeAxisLog(QStringLiteral("解除急停：残余移动已取消，开始恢复固定速度"));
+    resetThreeAxisContinuousMoveState();
+    bool safeStopFailed = false;
+    appendThreeAxisLog(QStringLiteral("解除急停：再次设置 6/7/8 号 SPD=0、下发 STP=0，并保持全部断电"));
     for (int index = 0; index < static_cast<int>(kThreeAxisNodeIds.size()); ++index) {
-        const int speed = m_threeAxisPreEmergencySpeeds[static_cast<size_t>(index)] > 0
-            ? m_threeAxisPreEmergencySpeeds[static_cast<size_t>(index)]
-            : kThreeAxisDefaultSpeed;
-
-        if (!m_threeAxisGateway.isGatewayOpen()) {
-            appendThreeAxisLog(QStringLiteral("%1 恢复固定速度 %2：UIM 网关未打开")
-                                   .arg(threeAxisAxisTitle(index))
-                                   .arg(speed));
-            continue;
-        }
-        if (!threeAxisNodeAvailable(index)) {
-            appendThreeAxisLog(QStringLiteral("%1 恢复速度失败：未发现节点").arg(threeAxisAxisTitle(index)));
-            restoreFailed = true;
-            continue;
-        }
-
         QString errorMessage;
-        if (!selectThreeAxisNode(index, &errorMessage)) {
-            appendThreeAxisLog(QStringLiteral("%1 恢复速度选中失败：%2").arg(threeAxisAxisTitle(index), errorMessage));
-            restoreFailed = true;
-            continue;
+        if (!forceThreeAxisMotorSafeDisabled(index, &errorMessage)) {
+            appendThreeAxisLog(QStringLiteral("%1 解除前安全状态确认失败：%2")
+                                   .arg(threeAxisAxisTitle(index), errorMessage));
+            safeStopFailed = true;
+        } else {
+            appendThreeAxisLog(QStringLiteral("%1 解除前确认：SPD=0、已下发 STP=0、保持断电")
+                                   .arg(threeAxisAxisTitle(index)));
         }
-        if (!m_threeAxisGateway.setSpeed(speed, &errorMessage)) {
-            appendThreeAxisLog(QStringLiteral("%1 恢复速度 %2 失败：%3")
-                                   .arg(threeAxisAxisTitle(index))
-                                   .arg(speed)
-                                   .arg(errorMessage));
-            restoreFailed = true;
-            continue;
-        }
-        appendThreeAxisLog(QStringLiteral("%1 恢复速度 %2 => OK")
-                               .arg(threeAxisAxisTitle(index))
-                               .arg(speed));
     }
 
-    if (restoreFailed) {
-        setThreeAxisStatus(QStringLiteral("三电机解除急停失败，残余移动已取消，但部分电机速度未恢复，请检查节点后重试"));
+    if (safeStopFailed) {
+        setThreeAxisStatus(QStringLiteral("三电机解除急停失败：部分节点未确认清零断电；急停保持锁定，绝不恢复旧运动"));
         refreshThreeAxisUi();
         return;
     }
@@ -3207,7 +3171,7 @@ void DeviceMonitorPage::releaseThreeAxisEmergencyStop()
         m_simulationDevice->injectFault(InterlockReason::EmergencyStop, false);
         m_safetyKernel->setEmergencyStopReleased(true);
     }
-    setThreeAxisStatus(QStringLiteral("三电机急停已解除，残余移动已取消，已恢复固定速度"));
+    setThreeAxisStatus(QStringLiteral("三电机急停已解除：旧运动已丢弃，6/7/8 号保持断电且速度为 0；需重新上电并重新下发运动"));
     refreshThreeAxisMotors();
     refreshThreeAxisUi();
 }
@@ -3248,13 +3212,13 @@ void DeviceMonitorPage::zeroAllThreeAxisMotors()
     bool allOk = false;
     m_threeAxisZeroingActive = true;
     refreshThreeAxisUi();
-    appendThreeAxisLog(QStringLiteral("一键归零开始：7号/8号回 S2，6号回 0°"));
+    appendThreeAxisLog(QStringLiteral("一键归零开始：7号/8号优先以零点侧 S1 低电平判定，位置容差作为后备；6号回 0°"));
 
     do {
-        if (!zeroThreeAxisLinearMotorToS2(1, &errorMessage)) {
+        if (!zeroThreeAxisLinearMotorToS1(1, &errorMessage)) {
             break;
         }
-        if (!zeroThreeAxisLinearMotorToS2(2, &errorMessage)) {
+        if (!zeroThreeAxisLinearMotorToS1(2, &errorMessage)) {
             break;
         }
         if (!zeroThreeAxisSwingMotor(&errorMessage)) {
@@ -3265,7 +3229,7 @@ void DeviceMonitorPage::zeroAllThreeAxisMotors()
 
     m_threeAxisZeroingActive = false;
     if (allOk) {
-        setThreeAxisStatus(QStringLiteral("三电机一键归零完成：7号/8号已到 S2 零点，6号已到 0°"));
+        setThreeAxisStatus(QStringLiteral("三电机一键归零完成：7号/8号已到 S1 零点或位置容差范围，6号已到 0°"));
     } else {
         setThreeAxisStatus(QStringLiteral("三电机一键归零中止：%1")
                                .arg(errorMessage.trimmed().isEmpty() ? QStringLiteral("未知错误") : errorMessage));
@@ -3335,6 +3299,7 @@ void DeviceMonitorPage::refreshThreeAxisMotors()
         } else if (m_threeAxisContinuousMoving[static_cast<size_t>(index)]) {
             stopThreeAxisContinuousMove(index);
         } else {
+            m_threeAxisMotorEnabled[static_cast<size_t>(index)] = false;
             m_threeAxisPositionKnown[static_cast<size_t>(index)] = false;
             m_threeAxisSensorFeedbackKnown[static_cast<size_t>(index)] = false;
             refreshThreeAxisUi();
@@ -3704,25 +3669,159 @@ void DeviceMonitorPage::enableThreeAxisMotor(int axisIndex)
         setThreeAxisStatus(QStringLiteral("急停未解除，禁止上电"));
         return;
     }
+    if (!m_threeAxisMotionReady) {
+        setThreeAxisStatus(QStringLiteral("打开后的安全停机或限位初始化未完成，禁止上电"));
+        return;
+    }
 
-    runThreeAxisCommand(axisIndex, QStringLiteral("上电"), [this](QString* error) {
-        return m_threeAxisGateway.enableMotor(error);
-    });
+    QString errorMessage;
+    if (!safelyEnableThreeAxisMotor(axisIndex, &errorMessage)) {
+        setThreeAxisStatus(QStringLiteral("%1 安全上电失败：%2；已保持或重新尝试断电")
+                               .arg(threeAxisAxisTitle(axisIndex), errorMessage));
+        refreshThreeAxisUi();
+        return;
+    }
+
+    appendThreeAxisLog(QStringLiteral("%1：安全上电完成；上电前后均已清除旧运动，速度保持 0")
+                           .arg(threeAxisAxisTitle(axisIndex)));
+    refreshThreeAxisMotors();
+    refreshThreeAxisUi();
 }
 
 void DeviceMonitorPage::disableThreeAxisMotor(int axisIndex)
 {
-    QString stopError;
-    if (!stopThreeAxisMotor(axisIndex, &stopError)) {
-        setThreeAxisStatus(
-            QStringLiteral("%1 \u65ad\u7535\u524d\u5b89\u5168\u505c\u673a\u5931\u8d25\uff1a%2")
-                .arg(threeAxisAxisTitle(axisIndex), stopError));
+    QString errorMessage;
+    if (!forceThreeAxisMotorSafeDisabled(axisIndex, &errorMessage)) {
+        setThreeAxisStatus(QStringLiteral("%1 安全断电未确认：%2")
+                               .arg(threeAxisAxisTitle(axisIndex), errorMessage));
         refreshThreeAxisUi();
         return;
     }
-    runThreeAxisCommand(axisIndex, QStringLiteral("断电"), [this](QString* error) {
-        return m_threeAxisGateway.disableMotor(error);
-    });
+
+    resetThreeAxisContinuousMoveState();
+    appendThreeAxisLog(QStringLiteral("%1：SPD=0、已下发 STP=0、已断电 => OK")
+                           .arg(threeAxisAxisTitle(axisIndex)));
+    refreshThreeAxisMotors();
+    refreshThreeAxisUi();
+}
+
+void DeviceMonitorPage::resetThreeAxisContinuousMoveState()
+{
+    m_threeAxisContinuousMoving.fill(false);
+    m_threeAxisContinuousDirections.fill(0);
+    for (size_t index = 0; index < kThreeAxisNodeIds.size(); ++index) {
+        if (m_threeAxisContinuousNegativeButtons[index] != nullptr) {
+            const QSignalBlocker blocker(m_threeAxisContinuousNegativeButtons[index]);
+            m_threeAxisContinuousNegativeButtons[index]->setDown(false);
+        }
+        if (m_threeAxisContinuousPositiveButtons[index] != nullptr) {
+            const QSignalBlocker blocker(m_threeAxisContinuousPositiveButtons[index]);
+            m_threeAxisContinuousPositiveButtons[index]->setDown(false);
+        }
+    }
+}
+
+bool DeviceMonitorPage::verifyThreeAxisMotorStopped(
+    int axisIndex,
+    bool expectedEnabled,
+    QString* errorMessage)
+{
+    QString localError;
+    if (!selectThreeAxisNode(axisIndex, &localError)
+        || !m_threeAxisGateway.refreshSnapshot(&localError, false)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("停止状态读取失败：%1").arg(localError);
+        }
+        return false;
+    }
+
+    const diji::adapters::uim::UimMotorSnapshot snapshot = m_threeAxisGateway.latestSnapshot();
+    QStringList mismatches;
+    if (snapshot.enabled != expectedEnabled) {
+        mismatches.push_back(expectedEnabled ? QStringLiteral("未确认上电") : QStringLiteral("未确认断电"));
+    }
+    if (snapshot.speed != 0) {
+        mismatches.push_back(QStringLiteral("SPD=%1").arg(snapshot.speed));
+    }
+    if (!mismatches.isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("驱动器未处于安全静止状态：%1；STP=%2 仅表示当前相对位移，不作为静止判据")
+                                .arg(mismatches.join(QStringLiteral("，")))
+                                .arg(snapshot.step);
+        }
+        return false;
+    }
+
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+bool DeviceMonitorPage::forceThreeAxisMotorSafeDisabled(int axisIndex, QString* errorMessage)
+{
+    QString localError;
+    if (!selectThreeAxisNode(axisIndex, &localError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = localError;
+        }
+        return false;
+    }
+
+    QStringList failures;
+    if (!m_threeAxisGateway.setSpeed(0, &localError)) {
+        failures.push_back(QStringLiteral("速度置 0 失败：%1").arg(localError));
+    }
+    localError.clear();
+    if (!m_threeAxisGateway.setStep(0, &localError)) {
+        failures.push_back(QStringLiteral("STP=0 停止命令失败：%1").arg(localError));
+    }
+    localError.clear();
+    if (!m_threeAxisGateway.disableMotor(&localError)) {
+        failures.push_back(QStringLiteral("断电失败：%1").arg(localError));
+    }
+    if (!failures.isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = failures.join(QStringLiteral("；"));
+        }
+        return false;
+    }
+
+    return verifyThreeAxisMotorStopped(axisIndex, false, errorMessage);
+}
+
+bool DeviceMonitorPage::safelyEnableThreeAxisMotor(int axisIndex, QString* errorMessage)
+{
+    QString localError;
+    if (!forceThreeAxisMotorSafeDisabled(axisIndex, &localError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("上电前安全清零失败：%1").arg(localError);
+        }
+        return false;
+    }
+
+    if (!selectThreeAxisNode(axisIndex, &localError)
+        || !m_threeAxisGateway.enableMotor(&localError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("驱动器上电失败：%1").arg(localError);
+        }
+        return false;
+    }
+
+    if (!cancelThreeAxisMotorMotion(axisIndex, &localError)
+        || !verifyThreeAxisMotorStopped(axisIndex, true, &localError)) {
+        QString ignoredError;
+        forceThreeAxisMotorSafeDisabled(axisIndex, &ignoredError);
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("上电后安全清零或状态确认失败：%1").arg(localError);
+        }
+        return false;
+    }
+
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
 }
 
 bool DeviceMonitorPage::configureThreeAxisMotorParameters()
@@ -3792,6 +3891,34 @@ bool DeviceMonitorPage::configureThreeAxisMotorParameters()
 
 bool DeviceMonitorPage::sendThreeAxisMove(int axisIndex, int deltaSteps, QString* errorMessage)
 {
+    if (m_threeAxisEmergencyStopActive) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("急停未解除，禁止运动");
+        }
+        return false;
+    }
+    if (!m_threeAxisMotionReady) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("安全停机或限位初始化未完成，禁止运动");
+        }
+        return false;
+    }
+
+    QString localError;
+    if (!selectThreeAxisNode(axisIndex, &localError)
+        || !m_threeAxisGateway.refreshSnapshot(&localError, false)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("运动前电机状态读取失败：%1").arg(localError);
+        }
+        return false;
+    }
+    if (!m_threeAxisGateway.latestSnapshot().enabled) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("电机尚未重新上电；解除急停不会自动恢复运动");
+        }
+        return false;
+    }
+
     // A limit stop can leave STP pending in the controller. Clear it at
     // zero speed before restoring speed for the new (retreat) command.
     if (!cancelThreeAxisMotorMotion(axisIndex, errorMessage)
@@ -3834,7 +3961,7 @@ bool DeviceMonitorPage::cancelThreeAxisMotorMotion(int axisIndex, QString* error
     localError.clear();
     if (!m_threeAxisGateway.setStep(0, &localError)) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("清除期望位移失败：%1").arg(localError);
+            *errorMessage = QStringLiteral("下发 STP=0 停止命令失败：%1").arg(localError);
         }
         return false;
     }
@@ -3890,7 +4017,17 @@ bool DeviceMonitorPage::stopThreeAxisMotor(int axisIndex, QString* errorMessage)
     return true;
 }
 
-bool DeviceMonitorPage::zeroThreeAxisLinearMotorToS2(int axisIndex, QString* errorMessage)
+bool DeviceMonitorPage::threeAxisLinearHomeReached(
+    const diji::adapters::uim::UimMotorSnapshot& snapshot) const
+{
+    // Nodes 7 and 8 use S1 as the limit at the calibrated 0 cm side. The
+    // switch is authoritative because the absolute-position estimate can
+    // retain a small mechanical/safety offset (for example 0.130 cm).
+    return (snapshot.hasSensorFeedback && !snapshot.sensor1)
+        || (snapshot.hasPosition && std::abs(snapshot.position) <= kThreeAxisLinearZeroToleranceSteps);
+}
+
+bool DeviceMonitorPage::zeroThreeAxisLinearMotorToS1(int axisIndex, QString* errorMessage)
 {
     if (axisIndex != 1 && axisIndex != 2) {
         if (errorMessage != nullptr) {
@@ -3903,38 +4040,46 @@ bool DeviceMonitorPage::zeroThreeAxisLinearMotorToS2(int axisIndex, QString* err
     if (!refreshThreeAxisMotorSnapshot(axisIndex, &snapshot, errorMessage)) {
         return false;
     }
-    if (!snapshot.hasPosition) {
+    if (!snapshot.enabled) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("%1 未读到绝对位置，禁止一键归零")
+            *errorMessage = QStringLiteral("%1 尚未上电，禁止一键归零")
                                 .arg(threeAxisAxisTitle(axisIndex));
         }
         return false;
     }
     if (!snapshot.hasSensorFeedback) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("%1 未取到 S2 传感器状态，禁止一键归零")
+            *errorMessage = QStringLiteral("%1 未取到零点侧 S1 传感器状态，禁止一键归零")
                                 .arg(threeAxisAxisTitle(axisIndex));
         }
         return false;
     }
 
-    const auto reachedLinearZero = [](const diji::adapters::uim::UimMotorSnapshot& value) {
-        return (value.hasSensorFeedback && !value.sensor2)
-            || (value.hasPosition && std::abs(value.position) <= kThreeAxisLinearZeroToleranceSteps);
-    };
-    if (reachedLinearZero(snapshot)) {
+    if (threeAxisLinearHomeReached(snapshot)) {
         if (!stopThreeAxisMotor(axisIndex, errorMessage)) {
             return false;
         }
-        appendThreeAxisLog(QStringLiteral("%1 一键归零：已在 S2 零点范围，当前位置 %2 步，S2=%3")
+        const QString reason = !snapshot.sensor1
+            ? QStringLiteral("S1 零点限位已触发")
+            : QStringLiteral("位置进入 0-%1 脉冲容差").arg(kThreeAxisLinearZeroToleranceSteps);
+        appendThreeAxisLog(QStringLiteral("%1 一键归零完成：%2，当前位置 %3，S1=%4，S2=%5")
                                .arg(threeAxisAxisTitle(axisIndex))
-                               .arg(snapshot.position)
+                               .arg(reason)
+                               .arg(snapshot.hasPosition ? QStringLiteral("%1 步").arg(snapshot.position) : QStringLiteral("未读取"))
+                               .arg(snapshot.sensor1 ? 1 : 0)
                                .arg(snapshot.sensor2 ? 1 : 0));
         return true;
     }
+    if (!snapshot.hasPosition) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("%1 S1 零点限位未触发且未读到绝对位置，禁止一键归零")
+                                .arg(threeAxisAxisTitle(axisIndex));
+        }
+        return false;
+    }
     if (snapshot.position < -kThreeAxisLinearZeroToleranceSteps) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("%1 当前绝对位置 %2 已低于零点容差，已拒绝继续向 S2 归零")
+            *errorMessage = QStringLiteral("%1 当前绝对位置 %2 已低于零点容差，已拒绝继续向 S1 零点归零")
                                 .arg(threeAxisAxisTitle(axisIndex))
                                 .arg(snapshot.position);
         }
@@ -3952,13 +4097,13 @@ bool DeviceMonitorPage::zeroThreeAxisLinearMotorToS2(int axisIndex, QString* err
     }
     if (!m_threeAxisGateway.setStep(deltaSteps, &localError)) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("%1 向 S2 归零移动失败：%2")
+            *errorMessage = QStringLiteral("%1 向 S1 零点归零移动失败：%2")
                                 .arg(threeAxisAxisTitle(axisIndex), localError);
         }
         return false;
     }
 
-    appendThreeAxisLog(QStringLiteral("%1 一键归零：当前位置 %2 步，向 S2 下发 %3 步")
+    appendThreeAxisLog(QStringLiteral("%1 一键归零：当前位置 %2 步，向 S1 零点下发 %3 步")
                            .arg(threeAxisAxisTitle(axisIndex))
                            .arg(snapshot.position)
                            .arg(deltaSteps));
@@ -3980,31 +4125,45 @@ bool DeviceMonitorPage::zeroThreeAxisLinearMotorToS2(int axisIndex, QString* err
             cancelThreeAxisMotorMotion(axisIndex, &ignoredError);
             return false;
         }
-        if (!snapshot.hasPosition || !snapshot.hasSensorFeedback) {
+        if (!snapshot.enabled || !snapshot.hasSensorFeedback) {
             QString ignoredError;
             cancelThreeAxisMotorMotion(axisIndex, &ignoredError);
             if (errorMessage != nullptr) {
-                *errorMessage = QStringLiteral("%1 归零过程中位置或 S2 状态丢失")
+                *errorMessage = QStringLiteral("%1 归零过程中断电或 S1 状态丢失")
                                     .arg(threeAxisAxisTitle(axisIndex));
             }
             return false;
         }
-        if (reachedLinearZero(snapshot)) {
+        if (threeAxisLinearHomeReached(snapshot)) {
             if (!stopThreeAxisMotor(axisIndex, errorMessage)) {
                 return false;
             }
-            appendThreeAxisLog(QStringLiteral("%1 一键归零完成：当前位置 %2 步，S2=%3")
+            const QString reason = !snapshot.sensor1
+                ? QStringLiteral("S1 零点限位已触发")
+                : QStringLiteral("位置进入 0-%1 脉冲容差").arg(kThreeAxisLinearZeroToleranceSteps);
+            appendThreeAxisLog(QStringLiteral("%1 一键归零完成：%2，当前位置 %3，S1=%4，S2=%5")
                                    .arg(threeAxisAxisTitle(axisIndex))
-                                   .arg(snapshot.position)
+                                   .arg(reason)
+                                   .arg(snapshot.hasPosition ? QStringLiteral("%1 步").arg(snapshot.position) : QStringLiteral("未读取"))
+                                   .arg(snapshot.sensor1 ? 1 : 0)
                                    .arg(snapshot.sensor2 ? 1 : 0));
             return true;
+        }
+        if (!snapshot.hasPosition) {
+            QString ignoredError;
+            cancelThreeAxisMotorMotion(axisIndex, &ignoredError);
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("%1 归零过程中 S1 未触发且绝对位置丢失")
+                                    .arg(threeAxisAxisTitle(axisIndex));
+            }
+            return false;
         }
     }
 
     QString ignoredError;
     cancelThreeAxisMotorMotion(axisIndex, &ignoredError);
     if (errorMessage != nullptr) {
-        *errorMessage = QStringLiteral("%1 归零超时，未到达 S2 低电平或 0-%2 脉冲范围")
+        *errorMessage = QStringLiteral("%1 归零超时，未检测到 S1 零点限位低电平，也未进入 0-%2 脉冲容差范围")
                             .arg(threeAxisAxisTitle(axisIndex))
                             .arg(kThreeAxisLinearZeroToleranceSteps);
     }
@@ -4017,6 +4176,13 @@ bool DeviceMonitorPage::zeroThreeAxisSwingMotor(QString* errorMessage)
 
     diji::adapters::uim::UimMotorSnapshot snapshot;
     if (!refreshThreeAxisMotorSnapshot(kSwingAxisIndex, &snapshot, errorMessage)) {
+        return false;
+    }
+    if (!snapshot.enabled) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("%1 尚未上电，禁止一键归零")
+                                .arg(threeAxisAxisTitle(kSwingAxisIndex));
+        }
         return false;
     }
     if (!snapshot.hasPosition) {
@@ -4083,11 +4249,11 @@ bool DeviceMonitorPage::zeroThreeAxisSwingMotor(QString* errorMessage)
             cancelThreeAxisMotorMotion(kSwingAxisIndex, &ignoredError);
             return false;
         }
-        if (!snapshot.hasPosition) {
+        if (!snapshot.enabled || !snapshot.hasPosition) {
             QString ignoredError;
             cancelThreeAxisMotorMotion(kSwingAxisIndex, &ignoredError);
             if (errorMessage != nullptr) {
-                *errorMessage = QStringLiteral("%1 归零过程中绝对位置丢失")
+                *errorMessage = QStringLiteral("%1 归零过程中断电或绝对位置丢失")
                                     .arg(threeAxisAxisTitle(kSwingAxisIndex));
             }
             return false;
@@ -4224,8 +4390,10 @@ int DeviceMonitorPage::threeAxisDisplayUnitsToSteps(int axisIndex, double value)
         return 0;
     }
     const double stepsPerUnit = axisIndex == 0 ? kThreeAxisSwingStepsPerDegree : kThreeAxisLinearStepsPerCentimeter;
-    const int steps = static_cast<int>(std::lround(value * stepsPerUnit));
-    return std::max(threeAxisMinimumSteps(axisIndex), std::min(threeAxisMaximumSteps(axisIndex), steps));
+    // Preserve the submitted value so threeAxisAbsoluteTargetAllowed() can
+    // reject an out-of-range target. Clamping here would silently turn an
+    // unsafe request into a different, apparently valid boundary command.
+    return static_cast<int>(std::lround(value * stepsPerUnit));
 }
 
 double DeviceMonitorPage::threeAxisMinimumDisplayUnits(int axisIndex) const
@@ -4453,6 +4621,7 @@ void DeviceMonitorPage::updateThreeAxisSnapshot(const diji::adapters::uim::UimMo
             continue;
         }
 
+        m_threeAxisMotorEnabled[static_cast<size_t>(index)] = snapshot.enabled;
         QLabel* nodeLabel = m_threeAxisNodeLabels[static_cast<size_t>(index)];
         if (nodeLabel != nullptr) {
             QStringList parts {
@@ -4507,6 +4676,7 @@ void DeviceMonitorPage::updateThreeAxisNodeStatus()
                 ? QStringLiteral("节点 %1 已发现").arg(kThreeAxisNodeIds.at(static_cast<size_t>(index)))
                 : QStringLiteral("未发现"));
         if (!available) {
+            m_threeAxisMotorEnabled[static_cast<size_t>(index)] = false;
             m_threeAxisPositionKnown[static_cast<size_t>(index)] = false;
             m_threeAxisSensorFeedbackKnown[static_cast<size_t>(index)] = false;
             m_threeAxisContinuousMoving[static_cast<size_t>(index)] = false;
@@ -4580,35 +4750,36 @@ void DeviceMonitorPage::refreshThreeAxisUi()
             })
             && threeAxisNodeAvailable(0)
             && threeAxisNodeAvailable(1)
-            && threeAxisNodeAvailable(2));
+            && threeAxisNodeAvailable(2)
+            && std::all_of(m_threeAxisMotorEnabled.cbegin(), m_threeAxisMotorEnabled.cend(), [](bool enabled) {
+                return enabled;
+            }));
     }
 
     for (int index = 0; index < static_cast<int>(kThreeAxisNodeIds.size()); ++index) {
         const bool available = gatewayOpen && threeAxisNodeAvailable(index);
-        const bool canMove = available && m_threeAxisMotionReady && !m_threeAxisEmergencyStopActive && !m_threeAxisZeroingActive;
         const size_t arrayIndex = static_cast<size_t>(index);
+        const bool canMove = available
+            && m_threeAxisMotorEnabled[arrayIndex]
+            && m_threeAxisMotionReady
+            && !m_threeAxisEmergencyStopActive
+            && !m_threeAxisZeroingActive;
         const bool continuousMoveActive = m_threeAxisContinuousMoving[arrayIndex];
         const bool canStartIndependentMove = canMove && !continuousMoveActive;
 
         const bool positionKnown = m_threeAxisPositionKnown[arrayIndex];
+        const bool sensorFeedbackKnown = m_threeAxisSensorFeedbackKnown[arrayIndex];
         const int currentSteps = m_threeAxisSoftPositionSteps[arrayIndex];
-        bool targetAllowed = false;
         QDoubleSpinBox* targetSpin = m_threeAxisTargetPositionSpins[arrayIndex];
         if (targetSpin != nullptr) {
             targetSpin->setEnabled(canStartIndependentMove);
-            const double targetValue = targetSpin->value();
-            const double displayTolerance = std::pow(10.0, -threeAxisDisplayDecimals(index)) * 0.5;
-            targetAllowed = targetValue >= threeAxisMinimumDisplayUnits(index) - displayTolerance
-                && targetValue <= threeAxisMaximumDisplayUnits(index) + displayTolerance;
-            if (targetAllowed) {
-                const int targetSteps = threeAxisDisplayUnitsToSteps(index, targetValue);
-                targetAllowed = targetSteps >= threeAxisMinimumSteps(index)
-                    && targetSteps <= threeAxisMaximumSteps(index)
-                    && (!positionKnown || threeAxisCachedSensorLimitAllowsMove(index, targetSteps - currentSteps));
-            }
         }
         if (m_threeAxisMoveToButtons[arrayIndex] != nullptr) {
-            m_threeAxisMoveToButtons[arrayIndex]->setEnabled(canStartIndependentMove && positionKnown && targetAllowed);
+            // Keep submission available at either limit. The click handler
+            // refreshes the real position, validates the requested absolute
+            // target and rechecks the live limit direction before moving.
+            m_threeAxisMoveToButtons[arrayIndex]->setEnabled(
+                canStartIndependentMove && positionKnown && sensorFeedbackKnown);
         }
 
         bool negativeAllowed = false;
@@ -5476,6 +5647,9 @@ void DeviceMonitorPage::setSharedRs485ConnectedStatus(const QString& source)
 
 void DeviceMonitorPage::setSharedRs485DisconnectedStatus(const QString& source)
 {
+    if (m_waterLoopActive) {
+        stopWaterLoop();
+    }
     if (m_tank2FillActive) {
         stopTank2Fill(false, QStringLiteral("485 总线断开"));
     }
@@ -6182,15 +6356,21 @@ void DeviceMonitorPage::refreshWaterPumpUi()
     }
     for (QWidget* widget : m_waterPumpCommandWidgets) {
         if (widget != nullptr) {
-            widget->setEnabled(connected);
+            widget->setEnabled(connected && !m_waterLoopActive);
         }
     }
     if (m_tank2FillTargetLevelSpin != nullptr) {
-        m_tank2FillTargetLevelSpin->setEnabled(!m_tank2FillActive);
+        m_tank2FillTargetLevelSpin->setEnabled(!m_tank2FillActive && !m_waterLoopActive);
     }
     if (m_tank2FillButton != nullptr) {
-        m_tank2FillButton->setEnabled(connected);
+        m_tank2FillButton->setEnabled(connected && !m_waterLoopActive);
         m_tank2FillButton->setText(m_tank2FillActive ? QStringLiteral("停止上水") : QStringLiteral("上水"));
+    }
+    if (m_startWaterLoopButton != nullptr) {
+        m_startWaterLoopButton->setEnabled(connected && !m_tank2FillActive && !m_waterLoopActive);
+    }
+    if (m_stopWaterLoopButton != nullptr) {
+        m_stopWaterLoopButton->setEnabled(m_waterLoopActive);
     }
     refreshVacuumPumpUi();
 }
@@ -6438,6 +6618,10 @@ void DeviceMonitorPage::toggleTank2Fill()
         stopTank2Fill(false, QStringLiteral("手动停止"));
         return;
     }
+    if (m_waterLoopActive) {
+        setWaterPumpStatus(QStringLiteral("上水失败：请先停止液位自动水循环"), false);
+        return;
+    }
     if (m_tank2FillTargetLevelSpin == nullptr) {
         setWaterPumpStatus(QStringLiteral("上水失败：目标液位输入框未初始化"), false);
         return;
@@ -6604,6 +6788,12 @@ void DeviceMonitorPage::stopTank2Fill(bool reachedTarget, const QString& reason)
 
 void DeviceMonitorPage::startWaterLoop()
 {
+    using LiquidLevelClient = panthera::adapters::liquidlevel::LiquidLevelModbusClient;
+
+    if (m_waterLoopActive) {
+        setWaterPumpStatus(QStringLiteral("液位自动水循环已经运行"), true);
+        return;
+    }
     if (m_tank2FillActive) {
         setWaterPumpStatus(QStringLiteral("启动循环失败：请先停止当前上水流程"), false);
         return;
@@ -6622,64 +6812,229 @@ void DeviceMonitorPage::startWaterLoop()
         return;
     }
 
+    double currentLevel = 0.0;
+    QByteArray levelResponse;
     QString errorMessage;
-    QByteArray supplyResponse;
-    if (!m_waterPumpClient.startPump(panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress, &errorMessage, &supplyResponse)) {
-        setWaterPumpStatus(QStringLiteral("启动循环失败：抽入水泵（03）%1").arg(errorMessage), false);
+    if (!readWaterLoopLevel(&currentLevel, &levelResponse, &errorMessage)) {
+        setWaterPumpStatus(QStringLiteral("启动循环失败：液位传感器 01 读取失败：%1").arg(errorMessage), false);
+        setLiquidLevelStatus(QStringLiteral("水循环启动前读取液位失败：%1").arg(errorMessage), false);
         return;
     }
 
-    QByteArray returnResponse;
-    if (!m_waterPumpClient.startPump(panthera::adapters::waterpump::WaterPumpModbusClient::kReturnPumpAddress, &errorMessage, &returnResponse)) {
-        QString stopError;
-        QByteArray stopResponse;
-        m_waterPumpClient.stopPump(
-            panthera::adapters::waterpump::WaterPumpModbusClient::kSupplyPumpAddress,
-            &stopError,
-            &stopResponse);
-        setWaterPumpStatus(QStringLiteral("启动循环失败：抽回水泵（02）%1").arg(errorMessage), false);
+    const WaterLoopPumpMode mode = waterLoopPumpModeForLevel(currentLevel);
+    QStringList pumpResponses;
+    QStringList pumpFailures;
+    if (!applyWaterLoopPumpMode(mode, &pumpResponses, &pumpFailures)) {
+        QStringList stopResponses;
+        QStringList stopFailures;
+        applyWaterLoopPumpMode(WaterLoopPumpMode::Stopped, &stopResponses, &stopFailures);
+        setWaterPumpStatus(QStringLiteral("启动循环失败：无法按液位切换水泵：%1")
+                               .arg(pumpFailures.join(QStringLiteral("；"))),
+                           false);
         return;
     }
 
-    setWaterPumpStatus(QStringLiteral("水循环启动成功：已先设置 02/03 流速为 %1 mL/min；流速响应 %2；抽入 03 响应 %3；抽回 02 响应 %4")
+    m_waterLoopActive = true;
+    m_waterLoopPumpMode = mode;
+    if (m_waterLoopMonitorThread != nullptr) {
+        m_waterLoopMonitorThread->startMonitoring();
+    }
+    refreshWaterPumpUi();
+
+    const QByteArray readFrame = LiquidLevelClient::buildReadLevelFrame(LiquidLevelClient::kDefaultAddress);
+    setLiquidLevelStatus(QStringLiteral("水循环监控液位：%1 cm\n监控区间：13.0-15.0 cm\n发送：%2\n响应：%3")
+                             .arg(currentLevel, 0, 'f', 1)
+                             .arg(LiquidLevelClient::frameToHex(readFrame), LiquidLevelClient::frameToHex(levelResponse)),
+                         true);
+    setWaterPumpStatus(QStringLiteral("液位自动水循环启动：当前液位 %1 cm，%2；每 15 秒读取一次液位；02/03 流速均为 %3 mL/min；流速响应 %4；泵响应 %5")
+                           .arg(currentLevel, 0, 'f', 1)
+                           .arg(waterLoopPumpModeText(mode))
                            .arg(kWaterLoopFlowMlPerMin, 0, 'f', 1)
                            .arg(flowResponses.join(QStringLiteral("；")))
-                           .arg(waterPumpResponseText(supplyResponse))
-                           .arg(waterPumpResponseText(returnResponse)),
+                           .arg(pumpResponses.join(QStringLiteral("；"))),
                        true);
 }
 
 void DeviceMonitorPage::stopWaterLoop()
 {
+    m_waterLoopActive = false;
+    if (m_waterLoopMonitorThread != nullptr) {
+        m_waterLoopMonitorThread->stopMonitoring();
+    }
     if (m_tank2FillActive) {
         m_tank2FillTimer.stop();
         m_tank2FillActive = false;
         refreshWaterPumpUi();
     }
-    if (!ensureWaterPumpConnection()) {
-        return;
-    }
 
-    QStringList failures;
     QStringList responses;
-    for (int index = 0; index < 2; ++index) {
-        QString errorMessage;
-        QByteArray response;
-        if (m_waterPumpClient.stopPump(waterPumpAddress(index), &errorMessage, &response)) {
-            responses.push_back(QStringLiteral("%1 %2")
-                                    .arg(waterPumpAddressText(index),
-                                         waterPumpResponseText(response)));
-        } else {
-            failures.push_back(QStringLiteral("%1（%2）：%3")
-                                   .arg(waterPumpName(index), waterPumpAddressText(index), errorMessage));
-        }
-    }
-
+    QStringList failures;
+    const bool stopped = applyWaterLoopPumpMode(WaterLoopPumpMode::Stopped, &responses, &failures);
+    m_waterLoopPumpMode = WaterLoopPumpMode::Stopped;
+    refreshWaterPumpUi();
     if (!failures.isEmpty()) {
         setWaterPumpStatus(QStringLiteral("停止循环未全部成功：%1").arg(failures.join(QStringLiteral("；"))), false);
         return;
     }
-    setWaterPumpStatus(QStringLiteral("水循环停止成功：%1").arg(responses.join(QStringLiteral("；"))), true);
+    setWaterPumpStatus(stopped
+            ? QStringLiteral("水循环停止成功：%1").arg(responses.join(QStringLiteral("；")))
+            : QStringLiteral("水循环停止失败"),
+        stopped);
+}
+
+void DeviceMonitorPage::pollWaterLoopLevel()
+{
+    using LiquidLevelClient = panthera::adapters::liquidlevel::LiquidLevelModbusClient;
+
+    if (!m_waterLoopActive || m_waterLoopPollBusy) {
+        return;
+    }
+    ScopedBusyFlag busyGuard(m_waterLoopPollBusy);
+
+    double currentLevel = 0.0;
+    QByteArray levelResponse;
+    QString errorMessage;
+    if (!readWaterLoopLevel(&currentLevel, &levelResponse, &errorMessage)) {
+        setWaterPumpStatus(QStringLiteral("水循环液位监控读取失败：%1；保持当前泵状态，15 秒后重试")
+                               .arg(errorMessage),
+                           false);
+        setLiquidLevelStatus(QStringLiteral("水循环液位监控读取失败：%1").arg(errorMessage), false);
+        return;
+    }
+
+    const WaterLoopPumpMode mode = waterLoopPumpModeForLevel(currentLevel);
+    QStringList pumpResponses;
+    QStringList pumpFailures;
+    if (mode != m_waterLoopPumpMode
+        && !applyWaterLoopPumpMode(mode, &pumpResponses, &pumpFailures)) {
+        m_waterLoopActive = false;
+        if (m_waterLoopMonitorThread != nullptr) {
+            m_waterLoopMonitorThread->stopMonitoring();
+        }
+        QStringList stopResponses;
+        QStringList stopFailures;
+        applyWaterLoopPumpMode(WaterLoopPumpMode::Stopped, &stopResponses, &stopFailures);
+        m_waterLoopPumpMode = WaterLoopPumpMode::Stopped;
+        refreshWaterPumpUi();
+        setWaterPumpStatus(QStringLiteral("水循环泵状态切换失败，自动监控已停止：%1；停止泵结果：%2%3")
+                               .arg(pumpFailures.join(QStringLiteral("；")))
+                               .arg(stopResponses.join(QStringLiteral("；")))
+                               .arg(stopFailures.isEmpty()
+                                       ? QString()
+                                       : QStringLiteral("；停止失败：%1").arg(stopFailures.join(QStringLiteral("；")))),
+                           false);
+        return;
+    }
+
+    m_waterLoopPumpMode = mode;
+    const QByteArray readFrame = LiquidLevelClient::buildReadLevelFrame(LiquidLevelClient::kDefaultAddress);
+    setLiquidLevelStatus(QStringLiteral("水循环监控液位：%1 cm\n监控区间：13.0-15.0 cm\n发送：%2\n响应：%3")
+                             .arg(currentLevel, 0, 'f', 1)
+                             .arg(LiquidLevelClient::frameToHex(readFrame), LiquidLevelClient::frameToHex(levelResponse)),
+                         true);
+    const QString pumpResult = pumpResponses.isEmpty()
+        ? QStringLiteral("泵状态保持不变")
+        : QStringLiteral("泵响应 %1").arg(pumpResponses.join(QStringLiteral("；")));
+    setWaterPumpStatus(QStringLiteral("水循环 15 秒监控：液位 %1 cm，%2；%3")
+                           .arg(currentLevel, 0, 'f', 1)
+                           .arg(waterLoopPumpModeText(mode), pumpResult),
+                       true);
+}
+
+bool DeviceMonitorPage::readWaterLoopLevel(double* centimeters, QByteArray* response, QString* errorMessage)
+{
+    using LiquidLevelClient = panthera::adapters::liquidlevel::LiquidLevelModbusClient;
+
+    QString levelError;
+    bool levelReadOk = false;
+    if (openSharedRs485ForLiquidLevel(&levelError)) {
+        levelReadOk = m_liquidLevelClient.readLevelMillimeters(
+            LiquidLevelClient::kDefaultAddress,
+            centimeters,
+            &levelError,
+            response);
+    }
+
+    QString restoreError;
+    const bool pumpPortRestored = openSharedRs485ForWaterPump(&restoreError);
+    refreshSharedRs485Ui();
+
+    if (!levelReadOk || !pumpPortRestored) {
+        QStringList errors;
+        if (!levelReadOk) {
+            errors.push_back(levelError.trimmed().isEmpty() ? QStringLiteral("液位读取失败") : levelError.trimmed());
+        }
+        if (!pumpPortRestored) {
+            errors.push_back(QStringLiteral("恢复水泵 485 失败：%1").arg(restoreError));
+        }
+        if (errorMessage != nullptr) {
+            *errorMessage = errors.join(QStringLiteral("；"));
+        }
+        return false;
+    }
+
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+bool DeviceMonitorPage::applyWaterLoopPumpMode(
+    WaterLoopPumpMode mode,
+    QStringList* responses,
+    QStringList* failures)
+{
+    if (!ensureWaterPumpConnection()) {
+        if (failures != nullptr) {
+            failures->push_back(QStringLiteral("水泵 485 未连接"));
+        }
+        return false;
+    }
+
+    const std::array<bool, 2> shouldRun {
+        mode == WaterLoopPumpMode::SupplyOnly || mode == WaterLoopPumpMode::Both,
+        mode == WaterLoopPumpMode::ReturnOnly || mode == WaterLoopPumpMode::Both
+    };
+    bool allOk = true;
+    const auto issueState = [this, responses, failures, &allOk](int pumpIndex, bool run) {
+        QString errorMessage;
+        QByteArray response;
+        const bool ok = run
+            ? m_waterPumpClient.startPump(waterPumpAddress(pumpIndex), &errorMessage, &response)
+            : m_waterPumpClient.stopPump(waterPumpAddress(pumpIndex), &errorMessage, &response);
+        const QString action = run ? QStringLiteral("启动") : QStringLiteral("停止");
+        if (ok) {
+            if (responses != nullptr) {
+                responses->push_back(QStringLiteral("%1 %2 %3")
+                                         .arg(waterPumpAddressText(pumpIndex), action, waterPumpResponseText(response)));
+            }
+            return;
+        }
+        allOk = false;
+        if (failures != nullptr) {
+            failures->push_back(QStringLiteral("%1（%2）%3失败：%4")
+                                    .arg(waterPumpName(pumpIndex), waterPumpAddressText(pumpIndex), action, errorMessage));
+        }
+    };
+
+    // Start required pumps before stopping an unneeded pump so a transition
+    // never leaves the water path with both pumps off unless the target mode
+    // is explicitly Stopped.
+    for (int index = 0; index < 2; ++index) {
+        if (shouldRun.at(static_cast<size_t>(index))) {
+            issueState(index, true);
+        }
+    }
+    for (int index = 0; index < 2; ++index) {
+        if (!shouldRun.at(static_cast<size_t>(index))) {
+            issueState(index, false);
+        }
+    }
+
+    if (allOk) {
+        m_waterLoopPumpMode = mode;
+    }
+    return allOk;
 }
 
 void DeviceMonitorPage::refreshVacuumPumpUi()

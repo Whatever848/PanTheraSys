@@ -2,6 +2,7 @@
 
 #include <array>
 #include <functional>
+#include <memory>
 
 #include <QCheckBox>
 #include <QHash>
@@ -23,6 +24,7 @@
 #include "adapters/uim/uim_motor_gateway.h"
 #include "adapters/waterpump/water_pump_modbus_client.h"
 #include "core/safety/safety_kernel.h"
+#include "modules/dashboard/water_loop_monitor_thread.h"
 
 class QComboBox;
 class QDoubleSpinBox;
@@ -42,6 +44,7 @@ public:
         panthera::core::SafetyKernel* safetyKernel,
         panthera::adapters::dobot::DobotControllerClient* robotArmClient = nullptr,
         QWidget* parent = nullptr);
+    ~DeviceMonitorPage() override;
     void releaseThreeAxisGatewayForSharedUse();
 
 private slots:
@@ -157,6 +160,9 @@ private:
     void stopTank2Fill(bool reachedTarget, const QString& reason);
     void startWaterLoop();
     void stopWaterLoop();
+    void pollWaterLoopLevel();
+    bool readWaterLoopLevel(double* centimeters, QByteArray* response, QString* errorMessage);
+    bool applyWaterLoopPumpMode(WaterLoopPumpMode mode, QStringList* responses, QStringList* failures);
     bool ensureRobotPumpControl(QString* errorMessage);
     bool sendRobotPumpDo(int index, bool on, const QString& action, QString* errorMessage);
     bool setRobotPumpMode(bool do13On, bool do14On, const QString& action, QString* errorMessage);
@@ -197,14 +203,19 @@ private:
     void moveThreeAxisMotorToAbsolute(int axisIndex);
     void enableThreeAxisMotor(int axisIndex);
     void disableThreeAxisMotor(int axisIndex);
+    void resetThreeAxisContinuousMoveState();
+    bool forceThreeAxisMotorSafeDisabled(int axisIndex, QString* errorMessage);
+    bool safelyEnableThreeAxisMotor(int axisIndex, QString* errorMessage);
+    bool verifyThreeAxisMotorStopped(int axisIndex, bool expectedEnabled, QString* errorMessage);
     bool configureThreeAxisMotorParameters();
     bool cancelThreeAxisMotorMotion(int axisIndex, QString* errorMessage);
     bool sendThreeAxisMove(int axisIndex, int deltaSteps, QString* errorMessage);
     bool refreshThreeAxisMotorSnapshot(int axisIndex, diji::adapters::uim::UimMotorSnapshot* snapshot, QString* errorMessage);
-    // Keep the requested speed at zero after cancelling a move.  Restoring a
-    // non-zero speed can resume a controller-retained STP command.
+    // Keep speed at zero after cancelling a move. GetSTP reports the current
+    // relative displacement and is not required to return zero after SetSTP(0).
     bool stopThreeAxisMotor(int axisIndex, QString* errorMessage);
-    bool zeroThreeAxisLinearMotorToS2(int axisIndex, QString* errorMessage);
+    bool threeAxisLinearHomeReached(const diji::adapters::uim::UimMotorSnapshot& snapshot) const;
+    bool zeroThreeAxisLinearMotorToS1(int axisIndex, QString* errorMessage);
     bool zeroThreeAxisSwingMotor(QString* errorMessage);
     bool runThreeAxisCommand(int axisIndex, const QString& action, const std::function<bool(QString*)>& command);
     bool selectThreeAxisNode(int axisIndex, QString* errorMessage);
@@ -303,7 +314,7 @@ private:
     std::array<bool, 3> m_threeAxisSensorFeedbackKnown {false, false, false};
     std::array<bool, 3> m_threeAxisSensor1High {true, true, true};
     std::array<bool, 3> m_threeAxisSensor2High {true, true, true};
-    std::array<int, 3> m_threeAxisPreEmergencySpeeds {0, 0, 0};
+    std::array<bool, 3> m_threeAxisMotorEnabled {false, false, false};
     bool m_threeAxisEmergencyStopActive {false};
     bool m_threeAxisZeroingActive {false};
     // Set only after gateway opening has cancelled every retained move and
@@ -335,6 +346,8 @@ private:
     QPushButton* m_waterPumpConnectionButton {nullptr};
     QDoubleSpinBox* m_tank2FillTargetLevelSpin {nullptr};
     QPushButton* m_tank2FillButton {nullptr};
+    QPushButton* m_startWaterLoopButton {nullptr};
+    QPushButton* m_stopWaterLoopButton {nullptr};
     std::array<QDoubleSpinBox*, 2> m_waterPumpFlowSpins {nullptr, nullptr};
     std::array<QSpinBox*, 2> m_waterPumpRunDurationSpins {nullptr, nullptr};
     QVector<QWidget*> m_waterPumpCommandWidgets;
@@ -381,9 +394,13 @@ private:
     QTimer m_robotArmSafetyWallTimer;
     QTimer m_robotPhysicalDragPollTimer;
     QTimer m_tank2FillTimer;
+    std::unique_ptr<WaterLoopMonitorThread> m_waterLoopMonitorThread;
     QTimer m_temperatureRealtimeTimer;
     bool m_temperatureRequestBusy {false};
     bool m_tank2FillActive {false};
+    bool m_waterLoopActive {false};
+    bool m_waterLoopPollBusy {false};
+    WaterLoopPumpMode m_waterLoopPumpMode {WaterLoopPumpMode::Stopped};
     bool m_vacuumPumpOn {false};
     double m_tank2FillTargetLevelCentimeters {0.0};
     QLineEdit* m_threeAxisSdkPathEdit {nullptr};

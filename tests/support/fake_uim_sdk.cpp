@@ -7,6 +7,7 @@
 namespace {
 constexpr quint32 failure = 0xffffffffU;
 struct Motor {
+    bool enabled = true;
     int position = 0;
     int speed = 0;
     int step = 0;
@@ -17,6 +18,11 @@ struct Command { quint32 node; int kind; int value; };
 struct BasicFeedback {
     unsigned int reserved, enabled, direction, reduced, microstep, current;
     int speed, step;
+};
+struct BasicAck {
+    unsigned int reserved;
+    int enabled, direction, reduced;
+    unsigned int microstep, current, speed, step;
 };
 struct SensorFeedback { int sensor1, sensor2, sensor3; float analog; };
 std::array<Motor, 3> motors;
@@ -49,12 +55,26 @@ API quint32 OpenGateway(quint32, quint32* nodes, int, quint32* bitRate)
 }
 API quint32 CloseGateway(quint32) { return 0; }
 API quint32 GetMDL(quint32, quint32, void*) { return failure; }
-API quint32 UimENA(quint32, quint32, int, void*) { return failure; }
-API quint32 UimOFF(quint32, quint32, int, void*) { return failure; }
+API quint32 UimENA(quint32, quint32 node, int, BasicAck* result)
+{
+    auto& value = motor(node);
+    value.enabled = true;
+    commands.push_back({node, 3, 1});
+    *result = {0, 1, 0, 0, 16, 10, static_cast<unsigned int>(value.speed), static_cast<unsigned int>(value.step)};
+    return 0;
+}
+API quint32 UimOFF(quint32, quint32 node, int, BasicAck* result)
+{
+    auto& value = motor(node);
+    value.enabled = false;
+    commands.push_back({node, 4, 0});
+    *result = {0, 0, 0, 0, 16, 10, static_cast<unsigned int>(value.speed), static_cast<unsigned int>(value.step)};
+    return 0;
+}
 API quint32 UimFBK(quint32, quint32 node, BasicFeedback* result)
 {
     const auto& value = motor(node);
-    *result = {0, 1, 0, 0, 16, 10, value.speed, value.step};
+    *result = {0, value.enabled ? 1U : 0U, 0, 0, 16, 10, value.speed, value.step};
     return 0;
 }
 API quint32 UimSFBK(quint32, quint32 node, SensorFeedback* result)
@@ -80,7 +100,12 @@ API quint32 SetSTP(quint32, quint32 node, int value, int, int* result)
 {
     commands.push_back({node, 2, value});
     if (value == 0 && failClear) { return failure; }
-    motor(node).step = *result = value;
+    // The real SDK returns the current relative displacement. A zero command
+    // stops/replaces motion but does not rewind that readback to zero.
+    if (value != 0) {
+        motor(node).step = value;
+    }
+    *result = motor(node).step;
     return 0;
 }
 API quint32 SetPOS(quint32, quint32, int, int, int*) { return failure; }

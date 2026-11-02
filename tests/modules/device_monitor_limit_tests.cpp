@@ -3,6 +3,7 @@
 #include <QtNetwork/QtNetwork>
 #include <QtSerialPort/QtSerialPort>
 
+#include <algorithm>
 #include <array>
 #include <functional>
 #include <memory>
@@ -86,7 +87,10 @@ class DeviceMonitorLimitTests final : public QObject {
 private slots:
     void limitButtons_data();
     void limitButtons();
-    void absoluteMoveOnlyAllowsRetreat();
+    void absoluteMoveButtonAvailableAtLimits_data();
+    void absoluteMoveButtonAvailableAtLimits();
+    void absoluteMoveRejectsUnsafeTarget_data();
+    void absoluteMoveRejectsUnsafeTarget();
     void motionInterlocks_data();
     void motionInterlocks();
     void retreatCommands_data();
@@ -98,7 +102,84 @@ private slots:
     void jogClampsToRemainingTravel();
     void joggingReplacesHeldMove_data();
     void joggingReplacesHeldMove();
+    void linearHomeDetection_data();
+    void linearHomeDetection();
+    void linearZeroStopsAtS1_data();
+    void linearZeroStopsAtS1();
+    void waterLoopThresholds_data();
+    void waterLoopThresholds();
+    void waterLoopMonitorUsesDedicatedThread();
+    void emergencyStopReleaseDiscardsMotion_data();
+    void emergencyStopReleaseDiscardsMotion();
+    void releaseEmergencyStopRequiresOpenGateway();
 };
+
+void DeviceMonitorLimitTests::linearHomeDetection_data()
+{
+    QTest::addColumn<bool>("hasPosition");
+    QTest::addColumn<int>("position");
+    QTest::addColumn<bool>("sensor1");
+    QTest::addColumn<bool>("sensor2");
+    QTest::addColumn<bool>("expected");
+
+    QTest::newRow("s1-at-0.130-cm") << true << 832 << false << true << true;
+    QTest::newRow("s1-at-0.260-cm") << true << 1664 << false << true << true;
+    QTest::newRow("s1-without-position") << false << 0 << false << true << true;
+    QTest::newRow("position-tolerance-fallback") << true << 400 << true << true << true;
+    QTest::newRow("s2-is-not-zero-side") << true << 832 << true << false << false;
+    QTest::newRow("no-limit-outside-tolerance") << true << 832 << true << true << false;
+}
+
+void DeviceMonitorLimitTests::linearHomeDetection()
+{
+    QFETCH(bool, hasPosition);
+    QFETCH(int, position);
+    QFETCH(bool, sensor1);
+    QFETCH(bool, sensor2);
+    QFETCH(bool, expected);
+
+    MonitorFixture fixture;
+    UimMotorSnapshot snapshot;
+    snapshot.hasPosition = hasPosition;
+    snapshot.position = position;
+    snapshot.hasSensorFeedback = true;
+    snapshot.sensor1 = sensor1;
+    snapshot.sensor2 = sensor2;
+
+    QCOMPARE(fixture.page.threeAxisLinearHomeReached(snapshot), expected);
+}
+
+void DeviceMonitorLimitTests::linearZeroStopsAtS1_data()
+{
+    QTest::addColumn<int>("axis");
+    QTest::addColumn<int>("position");
+
+    QTest::newRow("node7-s1-at-0.260-cm") << 1 << 1664;
+    QTest::newRow("node8-s1-at-0.130-cm") << 2 << 832;
+}
+
+void DeviceMonitorLimitTests::linearZeroStopsAtS1()
+{
+    QFETCH(int, axis);
+    QFETCH(int, position);
+
+    FakeSdk sdk;
+    QVERIFY(sdk.ready());
+    sdk.reset();
+    MonitorFixture fixture;
+    QString error;
+    QVERIFY2(fixture.openFakeSdk(&error), qPrintable(error));
+    sdk.feedback(axis + 6, position, 0, 1);
+
+    QVERIFY2(fixture.page.zeroThreeAxisLinearMotorToS1(axis, &error), qPrintable(error));
+    QCOMPARE(sdk.count(), 2);
+    QCOMPARE(sdk.kind(0), 1);
+    QCOMPARE(sdk.value(0), 0);
+    QCOMPARE(sdk.kind(1), 2);
+    QCOMPARE(sdk.value(1), 0);
+    QCOMPARE(sdk.node(0), static_cast<quint32>(axis + 6));
+    QCOMPARE(sdk.node(1), static_cast<quint32>(axis + 6));
+}
 
 void DeviceMonitorLimitTests::limitButtons_data()
 {
@@ -163,6 +244,7 @@ void DeviceMonitorLimitTests::limitButtons()
     page.m_threeAxisJogDistanceSpins[axis]->setValue(jog);
 
     UimMotorSnapshot snapshot;
+    snapshot.enabled = true;
     snapshot.nodeId = axis + 6;
     snapshot.hasPosition = true;
     snapshot.position = position;
@@ -179,42 +261,92 @@ void DeviceMonitorLimitTests::limitButtons()
     QVERIFY(page.m_threeAxisJogDistanceSpins[axis]->isEnabled());
 }
 
-void DeviceMonitorLimitTests::absoluteMoveOnlyAllowsRetreat()
+void DeviceMonitorLimitTests::absoluteMoveButtonAvailableAtLimits_data()
 {
+    QTest::addColumn<int>("axis");
+    QTest::addColumn<int>("position");
+    QTest::addColumn<bool>("sensor1");
+    QTest::addColumn<bool>("sensor2");
+    QTest::addColumn<double>("target");
+
+    QTest::newRow("node6-at-limit") << 0 << 19098 << false << true << 10.70;
+    QTest::newRow("node7-at-limit") << 1 << 70318 << false << true << 11.000;
+    QTest::newRow("node8-at-limit") << 2 << 832 << false << true << 0.000;
+    QTest::newRow("node7-inside-range") << 1 << 32000 << true << true << 5.000;
+}
+
+void DeviceMonitorLimitTests::absoluteMoveButtonAvailableAtLimits()
+{
+    QFETCH(int, axis);
+    QFETCH(int, position);
+    QFETCH(bool, sensor1);
+    QFETCH(bool, sensor2);
+    QFETCH(double, target);
+
     MonitorFixture fixture;
     auto& page = fixture.page;
     UimMotorSnapshot snapshot;
-    snapshot.nodeId = 6;
+    snapshot.enabled = true;
+    snapshot.nodeId = axis + 6;
     snapshot.hasPosition = true;
-    snapshot.position = -18027;
+    snapshot.position = position;
     snapshot.hasSensorFeedback = true;
-    snapshot.sensor1 = false;
-    snapshot.sensor2 = true;
+    snapshot.sensor1 = sensor1;
+    snapshot.sensor2 = sensor2;
     snapshot.sensor3 = true;
     page.updateThreeAxisSnapshot(snapshot);
 
-    page.m_threeAxisTargetPositionSpins[0]->setValue(1.0);
-    QVERIFY(page.m_threeAxisMoveToButtons[0]->isEnabled());
-    page.m_threeAxisTargetPositionSpins[0]->setValue(-10.5);
-    QVERIFY(!page.m_threeAxisMoveToButtons[0]->isEnabled());
-    page.m_threeAxisTargetPositionSpins[0]->setValue(0.0);
-    QVERIFY(page.m_threeAxisMoveToButtons[0]->isEnabled());
+    page.m_threeAxisTargetPositionSpins[axis]->setValue(target);
+    QVERIFY(page.m_threeAxisMoveToButtons[axis]->isEnabled());
+}
 
-    snapshot.position = 18000;
-    snapshot.sensor1 = true;
-    snapshot.sensor2 = false;
-    page.updateThreeAxisSnapshot(snapshot);
-    QVERIFY(page.m_threeAxisMoveToButtons[0]->isEnabled());
-    page.m_threeAxisTargetPositionSpins[0]->setValue(10.5);
-    QVERIFY(!page.m_threeAxisMoveToButtons[0]->isEnabled());
+void DeviceMonitorLimitTests::absoluteMoveRejectsUnsafeTarget_data()
+{
+    QTest::addColumn<int>("axis");
+    QTest::addColumn<int>("position");
+    QTest::addColumn<bool>("sensor1");
+    QTest::addColumn<bool>("sensor2");
+    QTest::addColumn<double>("target");
+    QTest::addColumn<bool>("expandInputRange");
+    QTest::addColumn<QString>("expectedMessage");
 
-    // Both reported ends use S:-23; positive-side retreat must also work.
-    snapshot.position = 19062;
-    snapshot.sensor1 = false;
-    snapshot.sensor2 = true;
-    page.updateThreeAxisSnapshot(snapshot);
-    page.m_threeAxisTargetPositionSpins[0]->setValue(10.0);
-    QVERIFY(page.m_threeAxisMoveToButtons[0]->isEnabled());
+    QTest::newRow("node7-toward-active-limit")
+        << 1 << 70318 << false << true << 11.000 << false << QStringLiteral("限位保护");
+    QTest::newRow("node8-toward-active-limit")
+        << 2 << 832 << false << true << 0.000 << false << QStringLiteral("限位保护");
+    QTest::newRow("node6-outside-software-range")
+        << 0 << 0 << true << true << 12.000 << true << QStringLiteral("超出安全范围");
+}
+
+void DeviceMonitorLimitTests::absoluteMoveRejectsUnsafeTarget()
+{
+    QFETCH(int, axis);
+    QFETCH(int, position);
+    QFETCH(bool, sensor1);
+    QFETCH(bool, sensor2);
+    QFETCH(double, target);
+    QFETCH(bool, expandInputRange);
+    QFETCH(QString, expectedMessage);
+
+    FakeSdk sdk;
+    QVERIFY(sdk.ready());
+    sdk.reset();
+    MonitorFixture fixture;
+    auto& page = fixture.page;
+    QString error;
+    QVERIFY2(fixture.openFakeSdk(&error), qPrintable(error));
+    sdk.feedback(axis + 6, position, sensor1 ? 1 : 0, sensor2 ? 1 : 0);
+    page.refreshThreeAxisMotors();
+
+    if (expandInputRange) {
+        page.m_threeAxisTargetPositionSpins[axis]->setRange(-1000.0, 1000.0);
+    }
+    page.m_threeAxisTargetPositionSpins[axis]->setValue(target);
+    QVERIFY(page.m_threeAxisMoveToButtons[axis]->isEnabled());
+    page.m_threeAxisMoveToButtons[axis]->click();
+
+    QCOMPARE(sdk.count(), 0);
+    QVERIFY(page.m_threeAxisLogEdit->toPlainText().contains(expectedMessage));
 }
 
 void DeviceMonitorLimitTests::motionInterlocks_data()
@@ -231,6 +363,7 @@ void DeviceMonitorLimitTests::motionInterlocks()
     MonitorFixture fixture;
     auto& page = fixture.page;
     UimMotorSnapshot snapshot;
+    snapshot.enabled = true;
     snapshot.nodeId = 6;
     snapshot.hasPosition = interlock != QStringLiteral("unknown-position");
     snapshot.position = -18027;
@@ -298,10 +431,11 @@ void DeviceMonitorLimitTests::retreatCommands()
     int expectedDelta = 0;
     if (action == QStringLiteral("absolute")) {
         // In the reported node 8 upper-limit state, 0.000 cm is outward;
-        // selecting 1.000 cm must immediately enable the Move button.
+        // submission stays available and the click-time check decides whether
+        // the requested direction is safe.
         if (axis != 0 && position == 640) {
             page.m_threeAxisTargetPositionSpins[axis]->setValue(0.0);
-            QVERIFY(!page.m_threeAxisMoveToButtons[axis]->isEnabled());
+            QVERIFY(page.m_threeAxisMoveToButtons[axis]->isEnabled());
         }
         const double target = axis == 0 ? 0.0 : (direction > 0 ? 1.0 : 10.0);
         page.m_threeAxisTargetPositionSpins[axis]->setValue(target);
@@ -523,6 +657,163 @@ void DeviceMonitorLimitTests::joggingReplacesHeldMove()
     QVERIFY(QMetaObject::invokeMethod(hold, "released", Qt::DirectConnection));
     QCOMPARE(sdk.count(), 10);
     QVERIFY(directionButtonsAgree(page));
+}
+
+void DeviceMonitorLimitTests::waterLoopThresholds_data()
+{
+    QTest::addColumn<double>("levelCentimeters");
+    QTest::addColumn<int>("expectedMode");
+
+    QTest::newRow("below-lower") << 12.9 << static_cast<int>(panthera::modules::WaterLoopPumpMode::SupplyOnly);
+    QTest::newRow("at-lower") << 13.0 << static_cast<int>(panthera::modules::WaterLoopPumpMode::Both);
+    QTest::newRow("inside-range") << 14.0 << static_cast<int>(panthera::modules::WaterLoopPumpMode::Both);
+    QTest::newRow("at-upper") << 15.0 << static_cast<int>(panthera::modules::WaterLoopPumpMode::Both);
+    QTest::newRow("above-upper") << 15.1 << static_cast<int>(panthera::modules::WaterLoopPumpMode::ReturnOnly);
+}
+
+void DeviceMonitorLimitTests::waterLoopThresholds()
+{
+    QFETCH(double, levelCentimeters);
+    QFETCH(int, expectedMode);
+
+    QCOMPARE(
+        static_cast<int>(panthera::modules::waterLoopPumpModeForLevel(levelCentimeters)),
+        expectedMode);
+}
+
+void DeviceMonitorLimitTests::waterLoopMonitorUsesDedicatedThread()
+{
+    QObject dispatchTarget;
+    int pollCount = 0;
+    panthera::modules::WaterLoopMonitorThread monitor(
+        &dispatchTarget,
+        [&pollCount]() { ++pollCount; },
+        20);
+
+    monitor.startMonitoring();
+    QTRY_VERIFY_WITH_TIMEOUT(pollCount >= 2, 500);
+    QVERIFY(monitor.isMonitoring());
+    monitor.stopMonitoring();
+    QVERIFY(!monitor.isRunning());
+    QVERIFY(!monitor.isMonitoring());
+}
+
+void DeviceMonitorLimitTests::emergencyStopReleaseDiscardsMotion_data()
+{
+    QTest::addColumn<bool>("movingBeforeEmergency");
+    QTest::newRow("idle-before-emergency") << false;
+    QTest::newRow("moving-before-emergency") << true;
+}
+
+void DeviceMonitorLimitTests::emergencyStopReleaseDiscardsMotion()
+{
+    QFETCH(bool, movingBeforeEmergency);
+    FakeSdk sdk;
+    QVERIFY(sdk.ready());
+    sdk.reset();
+    MonitorFixture fixture;
+    auto& page = fixture.page;
+    QString error;
+    QVERIFY2(fixture.openFakeSdk(&error), qPrintable(error));
+    for (int axis = 0; axis < 3; ++axis) {
+        sdk.feedback(axis + 6, axis == 0 ? 0 : 32000, 1, 1);
+    }
+    page.refreshThreeAxisMotors();
+    QVERIFY(std::all_of(page.m_threeAxisMotorEnabled.cbegin(), page.m_threeAxisMotorEnabled.cend(), [](bool enabled) {
+        return enabled;
+    }));
+
+    if (movingBeforeEmergency) {
+        page.startThreeAxisContinuousMove(2, 1);
+        QVERIFY(page.m_threeAxisContinuousMoving[2]);
+    }
+    const int commandCountBeforeEmergency = sdk.count();
+
+    page.emergencyStopThreeAxisMotors();
+    QVERIFY(page.m_threeAxisEmergencyStopActive);
+    QVERIFY(std::none_of(page.m_threeAxisMotorEnabled.cbegin(), page.m_threeAxisMotorEnabled.cend(), [](bool enabled) {
+        return enabled;
+    }));
+    QCOMPARE(sdk.count(), commandCountBeforeEmergency + 9);
+    int emergencyDisableCount = 0;
+    for (int index = commandCountBeforeEmergency; index < sdk.count(); ++index) {
+        QVERIFY(sdk.kind(index) != 3);
+        if (sdk.kind(index) == 4) {
+            ++emergencyDisableCount;
+        }
+        if (sdk.kind(index) == 1 || sdk.kind(index) == 2) {
+            QCOMPARE(sdk.value(index), 0);
+        }
+    }
+    QCOMPARE(emergencyDisableCount, 3);
+
+    const int commandCountBeforeRelease = sdk.count();
+    page.releaseThreeAxisEmergencyStop();
+    QVERIFY(!page.m_threeAxisEmergencyStopActive);
+    if (movingBeforeEmergency) {
+        QCOMPARE(page.m_threeAxisGateway.latestSnapshot().nodeId, 8U);
+        QVERIFY(page.m_threeAxisGateway.latestSnapshot().step != 0);
+    }
+    QVERIFY(std::none_of(page.m_threeAxisMotorEnabled.cbegin(), page.m_threeAxisMotorEnabled.cend(), [](bool enabled) {
+        return enabled;
+    }));
+    QCOMPARE(sdk.count(), commandCountBeforeRelease + 9);
+    int releaseDisableCount = 0;
+    for (int index = commandCountBeforeRelease; index < sdk.count(); ++index) {
+        QVERIFY(sdk.kind(index) != 3);
+        if (sdk.kind(index) == 4) {
+            ++releaseDisableCount;
+        }
+        if (sdk.kind(index) == 1 || sdk.kind(index) == 2) {
+            QCOMPARE(sdk.value(index), 0);
+        }
+    }
+    QCOMPARE(releaseDisableCount, 3);
+    for (int axis = 0; axis < 3; ++axis) {
+        QVERIFY(!page.m_threeAxisMoveToButtons[axis]->isEnabled());
+        QVERIFY(!page.m_threeAxisNegativeButtons[axis]->isEnabled());
+        QVERIFY(!page.m_threeAxisPositiveButtons[axis]->isEnabled());
+        QVERIFY(!page.m_threeAxisContinuousMoving[axis]);
+    }
+
+    const int commandCountBeforeEnable = sdk.count();
+    page.enableAllThreeAxisMotors();
+    QVERIFY(std::all_of(page.m_threeAxisMotorEnabled.cbegin(), page.m_threeAxisMotorEnabled.cend(), [](bool enabled) {
+        return enabled;
+    }));
+    QCOMPARE(sdk.count(), commandCountBeforeEnable + 18);
+    int safeEnableCount = 0;
+    int safeEnableDisableCount = 0;
+    for (int index = commandCountBeforeEnable; index < sdk.count(); ++index) {
+        if (sdk.kind(index) == 3) {
+            ++safeEnableCount;
+        } else if (sdk.kind(index) == 4) {
+            ++safeEnableDisableCount;
+        }
+        if (sdk.kind(index) == 1 || sdk.kind(index) == 2) {
+            QCOMPARE(sdk.value(index), 0);
+        }
+    }
+    QCOMPARE(safeEnableCount, 3);
+    QCOMPARE(safeEnableDisableCount, 3);
+}
+
+void DeviceMonitorLimitTests::releaseEmergencyStopRequiresOpenGateway()
+{
+    FakeSdk sdk;
+    QVERIFY(sdk.ready());
+    sdk.reset();
+    MonitorFixture fixture;
+    auto& page = fixture.page;
+    QString error;
+    QVERIFY2(fixture.openFakeSdk(&error), qPrintable(error));
+    page.m_threeAxisEmergencyStopActive = true;
+    page.m_threeAxisGateway.closeGateway();
+
+    page.releaseThreeAxisEmergencyStop();
+
+    QVERIFY(page.m_threeAxisEmergencyStopActive);
+    QCOMPARE(sdk.count(), 0);
 }
 
 QTEST_MAIN(DeviceMonitorLimitTests)
