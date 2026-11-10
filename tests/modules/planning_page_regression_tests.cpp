@@ -13,6 +13,7 @@
 #include <QImage>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
@@ -34,6 +35,7 @@
 #include "modules/planning/planning_page.h"
 #include "modules/shared/mock_ultrasound_view.h"
 #include "modules/shared/therapy_imaging_algorithms.h"
+#include "modules/shared/ultrasound_scale_detector.h"
 #include "modules/treatment/treatment_page.h"
 
 using namespace panthera::core;
@@ -184,6 +186,8 @@ private slots:
     void annotationPreviewSupportsZoomWithoutBackgroundImage();
     void annotationPreviewSupportsZoomAndPanWithBackgroundImage();
     void annotationPreviewScaleRulerRendersAcrossZoomStates();
+    void ultrasoundScaleDetectorFindsCentimeterRuler();
+    void safetyDrawingZoneAllowsOnlyInsideAnnotation();
     void currentPreviewMaximizeDialogKeepsAnnotationsVisible();
     void currentPreviewMaximizeDialogSyncsAnnotationsOnWindowClose();
     void personalizationProfilesRestoreCollapseStates();
@@ -1293,6 +1297,185 @@ void PlanningPageRegressionTests::annotationPreviewScaleRulerRendersAcrossZoomSt
 
     QVERIFY(expandedPixmap.toImage() != zoomedPixmap.toImage());
     QVERIFY(zoomedPixmap.toImage() != collapsedPixmap.toImage());
+}
+
+void PlanningPageRegressionTests::ultrasoundScaleDetectorFindsCentimeterRuler()
+{
+    QImage frameWithoutRuler(1920, 1080, QImage::Format_RGB32);
+    frameWithoutRuler.fill(Qt::black);
+    QVERIFY(!detectUltrasoundScale(frameWithoutRuler).isValid());
+
+    const auto buildRulerFrame = [](int tickSpacingPixels, int tickCount) {
+        QImage frame(1920, 1080, QImage::Format_RGB32);
+        frame.fill(Qt::black);
+        QPainter painter(&frame);
+        painter.setPen(QPen(QColor(205, 212, 218), 2.0));
+        constexpr int rulerX = 1600;
+        constexpr int firstTickY = 170;
+        for (int tick = 0; tick < tickCount; ++tick) {
+            const int y = firstTickY + tick * tickSpacingPixels;
+            painter.drawLine(rulerX, y, rulerX + 11, y);
+            if (tick % 5 == 0) {
+                painter.drawText(QPoint(rulerX + 18, y + 5), QString::number(tick));
+            }
+        }
+        return frame;
+    };
+
+    const QImage frame = buildRulerFrame(38, 18);
+    const UltrasoundScaleCalibration calibration = detectUltrasoundScale(frame);
+    QVERIFY(calibration.isValid());
+    QVERIFY(!calibration.labelsEveryCentimeter);
+    QVERIFY(std::abs(calibration.pixelsPerMillimeter - 3.8) < 0.12);
+    QVERIFY(std::abs(calibration.rulerZeroYNormalized - (170.0 / 1080.0)) < 0.01);
+    QVERIFY(calibration.detectedTickCount >= 17);
+
+    const QRectF drawingZone = calibration.drawingZoneNormalized(frame.size(), QSizeF(40.0, 100.0));
+    QVERIFY(drawingZone.isValid());
+    QVERIFY(std::abs(drawingZone.width() - (40.0 * 3.8 / 1920.0)) < 0.005);
+    QVERIFY(std::abs(drawingZone.height() - (100.0 * 3.8 / 1080.0)) < 0.005);
+
+    // A different B-mode depth/zoom must produce a new physical conversion.
+    const UltrasoundScaleCalibration zoomedCalibration = detectUltrasoundScale(buildRulerFrame(48, 15));
+    QVERIFY(zoomedCalibration.isValid());
+    QVERIFY(std::abs(zoomedCalibration.pixelsPerMillimeter - 4.8) < 0.12);
+    QVERIFY(std::abs(zoomedCalibration.pixelsPerMillimeter - calibration.pixelsPerMillimeter) > 0.5);
+
+    // At maximum zoom the numbered marks are 0/1/2/3/4 (10 mm apart),
+    // with a short half-centimetre dot between them. The dots must not halve
+    // the detected px/mm value.
+    QImage maximumZoomFrame(1920, 1080, QImage::Format_RGB32);
+    maximumZoomFrame.fill(Qt::black);
+    {
+        QPainter painter(&maximumZoomFrame);
+        // Captured maximum-zoom ticks can be only a few pixels wide after
+        // thresholding: major dashes are 5-7 pixels and half-step dots 1-3.
+        painter.setPen(QPen(QColor(205, 212, 218), 1.0));
+        constexpr int rulerX = 1600;
+        constexpr int firstTickY = 170;
+        constexpr int centimeterSpacingPixels = 120;
+        for (int centimeter = 0; centimeter <= 4; ++centimeter) {
+            const int y = firstTickY + centimeter * centimeterSpacingPixels;
+            painter.drawLine(rulerX, y, rulerX + 6, y);
+            painter.drawText(QPoint(rulerX + 18, y + 5), QString::number(centimeter));
+            if (centimeter < 4) {
+                const int halfCentimeterY = y + centimeterSpacingPixels / 2;
+                painter.drawLine(rulerX + 4, halfCentimeterY, rulerX + 6, halfCentimeterY);
+            }
+        }
+    }
+    const UltrasoundScaleCalibration maximumZoomCalibration = detectUltrasoundScale(maximumZoomFrame);
+    QVERIFY(maximumZoomCalibration.isValid());
+    QVERIFY(maximumZoomCalibration.labelsEveryCentimeter);
+    QCOMPARE(maximumZoomCalibration.detectedTickCount, 5);
+    QVERIFY(std::abs(maximumZoomCalibration.pixelsPerMillimeter - 12.0) < 0.12);
+
+    // A few periodic bright edges elsewhere in a non-ultrasound image must not
+    // be accepted as the maximum-zoom ruler.
+    QImage misplacedPatternFrame(1920, 1080, QImage::Format_RGB32);
+    misplacedPatternFrame.fill(Qt::black);
+    {
+        QPainter painter(&misplacedPatternFrame);
+        painter.setPen(QPen(Qt::white, 2.0));
+        for (int index = 0; index < 5; ++index) {
+            const int y = 650 + index * 45;
+            painter.drawLine(1600, y, 1611, y);
+        }
+    }
+    QVERIFY(!detectUltrasoundScale(misplacedPatternFrame).isValid());
+}
+
+void PlanningPageRegressionTests::safetyDrawingZoneAllowsOnlyInsideAnnotation()
+{
+    MockUltrasoundView preview;
+    preview.resize(1000, 800);
+    QImage background(1000, 800, QImage::Format_RGB32);
+    background.fill(QColor(8, 12, 18));
+    preview.setBackgroundImage(QPixmap::fromImage(background));
+    preview.setAnnotationEnabled(true);
+    preview.show();
+    QCoreApplication::processEvents();
+
+    const auto sendStroke = [&preview](const QVector<QPointF>& points) {
+        QVERIFY(points.size() >= 3);
+        const QPointF first = points.first();
+        QMouseEvent pressEvent(
+            QEvent::MouseButtonPress,
+            first,
+            preview.mapToGlobal(first.toPoint()),
+            Qt::LeftButton,
+            Qt::LeftButton,
+            Qt::NoModifier);
+        QApplication::sendEvent(&preview, &pressEvent);
+        for (int index = 1; index < points.size(); ++index) {
+            const QPointF point = points.at(index);
+            QMouseEvent moveEvent(
+                QEvent::MouseMove,
+                point,
+                preview.mapToGlobal(point.toPoint()),
+                Qt::NoButton,
+                Qt::LeftButton,
+                Qt::NoModifier);
+            QApplication::sendEvent(&preview, &moveEvent);
+        }
+        QMouseEvent releaseEvent(
+            QEvent::MouseButtonRelease,
+            first,
+            preview.mapToGlobal(first.toPoint()),
+            Qt::LeftButton,
+            Qt::NoButton,
+            Qt::NoModifier);
+        QApplication::sendEvent(&preview, &releaseEvent);
+    };
+
+    const QVector<QPointF> unrestrictedStroke {
+        QPointF(390.0, 420.0),
+        QPointF(500.0, 350.0),
+        QPointF(610.0, 420.0),
+        QPointF(500.0, 520.0)
+    };
+    sendStroke(unrestrictedStroke);
+    QVERIFY(!preview.annotationStrokes().isEmpty());
+
+    preview.clearAnnotations();
+    preview.setSafetyDrawingZone(QRectF(0.35, 0.25, 0.30, 0.55), QSizeF(40.0, 100.0));
+    QVERIFY(preview.hasSafetyDrawingZone());
+
+    const QVector<QPointF> outsideSafetyZoneStroke {
+        QPointF(120.0, 420.0),
+        QPointF(190.0, 350.0),
+        QPointF(300.0, 420.0),
+        QPointF(190.0, 520.0)
+    };
+    sendStroke(outsideSafetyZoneStroke);
+    QVERIFY(preview.annotationStrokes().isEmpty());
+
+    const QVector<QPointF> insideSafetyZoneStroke {
+        QPointF(400.0, 420.0),
+        QPointF(500.0, 300.0),
+        QPointF(600.0, 420.0),
+        QPointF(500.0, 520.0)
+    };
+    sendStroke(insideSafetyZoneStroke);
+    QCOMPARE(preview.annotationStrokes().size(), 1);
+
+    preview.clearAnnotations();
+    const QVector<QPointF> crossingBoundaryStroke {
+        QPointF(400.0, 420.0),
+        QPointF(700.0, 420.0),
+        QPointF(500.0, 520.0)
+    };
+    sendStroke(crossingBoundaryStroke);
+    QVERIFY(preview.annotationStrokes().isEmpty());
+
+    AnnotationStroke outsideStroke;
+    outsideStroke.normalizedPoints = {
+        QPointF(0.10, 0.40),
+        QPointF(0.20, 0.35),
+        QPointF(0.25, 0.45)
+    };
+    preview.setAnnotationStrokes({outsideStroke});
+    QVERIFY(preview.annotationStrokes().isEmpty());
 }
 
 void PlanningPageRegressionTests::currentPreviewMaximizeDialogKeepsAnnotationsVisible()

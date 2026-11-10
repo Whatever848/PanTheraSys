@@ -27,4 +27,9 @@ void EventBus::publishDeviceSnapshot(const DeviceSnapshot& snapshot)
     emit deviceSnapshotPublished(snapshot);
 }
 
+void EventBus::publishAlarmEvent(const AlarmEvent& event)
+{
+    emit alarmEventPublished(event);
+}
+
 }  // panthera::core 命名空间

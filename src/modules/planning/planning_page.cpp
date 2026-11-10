@@ -65,6 +65,13 @@ constexpr int kImageAcquisitionStopTimeoutMs = 90000;
 constexpr int kImageAcquisitionStopStableToleranceSteps = 3;
 constexpr int kImageAcquisitionStopStableSamples = 4;
 constexpr int kImageAcquisitionCameraWarmupTimeoutMs = 2000;
+constexpr double kSafetyDrawingWidthMm = 40.0;
+constexpr double kSafetyDrawingHeightMm = 100.0;
+
+QSizeF safetyDrawingPhysicalSize()
+{
+    return QSizeF(kSafetyDrawingWidthMm, kSafetyDrawingHeightMm);
+}
 
 QString imageAcquisitionOptionalIntText(bool hasValue, int value)
 {
@@ -3052,6 +3059,9 @@ bool PlanningPage::rebuildContinuationSlices(
         if (slice.capturedFrame.isNull()) {
             slice.capturedFrame = QPixmap(snapshot.annotatedImagePath);
         }
+        if (!slice.capturedFrame.isNull()) {
+            slice.ultrasoundScale = detectUltrasoundScale(slice.capturedFrame.toImage());
+        }
         slice.label = QStringLiteral("[S%1] %2")
                           .arg(snapshot.sliceIndex + 1, 2, 10, QChar('0'))
                           .arg(QStringLiteral("\u7ee7\u7eed\u6cbb\u7597\u5207\u7247"));
@@ -3201,6 +3211,7 @@ void PlanningPage::loadStagedSlice(int row)
             m_preview->setAnnotationStrokes({});
             m_preview->setSliceContext(0, 0);
             m_preview->setSyntheticImageEnabled(false);
+            m_preview->clearSafetyDrawingZone();
             if (!m_context->hasActivePlan()) {
                 m_preview->setCaption(QStringLiteral(""));
             }
@@ -3236,6 +3247,13 @@ void PlanningPage::loadStagedSlice(int row)
         slice.acquisitionAxis7PositionSteps >= 0
             ? QStringLiteral("7号绝对位置：%1 步").arg(slice.acquisitionAxis7PositionSteps)
             : QStringLiteral("7号绝对位置：未记录"),
+        slice.ultrasoundScale.isValid()
+            ? QStringLiteral("B\u8d85\u6bd4\u4f8b\u5c3a\uff1a%1 px/mm\uff08\u672c\u5f20\u5207\u7247\u72ec\u7acb\u8bc6\u522b\uff09")
+                  .arg(slice.ultrasoundScale.pixelsPerMillimeter, 0, 'f', 3)
+            : QStringLiteral("B\u8d85\u6bd4\u4f8b\u5c3a\uff1a\u672a\u8bc6\u522b"),
+        QStringLiteral("\u5b89\u5168\u5708\u753b\u533a\uff1a%1\u00d7%2 mm\uff08\u6846\u5185\u53ef\u5708\u753b\uff09")
+            .arg(kSafetyDrawingWidthMm, 0, 'f', 0)
+            .arg(kSafetyDrawingHeightMm, 0, 'f', 0),
         QStringLiteral("\u7f16\u8f91\u72b6\u6001\uff1a%1").arg(slice.edited ? QStringLiteral("\u5df2\u5708\u753b") : QStringLiteral("\u672a\u5708\u753b")),
         QStringLiteral("\u5f53\u524d\u7b14\u8ff9\u6570\uff1a%1").arg(slice.annotations.size()),
         annotationAreaSummaryText(slice.annotatedAreaMm2),
@@ -3279,6 +3297,7 @@ void PlanningPage::refreshCurrentSliceVisualization()
     if (m_currentStagedSliceIndex < 0 || m_currentStagedSliceIndex >= m_stagedSlices.size()) {
         m_preview->clearBackgroundImage();
         m_preview->setSyntheticImageEnabled(false);
+        m_preview->clearSafetyDrawingZone();
         if (!m_context->hasActivePlan()) {
             m_preview->clearPlan();
         }
@@ -3323,10 +3342,19 @@ void PlanningPage::configureCurrentPreviewView(MockUltrasoundView* preview, int 
         if (slice.capturedFrame.isNull()) {
             preview->clearBackgroundImage();
             preview->setSyntheticImageEnabled(true);
+            preview->clearSafetyDrawingZone();
         } else {
             preview->setBackgroundImageStretchToFill(false);
             preview->setBackgroundImage(slice.capturedFrame);
             preview->setSyntheticImageEnabled(false);
+            const QRectF safetyZone = slice.ultrasoundScale.drawingZoneNormalized(
+                slice.capturedFrame.size(),
+                safetyDrawingPhysicalSize());
+            if (safetyZone.isValid() && !safetyZone.isEmpty()) {
+                preview->setSafetyDrawingZone(safetyZone, safetyDrawingPhysicalSize());
+            } else {
+                preview->clearSafetyDrawingZone();
+            }
         }
         preview->setAnnotationStrokes(annotations);
         preview->setSliceContext(row, m_stagedSlices.size());
@@ -3367,6 +3395,7 @@ void PlanningPage::configureCurrentPreviewView(MockUltrasoundView* preview, int 
         return;
     }
 
+    preview->clearSafetyDrawingZone();
     preview->setAnnotationStrokes({});
     preview->setSliceContext(0, 0);
     if (m_context->hasActivePlan()) {
@@ -4035,6 +4064,7 @@ void PlanningPage::resetActivePathWorkspace()
         m_preview->setCompletedPointCount(0);
         m_preview->setSliceContext(0, 0);
         m_preview->setCaption(QString());
+        m_preview->clearSafetyDrawingZone();
     }
 
     if (m_annotationPanel != nullptr) {
@@ -5590,6 +5620,26 @@ void PlanningPage::simulateImageAcquisition()
         updatePathActionState();
     };
 
+    if (m_context != nullptr && !m_context->hasLatestTreatmentCameraFrame()) {
+        waitForLatestAcquisitionFrame(kImageAcquisitionCameraWarmupTimeoutMs);
+    }
+    bool sawTreatmentCameraFrame = m_context != nullptr && m_context->hasLatestTreatmentCameraFrame();
+    UltrasoundScaleCalibration preflightUltrasoundScale;
+    if (sawTreatmentCameraFrame) {
+        preflightUltrasoundScale = detectUltrasoundScale(m_context->latestTreatmentCameraFrame());
+    }
+    if (!preflightUltrasoundScale.isValid()) {
+        updateAcquisitionSummary(
+            QStringLiteral("\u56fe\u50cf\u91c7\u96c6\u672a\u542f\u52a8"),
+            {
+                QStringLiteral("\u672a\u80fd\u4eceB\u8d85\u753b\u9762\u53f3\u4fa7\u8bc6\u522b\u6df1\u5ea6\u6570\u5b57\u6807\u5c3a\uff08\u5e38\u89c40/5/10\uff0c\u6781\u9650\u653e\u59270/1/2\uff09\u53ca\u5176\u5398\u7c73\u523b\u5ea6\uff0c\u65e0\u6cd5\u5efa\u7acb40\u00d7100 mm\u5b89\u5168\u5708\u753b\u533a\u3002"),
+                QStringLiteral("\u8bf7\u786e\u8ba4B\u8d85\u53f3\u4fa7\u6df1\u5ea6\u6807\u5c3a\u5b8c\u6574\u663e\u793a\u3001\u753b\u9762\u6e05\u6670\uff0c\u8c03\u6574\u6df1\u5ea6\u540e\u91cd\u65b0\u70b9\u51fb\u56fe\u50cf\u91c7\u96c6\u3002"),
+                QStringLiteral("\u672c\u6b21\u672a\u6253\u5f00USB-CAN\u7f51\u5173\u3001\u672a\u79fb\u52a87\u53f7\u7535\u673a\uff0c\u4e5f\u672a\u751f\u6210\u5207\u7247\u3002")
+            });
+        finishAcquisition();
+        return;
+    }
+
     {
         ScopedSystemBeepMute muteSystemBeeps;
 
@@ -5654,11 +5704,6 @@ void PlanningPage::simulateImageAcquisition()
     QCoreApplication::processEvents();
 
     const QString patientId = m_context->hasSelectedPatient() ? m_context->selectedPatient().id : QString();
-    if (m_context != nullptr && !m_context->hasLatestTreatmentCameraFrame()) {
-        waitForLatestAcquisitionFrame(kImageAcquisitionCameraWarmupTimeoutMs);
-    }
-    bool sawTreatmentCameraFrame = m_context != nullptr && m_context->hasLatestTreatmentCameraFrame();
-
     const QString automaticStorageDirectory = imageAcquisitionStorageDirectory(patientId, batchToken);
     QDir automaticStorageDir(automaticStorageDirectory);
     if (!automaticStorageDir.exists() && !automaticStorageDir.mkpath(QStringLiteral("."))) {
@@ -5744,6 +5789,18 @@ void PlanningPage::simulateImageAcquisition()
             break;
         }
 
+        // Depth/zoom may differ between acquisitions. Re-detect the right-side
+        // numeric depth ruler (0/5/10... or maximum-zoom 0/1/2...) on every
+        // captured slice before creating its
+        // physical 40 x 100 mm drawing boundary.
+        const UltrasoundScaleCalibration frameUltrasoundScale = detectUltrasoundScale(capturedFrame.toImage());
+        if (!frameUltrasoundScale.isValid()) {
+            failureMessage = QStringLiteral(
+                "\u7b2c %1 \u5c42\u672a\u80fd\u8bc6\u522bB\u8d85\u53f3\u4fa7\u6570\u5b57\u6df1\u5ea6\u6807\u5c3a\uff08\u5e38\u89c40/5/10\uff0c\u6781\u9650\u653e\u59270/1/2\uff09\uff0c\u672a\u751f\u6210\u5b89\u5168\u5708\u753b\u6846\uff0c\u5df2\u4e2d\u6b62\u91c7\u96c6")
+                                 .arg(layerIndex + 1);
+            break;
+        }
+
         const QString sliceStoragePath = imageAcquisitionSliceStoragePath(
             patientId,
             batchToken,
@@ -5770,6 +5827,9 @@ void PlanningPage::simulateImageAcquisition()
             .arg(QStringLiteral("axis7 current->S1 +%1 steps").arg(stepMotorSteps))
             .arg(slicePositionSteps)
             .arg(capturedFromTreatmentScreen ? QStringLiteral("treatment-screen") : QStringLiteral("usb-camera"));
+        stagedSlice.notes += QStringLiteral(" | ultrasound_px_per_mm=%1 | ruler_zero_y=%2 | safety_drawing_zone_mm=40x100")
+            .arg(frameUltrasoundScale.pixelsPerMillimeter, 0, 'f', 6)
+            .arg(frameUltrasoundScale.rulerZeroYNormalized, 0, 'f', 6);
         if (channelRobotPose.valid) {
             stagedSlice.notes += QStringLiteral(" | has_robot_pose=1 | robot_x=%1 | robot_y=%2 | robot_z=%3 | robot_rx=%4 | robot_ry=%5 | robot_rz=%6")
                 .arg(robotPoseNumber(channelRobotPose.x))
@@ -5788,6 +5848,7 @@ void PlanningPage::simulateImageAcquisition()
         stagedState.image = stagedSlice;
         stagedState.capturedFrame = capturedFrame;
         stagedState.acquisitionAxis7PositionSteps = slicePositionSteps;
+        stagedState.ultrasoundScale = frameUltrasoundScale;
         stagedState.label = QStringLiteral("[S%1] \u6682\u5b58\u5207\u7247-%2")
             .arg(layerIndex + 1, 2, 10, QChar('0'))
             .arg(layerIndex + 1, 2, 10, QChar('0'));
@@ -5819,6 +5880,7 @@ void PlanningPage::simulateImageAcquisition()
         m_imageAcquisitionCompleted = false;
         setAnnotationEditingEnabled(false);
         m_preview->setAnnotationStrokes({});
+        m_preview->clearSafetyDrawingZone();
         m_preview->setSliceContext(0, 0);
         m_preview->setSyntheticImageEnabled(false);
         m_preview->setCaption(QStringLiteral(""));
@@ -5851,8 +5913,31 @@ void PlanningPage::simulateImageAcquisition()
         QStringLiteral("实时相机帧：%1 张").arg(capturedFrameCount),
         QStringLiteral("已保存图像：%1 张").arg(savedFrameCount),
         QStringLiteral("自动存储目录：%1").arg(QDir::toNativeSeparators(automaticStorageDirectory)),
-        QStringLiteral("采集结束后已显示到右侧当前治疗影像，可直接进行圈画。")
+        QStringLiteral("采集结束后已显示到右侧当前治疗影像，仅可在绿色安全圈画框内进行圈画。")
     };
+    QStringList perSliceScaleTexts;
+    perSliceScaleTexts.reserve(m_stagedSlices.size());
+    for (int index = 0; index < m_stagedSlices.size(); ++index) {
+        const UltrasoundScaleCalibration& scale = m_stagedSlices.at(index).ultrasoundScale;
+        if (scale.isValid()) {
+            perSliceScaleTexts.push_back(
+                QStringLiteral("S%1=%2 px/mm")
+                    .arg(index + 1)
+                    .arg(scale.pixelsPerMillimeter, 0, 'f', 3));
+        }
+    }
+    summaryLines.insert(
+        std::max<qsizetype>(0, summaryLines.size() - 2),
+        perSliceScaleTexts.isEmpty()
+            ? QStringLiteral("B\u8d85\u6bd4\u4f8b\u5c3a\uff1a\u9884\u68c0 %1 px/mm\uff0c\u672a\u751f\u6210\u5207\u7247\u6846")
+                  .arg(preflightUltrasoundScale.pixelsPerMillimeter, 0, 'f', 3)
+            : QStringLiteral("B\u8d85\u6bd4\u4f8b\u5c3a\uff1a\u6bcf\u5f20\u5207\u7247\u751f\u6210\u6846\u524d\u72ec\u7acb\u8bc6\u522b\uff08%1\uff09")
+                  .arg(perSliceScaleTexts.join(QStringLiteral(" | "))));
+    summaryLines.insert(
+        std::max<qsizetype>(0, summaryLines.size() - 2),
+        QStringLiteral("\u5b89\u5168\u5708\u753b\u533a\uff1a%1\u00d7%2 mm\uff0c\u4ec5\u6846\u5185\u5141\u8bb8\u5708\u753b")
+            .arg(kSafetyDrawingWidthMm, 0, 'f', 0)
+            .arg(kSafetyDrawingHeightMm, 0, 'f', 0));
     if (!sawTreatmentCameraFrame || capturedFrameCount == 0) {
         summaryLines.insert(6, QStringLiteral("治疗屏画面：未取到实时帧，本次采集没有生成切片。"));
     }

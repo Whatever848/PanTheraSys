@@ -62,6 +62,27 @@ set_tests_properties(
 )
 
 add_executable(
+    panthera_dobot_alarm_manager_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/dobot_alarm_manager_tests.cpp
+)
+
+target_link_libraries(
+    panthera_dobot_alarm_manager_tests
+    PRIVATE
+        panthera_core
+        panthera_adapters
+        Qt6::Network
+        Qt6::Test
+)
+
+add_test(NAME panthera_dobot_alarm_manager_tests COMMAND panthera_dobot_alarm_manager_tests)
+set_tests_properties(
+    panthera_dobot_alarm_manager_tests
+    PROPERTIES
+        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:Qt6::Core>;$ENV{PATH}"
+)
+
+add_executable(
     panthera_water_pump_modbus_client_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/adapters/water_pump_modbus_client_tests.cpp
 )

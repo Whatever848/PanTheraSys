@@ -1,6 +1,7 @@
 #include "modules/dashboard/device_monitor_page.h"
 
 #include "adapters/anthone/lu926_temperature_protocol.h"
+#include "adapters/dobot/dobot_alarm_manager.h"
 
 #include <algorithm>
 #include <cmath>
@@ -51,6 +52,7 @@ constexpr int kRobotModeBackdrive = 6;
 constexpr int kRobotModeRunning = 7;
 constexpr int kRobotModeSingleMove = 8;
 constexpr int kRobotModeError = 9;
+constexpr int kRobotModeCollision = 11;
 constexpr int kRobotDefaultTrajectoryPathType = 1;
 constexpr int kRobotDefaultUserIndex = 0;
 constexpr int kRobotDefaultToolIndex = 0;
@@ -81,7 +83,10 @@ constexpr int kTank2FillPollIntervalMs = 1000;
 constexpr int kTemperatureRealtimeIntervalMs = 2000;
 constexpr double kTank2FillDefaultTargetCentimeters = 30.0;
 constexpr double kTank2FillMaximumTargetCentimeters = 43.0;
-constexpr double kWaterLoopFlowMlPerMin = 200.0;
+// The dashboard's automatic water-loop mode uses a deliberately lower,
+// loop-only speed.  Keep the tank-fill speed and all manual pump paths
+// independent so this change does not alter other workflows.
+constexpr double kWaterLoopFlowMlPerMin = 100.0;
 constexpr double kTank2FillFlowMlPerMin = 350.0;
 constexpr const char* kSharedRs485PortName = "COM3";
 constexpr int kSharedRs485BaudRate = 9600;
@@ -104,6 +109,43 @@ const std::array<const char*, 3> kThreeAxisNegativeActions {"左摆", "左移", 
 const std::array<const char*, 3> kThreeAxisPositiveActions {"右摆", "右移", "下移"};
 const std::array<int, 3> kThreeAxisNegativeButtonDirections {1, -1, -1};
 const std::array<int, 3> kThreeAxisPositiveButtonDirections {-1, 1, 1};
+
+constexpr bool isRobotArmEnabledMode(int mode)
+{
+    // RobotMode changes while an enabled robot is executing an operation.
+    // BACKDRIVE is the expected mode after StartDrag(), and RUNNING/SINGLE_MOVE
+    // likewise must not be interpreted as DisableRobot().
+    return mode == kRobotModeEnable
+        || mode == kRobotModeBackdrive
+        || mode == kRobotModeRunning
+        || mode == kRobotModeSingleMove;
+}
+
+QString robotModeName(int mode)
+{
+    switch (mode) {
+    case 3:
+        return QStringLiteral("POWEROFF");
+    case 4:
+        return QStringLiteral("DISABLED");
+    case 5:
+        return QStringLiteral("ENABLE");
+    case 6:
+        return QStringLiteral("BACKDRIVE");
+    case 7:
+        return QStringLiteral("RUNNING");
+    case 8:
+        return QStringLiteral("SINGLE_MOVE");
+    case 9:
+        return QStringLiteral("ERROR");
+    case 10:
+        return QStringLiteral("PAUSE");
+    case 11:
+        return QStringLiteral("COLLISION");
+    default:
+        return QStringLiteral("UNKNOWN");
+    }
+}
 
 const adapters::dobot::DobotPose kRobotDefaultSafeOriginPose {
     568.4855,
@@ -568,17 +610,56 @@ DeviceMonitorPage::DeviceMonitorPage(
     adapters::SimulationDeviceFacade* simulationDevice,
     SafetyKernel* safetyKernel,
     adapters::dobot::DobotControllerClient* robotArmClient,
+    adapters::dobot::DobotAlarmManager* robotAlarmManager,
     QWidget* parent)
     : QWidget(parent)
     , m_simulationDevice(simulationDevice)
     , m_safetyKernel(safetyKernel)
     , m_robotArmClient(robotArmClient != nullptr ? *robotArmClient : m_ownedRobotArmClient)
+    , m_robotAlarmManager(robotAlarmManager)
     , m_robotZAxisAligner(m_robotArmClient.dashboardSocket())
 {
     loadRobotArmSettings();
     applyRobotArmSettingsToClient();
     m_robotArmSafetyWallTimer.setInterval(m_robotSafeWallPollIntervalMs);
     connect(&m_robotArmSafetyWallTimer, &QTimer::timeout, this, &DeviceMonitorPage::pollRobotArmSafetyWall);
+    if (m_robotAlarmManager != nullptr) {
+        connect(
+            m_robotAlarmManager,
+            &adapters::dobot::DobotAlarmManager::statusChanged,
+            this,
+            [this](const adapters::dobot::DobotAlarmStatus& status) {
+                // The dashboard switch is a reflection of the controller, not
+                // of the last successful EnableRobot() command.  A reset
+                // leaves restartRequired=true until a later, verified
+                // operator enable, so it must not turn the switch on.
+                const bool controllerReportsEnabled =
+                    status.communicationHealthy
+                    && !status.active
+                    && !status.restartRequired
+                    && isRobotArmEnabledMode(status.robotMode)
+                    && adapters::dobot::DobotAlarmManager::alarmPayloadIsClear(status.rawAlarmPayload);
+                const bool changed = m_robotEnabled != controllerReportsEnabled;
+                m_robotEnabled = controllerReportsEnabled;
+                if (!controllerReportsEnabled) {
+                    m_robotArmDragging = false;
+                    resetRobotArmPhysicalDragButtonState();
+                }
+                const bool modeIsNotEnabled = status.robotMode >= 0 && !isRobotArmEnabledMode(status.robotMode);
+                if (changed || modeIsNotEnabled || !status.communicationHealthy || status.active || status.restartRequired) {
+                    refreshRobotArmUi();
+                    if (!status.details.trimmed().isEmpty()) {
+                        setRobotArmStatus(status.details);
+                    } else if (!status.communicationHealthy) {
+                        setRobotArmStatus(QStringLiteral("DOBOT 通信异常，无法确认使能状态；上位机保持 OFF。"));
+                    } else if (modeIsNotEnabled) {
+                        setRobotArmStatus(QStringLiteral("DOBOT 实际状态：RobotMode=%1（%2），使能 OFF。")
+                                              .arg(status.robotMode)
+                                              .arg(robotModeName(status.robotMode)));
+                    }
+                }
+            });
+    }
     m_robotPhysicalDragPollTimer.setTimerType(Qt::PreciseTimer);
     m_robotPhysicalDragPollTimer.setInterval(kRobotPhysicalDragButtonPollIntervalMs);
     connect(&m_robotPhysicalDragPollTimer, &QTimer::timeout, this, &DeviceMonitorPage::pollRobotArmPhysicalDragButton);
@@ -1718,9 +1799,12 @@ void DeviceMonitorPage::connectRobotArm()
     }
 
     setRobotArmStatus(QStringLiteral("已连接 %1:%2").arg(m_robotArmSettings.host).arg(m_robotArmSettings.commandPort));
-    if (m_robotSafeWallMonitorEnabled) {
+    if (m_robotSafeWallMonitorEnabled && m_robotAlarmManager == nullptr) {
         m_robotArmSafetyWallTimer.start();
         pollRobotArmSafetyWall();
+    }
+    if (m_robotAlarmManager != nullptr) {
+        QTimer::singleShot(0, m_robotAlarmManager, &adapters::dobot::DobotAlarmManager::pollNow);
     }
 }
 
@@ -1737,6 +1821,9 @@ void DeviceMonitorPage::disconnectRobotArm()
 
     m_robotEnabled = false;
     m_robotArmClient.disconnectFromController();
+    if (m_robotAlarmManager != nullptr) {
+        QTimer::singleShot(0, m_robotAlarmManager, &adapters::dobot::DobotAlarmManager::pollNow);
+    }
     m_robotArmDragging = false;
     m_robotSafeWallRecoveryMode = false;
     m_robotSafeWallAlarmLatched = false;
@@ -1776,6 +1863,72 @@ void DeviceMonitorPage::toggleRobotArmEnable(bool checked)
     syncRobotArmSwitches();
 }
 
+bool DeviceMonitorPage::confirmRobotArmEnableState(const QString& enableCommand)
+{
+    QString errorMessage;
+    int robotMode = -1;
+    const panthera::adapters::dobot::DobotCommandResult modeResult =
+        m_robotArmClient.robotMode(&robotMode, &errorMessage);
+    const QString modeError = errorMessage;
+    logRobotArmCommand(QStringLiteral("%1 后 RobotMode()").arg(enableCommand), modeResult, modeError);
+
+    QString alarmPayload;
+    errorMessage.clear();
+    const panthera::adapters::dobot::DobotCommandResult alarmResult =
+        m_robotArmClient.getErrorId(&alarmPayload, &errorMessage);
+    const QString alarmError = errorMessage;
+    logRobotArmCommand(QStringLiteral("%1 后 GetErrorID()").arg(enableCommand), alarmResult, alarmError);
+
+    // A successful TCP write/response only means the command was accepted by
+    // the dashboard.  It does not prove that the controller completed the
+    // enable transition, so any failed read must clear the cached UI state.
+    if (!modeResult.ok() || !alarmResult.ok()) {
+        m_robotEnabled = false;
+        m_robotArmDragging = false;
+        resetRobotArmPhysicalDragButtonState();
+        refreshRobotArmUi();
+        const QString detail = !modeResult.ok()
+            ? (modeError.isEmpty() ? modeResult.protocolError : modeError)
+            : (alarmError.isEmpty() ? alarmResult.protocolError : alarmError);
+        setRobotArmStatus(QStringLiteral("%1 已返回成功，但无法确认机器人实际使能状态；上位机保持 OFF。%2")
+                              .arg(enableCommand, detail));
+        if (m_robotAlarmManager != nullptr) {
+            QTimer::singleShot(0, m_robotAlarmManager, &adapters::dobot::DobotAlarmManager::pollNow);
+        }
+        return false;
+    }
+
+    const bool alarmClear = adapters::dobot::DobotAlarmManager::alarmPayloadIsClear(alarmPayload);
+    const bool enabled = robotMode == kRobotModeEnable && alarmClear;
+    m_robotEnabled = enabled;
+    if (!enabled) {
+        m_robotArmDragging = false;
+        resetRobotArmPhysicalDragButtonState();
+    }
+    refreshRobotArmUi();
+
+    if (!enabled) {
+        setRobotArmStatus(QStringLiteral(
+                              "%1 已返回成功，但机器人实际未使能：RobotMode=%2（%3），GetErrorID=%4；上位机保持 OFF。")
+                              .arg(enableCommand)
+                              .arg(robotMode)
+                              .arg(robotModeName(robotMode))
+                              .arg(alarmPayload));
+        if (m_robotAlarmManager != nullptr) {
+            QTimer::singleShot(0, m_robotAlarmManager, &adapters::dobot::DobotAlarmManager::pollNow);
+        }
+        return false;
+    }
+
+    // Only now may the alarm manager release its post-reset motion interlock.
+    // The manager performs one more RobotMode()/GetErrorID() read before it
+    // marks the reset sequence complete.
+    if (m_robotAlarmManager != nullptr) {
+        QTimer::singleShot(0, m_robotAlarmManager, &adapters::dobot::DobotAlarmManager::notifyRobotEnabledByOperator);
+    }
+    return true;
+}
+
 void DeviceMonitorPage::enableRobotArm()
 {
     if (!m_robotArmClient.isConnected()) {
@@ -1790,6 +1943,11 @@ void DeviceMonitorPage::enableRobotArm()
     };
     const auto confirmClearForCommandError = [this](const QString& action, const panthera::adapters::dobot::DobotCommandResult& result) {
         const QString alarmSummary = QStringLiteral("%1 ErrorID=%2").arg(action).arg(result.errorId);
+        if (m_robotAlarmManager != nullptr) {
+            setRobotArmStatus(QStringLiteral("检测到 DOBOT 报警，已转交主窗口人工复位；不会自动重新使能。%1").arg(alarmSummary));
+            QTimer::singleShot(0, m_robotAlarmManager, &adapters::dobot::DobotAlarmManager::pollNow);
+            return false;
+        }
         noteRobotArmSafetyWallAlarm(-1, alarmSummary);
         return confirmAndClearRobotArmAlarm(-1, alarmSummary, result.errorId, true);
     };
@@ -1844,8 +2002,17 @@ void DeviceMonitorPage::enableRobotArm()
         }
     }
 
-    const bool hadAlarmBeforeEnable = robotMode == kRobotModeError || !dobotAlarmPayloadIsClear(alarmPayload);
+    const bool hadAlarmBeforeEnable = robotMode == kRobotModeError
+        || robotMode == kRobotModeCollision
+        || !dobotAlarmPayloadIsClear(alarmPayload);
     if (hadAlarmBeforeEnable) {
+        if (m_robotAlarmManager != nullptr) {
+            setRobotArmStatus(QStringLiteral("机器人存在报警，已阻止上使能并等待主窗口人工复位。RobotMode=%1，GetErrorID=%2")
+                                  .arg(robotMode)
+                                  .arg(alarmPayload));
+            QTimer::singleShot(0, m_robotAlarmManager, &adapters::dobot::DobotAlarmManager::pollNow);
+            return;
+        }
         noteRobotArmSafetyWallAlarm(robotMode, alarmPayload);
         if (!confirmAndClearRobotArmAlarm(robotMode, alarmPayload, 0, true)) {
             return;
@@ -1895,6 +2062,11 @@ void DeviceMonitorPage::enableRobotArm()
         bool payloadApplied = payloadService.applyPayloadBeforeEnable(&enableRobotAlreadySent, &payloadError);
         if (!payloadApplied) {
             const int payloadCommandErrorId = dobotCommandErrorIdFromText(payloadError);
+            if (m_robotAlarmManager != nullptr && isClearableRobotCommandErrorId(payloadCommandErrorId)) {
+                setRobotArmStatus(QStringLiteral("EnableRobot() 返回报警，已阻止自动清除和重试：%1").arg(payloadError));
+                QTimer::singleShot(0, m_robotAlarmManager, &adapters::dobot::DobotAlarmManager::pollNow);
+                return;
+            }
             if (isClearableRobotCommandErrorId(payloadCommandErrorId)
                 && confirmAndClearRobotArmAlarm(-1,
                     QStringLiteral("EnableRobot() ErrorID=%1").arg(payloadCommandErrorId),
@@ -1911,7 +2083,6 @@ void DeviceMonitorPage::enableRobotArm()
         }
 
         if (enableRobotAlreadySent) {
-            m_robotEnabled = true;
             QStringList fallbackArguments {
                 panthera::adapters::dobot::formatDobotNumber(m_robotPayloadOptions.loadKg),
                 panthera::adapters::dobot::formatDobotNumber(m_robotPayloadOptions.centerX),
@@ -1922,6 +2093,9 @@ void DeviceMonitorPage::enableRobotArm()
                 fallbackArguments.push_back(QStringLiteral("1"));
             }
             const QString enableCommand = QStringLiteral("EnableRobot(%1)").arg(fallbackArguments.join(QLatin1Char(',')));
+            if (!confirmRobotArmEnableState(enableCommand)) {
+                return;
+            }
             if (m_robotSafeWallAlarmLatched) {
                 m_robotSafeWallRecoveryMode = true;
                 setRobotArmStatus(QStringLiteral("安全墙恢复模式：已发送 %1。请手动将机械臂移动回 %2 内；软件将通过 RobotMode()/GetErrorID() 自动确认恢复完成。")
@@ -1949,7 +2123,9 @@ void DeviceMonitorPage::enableRobotArm()
         }
     }
 
-    m_robotEnabled = true;
+    if (!confirmRobotArmEnableState(QStringLiteral("EnableRobot()"))) {
+        return;
+    }
     if (m_robotSafeWallAlarmLatched) {
         m_robotSafeWallRecoveryMode = true;
         setRobotArmStatus(QStringLiteral("安全墙恢复模式：已发送 EnableRobot()。请手动将机械臂移动回 %1 内；软件将通过 RobotMode()/GetErrorID() 自动确认恢复完成。")
@@ -2217,15 +2393,24 @@ void DeviceMonitorPage::pollRobotArmSafetyWall()
         return;
     }
 
-    if (robotMode == kRobotModeEnable || robotMode == kRobotModeBackdrive
-        || robotMode == kRobotModeRunning || robotMode == kRobotModeSingleMove) {
+    // Enabled robots change mode while dragging or moving.  In particular,
+    // StartDrag() changes RobotMode from ENABLE to BACKDRIVE; keep the enable
+    // state so StopDrag() and physical-button release remain available.
+    if (isRobotArmEnabledMode(robotMode)) {
         if (!m_robotEnabled) {
             m_robotEnabled = true;
+            setRobotArmStatus(QStringLiteral("DOBOT 实际状态：RobotMode=%1（%2），使能已确认。")
+                                  .arg(robotMode)
+                                  .arg(robotModeName(robotMode)));
             refreshRobotArmUi();
         }
     } else if (m_robotEnabled) {
         m_robotEnabled = false;
         m_robotArmDragging = false;
+        resetRobotArmPhysicalDragButtonState();
+        setRobotArmStatus(QStringLiteral("DOBOT 实际状态：RobotMode=%1（%2），使能 OFF。")
+                              .arg(robotMode)
+                              .arg(robotModeName(robotMode)));
         refreshRobotArmUi();
     }
 }
@@ -6396,6 +6581,69 @@ bool DeviceMonitorPage::applySharedWaterPumpFlow(double flow, QStringList* respo
     return allOk;
 }
 
+bool DeviceMonitorPage::captureWaterLoopPumpFlows(QStringList* failures)
+{
+    m_waterLoopPreviousFlowKnown.fill(false);
+
+    bool allOk = true;
+    for (int index = 0; index < 2; ++index) {
+        double flow = 0.0;
+        QString errorMessage;
+        QByteArray response;
+        if (m_waterPumpClient.readFlowMlPerMin(
+                waterPumpAddress(index), &flow, &errorMessage, &response)) {
+            m_waterLoopPreviousFlows[static_cast<size_t>(index)] = flow;
+            m_waterLoopPreviousFlowKnown[static_cast<size_t>(index)] = true;
+            continue;
+        }
+
+        allOk = false;
+        if (failures != nullptr) {
+            failures->push_back(QStringLiteral("%1（%2）：读取循环前流速失败：%3")
+                                    .arg(waterPumpName(index), waterPumpAddressText(index), errorMessage));
+        }
+    }
+
+    if (!allOk) {
+        m_waterLoopPreviousFlowKnown.fill(false);
+    }
+    return allOk;
+}
+
+bool DeviceMonitorPage::restoreWaterLoopPumpFlows(QStringList* responses, QStringList* failures)
+{
+    bool allOk = true;
+    for (int index = 0; index < 2; ++index) {
+        const size_t arrayIndex = static_cast<size_t>(index);
+        if (!m_waterLoopPreviousFlowKnown[arrayIndex]) {
+            continue;
+        }
+
+        const double flow = m_waterLoopPreviousFlows[arrayIndex];
+        QString responseText;
+        QString errorMessage;
+        if (setWaterPumpFlowValue(index, flow, &responseText, &errorMessage)) {
+            if (responses != nullptr) {
+                responses->push_back(QStringLiteral("%1 恢复为 %2 mL/min（%3）")
+                                         .arg(waterPumpAddressText(index))
+                                         .arg(flow, 0, 'f', 1)
+                                         .arg(responseText));
+            }
+        } else {
+            allOk = false;
+            if (failures != nullptr) {
+                failures->push_back(QStringLiteral("%1（%2）：恢复循环前流速 %3 mL/min 失败：%4")
+                                        .arg(waterPumpName(index), waterPumpAddressText(index))
+                                        .arg(flow, 0, 'f', 1)
+                                        .arg(errorMessage));
+            }
+        }
+    }
+
+    m_waterLoopPreviousFlowKnown.fill(false);
+    return allOk;
+}
+
 bool DeviceMonitorPage::setWaterPumpFlowValue(int pumpIndex, double flow, QString* responseText, QString* errorMessage)
 {
     QString commandError;
@@ -6802,9 +7050,23 @@ void DeviceMonitorPage::startWaterLoop()
         return;
     }
 
+    QStringList previousFlowFailures;
+    if (!captureWaterLoopPumpFlows(&previousFlowFailures)) {
+        setWaterPumpStatus(QStringLiteral("启动循环失败：无法读取 02/03 循环前流速：%1")
+                               .arg(previousFlowFailures.join(QStringLiteral("；"))),
+                           false);
+        return;
+    }
+
     QStringList flowResponses;
     QStringList flowFailures;
     if (!applySharedWaterPumpFlow(kWaterLoopFlowMlPerMin, &flowResponses, &flowFailures)) {
+        QStringList restoreResponses;
+        QStringList restoreFailures;
+        restoreWaterLoopPumpFlows(&restoreResponses, &restoreFailures);
+        if (!restoreFailures.isEmpty()) {
+            flowFailures.append(restoreFailures);
+        }
         setWaterPumpStatus(QStringLiteral("启动循环失败：02/03 流速未全部设置为 %1 mL/min：%2")
                                .arg(kWaterLoopFlowMlPerMin, 0, 'f', 1)
                                .arg(flowFailures.join(QStringLiteral("；"))),
@@ -6816,7 +7078,15 @@ void DeviceMonitorPage::startWaterLoop()
     QByteArray levelResponse;
     QString errorMessage;
     if (!readWaterLoopLevel(&currentLevel, &levelResponse, &errorMessage)) {
-        setWaterPumpStatus(QStringLiteral("启动循环失败：液位传感器 01 读取失败：%1").arg(errorMessage), false);
+        QStringList restoreResponses;
+        QStringList restoreFailures;
+        restoreWaterLoopPumpFlows(&restoreResponses, &restoreFailures);
+        const QString restoreDetail = restoreFailures.isEmpty()
+            ? QString()
+            : QStringLiteral("；流速恢复失败：%1").arg(restoreFailures.join(QStringLiteral("；")));
+        setWaterPumpStatus(QStringLiteral("启动循环失败：液位传感器 01 读取失败：%1%2")
+                               .arg(errorMessage, restoreDetail),
+                           false);
         setLiquidLevelStatus(QStringLiteral("水循环启动前读取液位失败：%1").arg(errorMessage), false);
         return;
     }
@@ -6828,6 +7098,11 @@ void DeviceMonitorPage::startWaterLoop()
         QStringList stopResponses;
         QStringList stopFailures;
         applyWaterLoopPumpMode(WaterLoopPumpMode::Stopped, &stopResponses, &stopFailures);
+        QStringList restoreResponses;
+        QStringList restoreFailures;
+        restoreWaterLoopPumpFlows(&restoreResponses, &restoreFailures);
+        pumpFailures.append(stopFailures);
+        pumpFailures.append(restoreFailures);
         setWaterPumpStatus(QStringLiteral("启动循环失败：无法按液位切换水泵：%1")
                                .arg(pumpFailures.join(QStringLiteral("；"))),
                            false);
@@ -6871,15 +7146,22 @@ void DeviceMonitorPage::stopWaterLoop()
     QStringList failures;
     const bool stopped = applyWaterLoopPumpMode(WaterLoopPumpMode::Stopped, &responses, &failures);
     m_waterLoopPumpMode = WaterLoopPumpMode::Stopped;
+    QStringList restoreResponses;
+    QStringList restoreFailures;
+    const bool restored = restoreWaterLoopPumpFlows(&restoreResponses, &restoreFailures);
+    responses.append(restoreResponses);
+    failures.append(restoreFailures);
     refreshWaterPumpUi();
     if (!failures.isEmpty()) {
         setWaterPumpStatus(QStringLiteral("停止循环未全部成功：%1").arg(failures.join(QStringLiteral("；"))), false);
         return;
     }
     setWaterPumpStatus(stopped
-            ? QStringLiteral("水循环停止成功：%1").arg(responses.join(QStringLiteral("；")))
+            ? (restored
+                ? QStringLiteral("水循环停止成功：%1").arg(responses.join(QStringLiteral("；")))
+                : QStringLiteral("水循环停止失败：循环前流速恢复失败"))
             : QStringLiteral("水循环停止失败"),
-        stopped);
+        stopped && restored);
 }
 
 void DeviceMonitorPage::pollWaterLoopLevel()
@@ -6914,8 +7196,13 @@ void DeviceMonitorPage::pollWaterLoopLevel()
         QStringList stopResponses;
         QStringList stopFailures;
         applyWaterLoopPumpMode(WaterLoopPumpMode::Stopped, &stopResponses, &stopFailures);
+        QStringList restoreResponses;
+        QStringList restoreFailures;
+        restoreWaterLoopPumpFlows(&restoreResponses, &restoreFailures);
         m_waterLoopPumpMode = WaterLoopPumpMode::Stopped;
         refreshWaterPumpUi();
+        stopResponses.append(restoreResponses);
+        stopFailures.append(restoreFailures);
         setWaterPumpStatus(QStringLiteral("水循环泵状态切换失败，自动监控已停止：%1；停止泵结果：%2%3")
                                .arg(pumpFailures.join(QStringLiteral("；")))
                                .arg(stopResponses.join(QStringLiteral("；")))

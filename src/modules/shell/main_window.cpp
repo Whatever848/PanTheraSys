@@ -26,6 +26,7 @@ MainWindow::MainWindow(
     IClinicalDataRepository* clinicalDataRepository,
     adapters::SimulationDeviceFacade* simulationDevice,
     adapters::dobot::DobotControllerClient* robotArmClient,
+    adapters::dobot::DobotAlarmManager* robotAlarmManager,
     QWidget* parent)
     : QMainWindow(parent)
     , m_context(context)
@@ -34,6 +35,7 @@ MainWindow::MainWindow(
     , m_clinicalDataRepository(clinicalDataRepository)
     , m_simulationDevice(simulationDevice)
     , m_robotArmClient(robotArmClient != nullptr ? robotArmClient : &m_ownedRobotArmClient)
+    , m_robotAlarmManager(robotAlarmManager)
 {
     auto* centralWidget = new QWidget();
     auto* rootLayout = new QVBoxLayout(centralWidget);
@@ -132,7 +134,7 @@ MainWindow::MainWindow(
     rootLayout->addWidget(navBar);
 
     m_stack = new QStackedWidget();
-    m_dashboardPage = new DeviceMonitorPage(simulationDevice, safetyKernel, m_robotArmClient);
+    m_dashboardPage = new DeviceMonitorPage(simulationDevice, safetyKernel, m_robotArmClient, m_robotAlarmManager);
     m_stack->addWidget(m_dashboardPage);
     m_stack->addWidget(new QWidget());
     m_stack->addWidget(new QWidget());

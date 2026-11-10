@@ -26,6 +26,10 @@
 #include "core/safety/safety_kernel.h"
 #include "modules/dashboard/water_loop_monitor_thread.h"
 
+namespace panthera::adapters::dobot {
+class DobotAlarmManager;
+}
+
 class QComboBox;
 class QDoubleSpinBox;
 class QLineEdit;
@@ -43,6 +47,7 @@ public:
         panthera::adapters::SimulationDeviceFacade* simulationDevice,
         panthera::core::SafetyKernel* safetyKernel,
         panthera::adapters::dobot::DobotControllerClient* robotArmClient = nullptr,
+        panthera::adapters::dobot::DobotAlarmManager* robotAlarmManager = nullptr,
         QWidget* parent = nullptr);
     ~DeviceMonitorPage() override;
     void releaseThreeAxisGatewayForSharedUse();
@@ -113,6 +118,7 @@ private:
     bool requestRobotArmControl(QString* errorMessage, bool logCommand = true);
     void noteRobotArmSafetyWallAlarm(int robotMode, const QString& alarmPayload);
     bool confirmAndClearRobotArmAlarm(int robotMode, const QString& alarmPayload, int commandErrorId, bool forcePrompt);
+    bool confirmRobotArmEnableState(const QString& enableCommand);
     QString robotSafeWallLabel() const;
     bool moveRobotToPose(
         const panthera::adapters::dobot::DobotPose& pose,
@@ -146,6 +152,8 @@ private:
     void setWaterPumpStatus(const QString& message, bool ok);
     void refreshWaterPumpUi();
     bool applySharedWaterPumpFlow(double flow, QStringList* responses, QStringList* failures);
+    bool captureWaterLoopPumpFlows(QStringList* failures);
+    bool restoreWaterLoopPumpFlows(QStringList* responses, QStringList* failures);
     bool setWaterPumpFlowValue(int pumpIndex, double flow, QString* responseText, QString* errorMessage);
     void setWaterPumpFlow(int pumpIndex);
     void readWaterPumpFlow(int pumpIndex);
@@ -251,6 +259,7 @@ private:
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
     panthera::adapters::dobot::DobotControllerClient m_ownedRobotArmClient;
     panthera::adapters::dobot::DobotControllerClient& m_robotArmClient;
+    panthera::adapters::dobot::DobotAlarmManager* m_robotAlarmManager {nullptr};
     panthera::adapters::dobot::DobotZAxisAligner m_robotZAxisAligner;
     panthera::adapters::dobot::DobotConnectionSettings m_robotArmSettings;
     panthera::adapters::dobot::DobotPose m_robotSafeOriginPose;
@@ -400,6 +409,8 @@ private:
     bool m_tank2FillActive {false};
     bool m_waterLoopActive {false};
     bool m_waterLoopPollBusy {false};
+    std::array<double, 2> m_waterLoopPreviousFlows {0.0, 0.0};
+    std::array<bool, 2> m_waterLoopPreviousFlowKnown {false, false};
     WaterLoopPumpMode m_waterLoopPumpMode {WaterLoopPumpMode::Stopped};
     bool m_vacuumPumpOn {false};
     double m_tank2FillTargetLevelCentimeters {0.0};

@@ -1059,7 +1059,9 @@ DobotCommandResult DobotControllerClient::robotMode(int* mode, QString* errorMes
 {
     DobotCommandResult result = send(QStringLiteral("RobotMode"), {}, errorMessage);
     if (result.ok() && !payloadToInt(result.payload, mode)) {
-        setError(QStringLiteral("RobotMode returned a non-integer payload."), errorMessage);
+        const QString message = QStringLiteral("RobotMode returned a non-integer payload: %1").arg(result.payload);
+        setError(message, errorMessage);
+        result.protocolError = message;
     }
     return result;
 }

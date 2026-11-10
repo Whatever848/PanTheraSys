@@ -9,6 +9,8 @@ set(PANTHERA_ADAPTERS_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/dobot/DobotZAxisAligner.h
     ${CMAKE_CURRENT_SOURCE_DIR}/dobot/DobotPayloadEnableService.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dobot/DobotPayloadEnableService.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/dobot/dobot_alarm_manager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/dobot/dobot_alarm_manager.h
     ${CMAKE_CURRENT_SOURCE_DIR}/dobot/dobot_trajectory_sftp_client.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dobot/dobot_trajectory_sftp_client.h
     ${CMAKE_CURRENT_SOURCE_DIR}/dobot/dobot_motion_controller.cpp

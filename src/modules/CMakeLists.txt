@@ -7,8 +7,12 @@ set(PANTHERA_MODULE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/data/data_management_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/planning/planning_page.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/shared/energy_output_chart_widget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shared/dobot_alarm_dialog.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shared/dobot_alarm_dialog.h
     ${CMAKE_CURRENT_SOURCE_DIR}/shared/mock_ultrasound_view.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/shared/therapy_imaging_algorithms.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shared/ultrasound_scale_detector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shared/ultrasound_scale_detector.h
     ${CMAKE_CURRENT_SOURCE_DIR}/shared/usb_camera_frame_source.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/shell/main_window.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/treatment/treatment_page.cpp

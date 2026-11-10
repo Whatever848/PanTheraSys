@@ -97,6 +97,16 @@ void SafetyKernel::setMotionReady(bool ready)
     rebuildSnapshot();
 }
 
+void SafetyKernel::setRobotMotionHealthy(bool healthy)
+{
+    if (m_robotMotionHealthy == healthy) {
+        return;
+    }
+
+    m_robotMotionHealthy = healthy;
+    rebuildSnapshot();
+}
+
 void SafetyKernel::setEmergencyStopReleased(bool released)
 {
     if (m_emergencyStopReleased == released) {
@@ -219,7 +229,7 @@ void SafetyKernel::rebuildSnapshot()
     if (!m_powerReady) {
         nextSnapshot.activeInterlocks.push_back(InterlockReason::PowerFault);
     }
-    if (!m_motionReady) {
+    if (!m_motionReady || !m_robotMotionHealthy) {
         nextSnapshot.activeInterlocks.push_back(InterlockReason::MotionFault);
     }
     if (!m_emergencyStopReleased) {

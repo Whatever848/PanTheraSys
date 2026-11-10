@@ -16,6 +16,10 @@
 #include "core/services/audit_service.h"
 #include "modules/data/data_management_page.h"
 
+namespace panthera::adapters::dobot {
+class DobotAlarmManager;
+}
+
 namespace panthera::modules {
 
 class DeviceMonitorPage;
@@ -33,6 +37,7 @@ public:
         panthera::core::IClinicalDataRepository* clinicalDataRepository,
         panthera::adapters::SimulationDeviceFacade* simulationDevice,
         panthera::adapters::dobot::DobotControllerClient* robotArmClient = nullptr,
+        panthera::adapters::dobot::DobotAlarmManager* robotAlarmManager = nullptr,
         QWidget* parent = nullptr);
 
 private slots:
@@ -61,6 +66,7 @@ private:
     panthera::adapters::SimulationDeviceFacade* m_simulationDevice {nullptr};
     panthera::adapters::dobot::DobotControllerClient m_ownedRobotArmClient;
     panthera::adapters::dobot::DobotControllerClient* m_robotArmClient {nullptr};
+    panthera::adapters::dobot::DobotAlarmManager* m_robotAlarmManager {nullptr};
 
     QStackedWidget* m_stack {nullptr};
     DeviceMonitorPage* m_dashboardPage {nullptr};

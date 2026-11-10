@@ -36,6 +36,7 @@
 #include "modules/shared/energy_output_chart_widget.h"
 #include "modules/shared/mock_ultrasound_view.h"
 #include "modules/shared/therapy_imaging_algorithms.h"
+#include "modules/shared/ultrasound_scale_detector.h"
 
 class QHBoxLayout;
 
@@ -108,6 +109,7 @@ private:
         panthera::core::ImageSeriesRecord image;
         QPixmap capturedFrame;
         int acquisitionAxis7PositionSteps {-1};
+        UltrasoundScaleCalibration ultrasoundScale;
         QVector<AnnotationStroke> annotations;
         QVector<panthera::core::TherapyPoint> targets;
         QString label;

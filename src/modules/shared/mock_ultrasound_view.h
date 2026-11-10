@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QPointF>
 #include <QPixmap>
+#include <QSizeF>
 #include <QVector>
 #include <QWidget>
 
@@ -51,6 +52,10 @@ public:
     QVector<AnnotationStroke> annotationStrokes() const;
     bool undoLastAnnotation();
     void clearAnnotations();
+    void setSafetyDrawingZone(const QRectF& normalizedRect, const QSizeF& physicalSizeMm);
+    void clearSafetyDrawingZone();
+    bool hasSafetyDrawingZone() const;
+    QRectF safetyDrawingZone() const;
 
 signals:
     void annotationStrokesChanged();
@@ -82,9 +87,12 @@ private:
     QPointF denormalizePoint(const QPointF& normalizedPoint) const;
     void drawComparisonCalibration(QPainter* painter);
     void drawScaleRuler(QPainter* painter);
+    void drawSafetyDrawingZone(QPainter* painter);
     void updateInteractionCursor();
     bool canStartImagePan(Qt::MouseButton button, const QPointF& widgetPoint) const;
     bool isDrawablePoint(const QPointF& widgetPoint) const;
+    bool isOutsideSafetyDrawingZone(const QPointF& widgetPoint) const;
+    bool isOutsideSafetyDrawingZone(const AnnotationStroke& stroke) const;
     qreal sliceRatio() const;
 
     panthera::core::TherapyPlan m_plan;
@@ -113,6 +121,8 @@ private:
     QColor m_currentAnnotationColor {QColor(201, 71, 51)};
     QVector<AnnotationStroke> m_annotationStrokes;
     AnnotationStroke m_activeStroke;
+    QRectF m_safetyDrawingZoneNormalized;
+    QSizeF m_safetyDrawingZonePhysicalSizeMm;
 };
 
 }  // namespace panthera::modules

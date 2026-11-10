@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 #include <QMouseEvent>
 #include <QPaintEvent>
@@ -581,7 +582,13 @@ void MockUltrasoundView::setCurrentAnnotationColor(const QColor& color)
 
 void MockUltrasoundView::setAnnotationStrokes(const QVector<AnnotationStroke>& strokes)
 {
-    m_annotationStrokes = strokes;
+    m_annotationStrokes.clear();
+    m_annotationStrokes.reserve(strokes.size());
+    for (const AnnotationStroke& stroke : strokes) {
+        if (!isOutsideSafetyDrawingZone(stroke)) {
+            m_annotationStrokes.push_back(stroke);
+        }
+    }
     m_activeStroke = AnnotationStroke {};
     m_isDrawing = false;
     update();
@@ -615,6 +622,56 @@ void MockUltrasoundView::clearAnnotations()
     m_isDrawing = false;
     emit annotationStrokesChanged();
     update();
+}
+
+void MockUltrasoundView::setSafetyDrawingZone(const QRectF& normalizedRect, const QSizeF& physicalSizeMm)
+{
+    const QRectF boundedRect = normalizedRect.normalized().intersected(QRectF(0.0, 0.0, 1.0, 1.0));
+    if (!boundedRect.isValid() || boundedRect.isEmpty()
+        || physicalSizeMm.width() <= 0.0 || physicalSizeMm.height() <= 0.0) {
+        clearSafetyDrawingZone();
+        return;
+    }
+
+    m_safetyDrawingZoneNormalized = boundedRect;
+    m_safetyDrawingZonePhysicalSizeMm = physicalSizeMm;
+    QVector<AnnotationStroke> retainedStrokes;
+    retainedStrokes.reserve(m_annotationStrokes.size());
+    for (const AnnotationStroke& stroke : std::as_const(m_annotationStrokes)) {
+        if (!isOutsideSafetyDrawingZone(stroke)) {
+            retainedStrokes.push_back(stroke);
+        }
+    }
+    m_annotationStrokes = retainedStrokes;
+    m_isDrawing = false;
+    m_activeStroke = AnnotationStroke {};
+    updateInteractionCursor();
+    update();
+}
+
+void MockUltrasoundView::clearSafetyDrawingZone()
+{
+    if (m_safetyDrawingZoneNormalized.isEmpty()) {
+        return;
+    }
+    m_safetyDrawingZoneNormalized = {};
+    m_safetyDrawingZonePhysicalSizeMm = {};
+    if (m_isDrawing) {
+        m_isDrawing = false;
+        m_activeStroke = AnnotationStroke {};
+    }
+    updateInteractionCursor();
+    update();
+}
+
+bool MockUltrasoundView::hasSafetyDrawingZone() const
+{
+    return m_safetyDrawingZoneNormalized.isValid() && !m_safetyDrawingZoneNormalized.isEmpty();
+}
+
+QRectF MockUltrasoundView::safetyDrawingZone() const
+{
+    return m_safetyDrawingZoneNormalized;
 }
 
 void MockUltrasoundView::paintEvent(QPaintEvent* event)
@@ -732,6 +789,8 @@ void MockUltrasoundView::paintEvent(QPaintEvent* event)
         }
     }
 
+    drawSafetyDrawingZone(&painter);
+
     painter.save();
     painter.setClipPath(drawingPath());
     const auto toWidget = [this](const QPointF& point) {
@@ -823,6 +882,11 @@ void MockUltrasoundView::mouseMoveEvent(QMouseEvent* event)
     }
 
     if (!m_isDrawing || !m_annotationEnabled) {
+        if (m_annotationEnabled && isOutsideSafetyDrawingZone(event->position())) {
+            setCursor(Qt::ForbiddenCursor);
+        } else if (!m_isPanningImage) {
+            updateInteractionCursor();
+        }
         QWidget::mouseMoveEvent(event);
         return;
     }
@@ -833,6 +897,14 @@ void MockUltrasoundView::mouseMoveEvent(QMouseEvent* event)
     }
 
     const QPointF normalizedPoint = normalizePoint(event->position());
+    if (hasSafetyDrawingZone() && !m_safetyDrawingZoneNormalized.contains(normalizedPoint)) {
+        m_isDrawing = false;
+        m_activeStroke = AnnotationStroke {};
+        setCursor(Qt::ForbiddenCursor);
+        update();
+        event->accept();
+        return;
+    }
     if (!m_activeStroke.normalizedPoints.isEmpty()) {
         const QPointF last = m_activeStroke.normalizedPoints.constLast();
         if (QLineF(last, normalizedPoint).length() < 0.002) {
@@ -862,13 +934,18 @@ void MockUltrasoundView::mouseReleaseEvent(QMouseEvent* event)
     }
 
     if (annotationCanvasRect().contains(event->position())) {
-        m_activeStroke.normalizedPoints.push_back(normalizePoint(event->position()));
+        const QPointF normalizedPoint = normalizePoint(event->position());
+        if (hasSafetyDrawingZone() && !m_safetyDrawingZoneNormalized.contains(normalizedPoint)) {
+            m_activeStroke = AnnotationStroke {};
+        } else {
+            m_activeStroke.normalizedPoints.push_back(normalizedPoint);
+        }
     }
 
     m_isDrawing = false;
     if (!m_activeStroke.normalizedPoints.isEmpty()) {
         const AnnotationStroke finalizedStroke = normalizeClosedAnnotationStroke(m_activeStroke);
-        if (!finalizedStroke.normalizedPoints.isEmpty()) {
+        if (!finalizedStroke.normalizedPoints.isEmpty() && !isOutsideSafetyDrawingZone(finalizedStroke)) {
             m_annotationStrokes.push_back(finalizedStroke);
             emit annotationStrokesChanged();
         }
@@ -1205,6 +1282,50 @@ void MockUltrasoundView::drawScaleRuler(QPainter* painter)
     painter->restore();
 }
 
+void MockUltrasoundView::drawSafetyDrawingZone(QPainter* painter)
+{
+    if (painter == nullptr || !hasSafetyDrawingZone()) {
+        return;
+    }
+
+    const QRectF zoneRect(
+        denormalizePoint(m_safetyDrawingZoneNormalized.topLeft()),
+        denormalizePoint(m_safetyDrawingZoneNormalized.bottomRight()));
+    if (!zoneRect.isValid() || !zoneRect.intersects(contentViewportRect())) {
+        return;
+    }
+
+    painter->save();
+    painter->setClipRect(contentViewportRect());
+    QPainterPath outsidePath;
+    outsidePath.setFillRule(Qt::OddEvenFill);
+    outsidePath.addRect(contentViewportRect());
+    outsidePath.addRect(zoneRect);
+    painter->fillPath(outsidePath, QColor(4, 9, 16, 112));
+
+    const QColor zoneColor(45, 220, 145, 235);
+    painter->setPen(QPen(zoneColor, 2.2, Qt::DashLine, Qt::SquareCap, Qt::MiterJoin));
+    painter->setBrush(QColor(45, 220, 145, 18));
+    painter->drawRect(zoneRect);
+
+    const QString label = QStringLiteral("安全圈画区 %1×%2 mm")
+                              .arg(m_safetyDrawingZonePhysicalSizeMm.width(), 0, 'f', 0)
+                              .arg(m_safetyDrawingZonePhysicalSizeMm.height(), 0, 'f', 0);
+    painter->setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 8, QFont::Bold));
+    const QFontMetrics metrics(painter->font());
+    QRectF labelRect = metrics.boundingRect(label).adjusted(-6.0, -3.0, 6.0, 3.0);
+    labelRect.moveTopLeft(zoneRect.topLeft() + QPointF(4.0, 4.0));
+    if (labelRect.right() > contentViewportRect().right() - 2.0) {
+        labelRect.moveRight(contentViewportRect().right() - 2.0);
+    }
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(QColor(8, 78, 54, 224));
+    painter->drawRoundedRect(labelRect, 4.0, 4.0);
+    painter->setPen(QColor(255, 232, 228));
+    painter->drawText(labelRect, Qt::AlignCenter, label);
+    painter->restore();
+}
+
 void MockUltrasoundView::updateInteractionCursor()
 {
     if (m_pendingComparisonPointIndex >= 0) {
@@ -1234,7 +1355,39 @@ bool MockUltrasoundView::canStartImagePan(Qt::MouseButton button, const QPointF&
 
 bool MockUltrasoundView::isDrawablePoint(const QPointF& widgetPoint) const
 {
-    return contentViewportRect().contains(widgetPoint) && drawingPath().contains(widgetPoint);
+    return contentViewportRect().contains(widgetPoint)
+        && drawingPath().contains(widgetPoint)
+        && !isOutsideSafetyDrawingZone(widgetPoint);
+}
+
+bool MockUltrasoundView::isOutsideSafetyDrawingZone(const QPointF& widgetPoint) const
+{
+    return hasSafetyDrawingZone()
+        && (!contentViewportRect().contains(widgetPoint)
+            || !m_safetyDrawingZoneNormalized.contains(normalizePoint(widgetPoint)));
+}
+
+bool MockUltrasoundView::isOutsideSafetyDrawingZone(const AnnotationStroke& stroke) const
+{
+    if (!hasSafetyDrawingZone()) {
+        return false;
+    }
+    if (stroke.normalizedPoints.isEmpty()) {
+        return true;
+    }
+    for (const QPointF& point : stroke.normalizedPoints) {
+        if (!m_safetyDrawingZoneNormalized.contains(point)) {
+            return true;
+        }
+    }
+
+    const QPainterPath strokePath = buildSmoothedStrokePath(
+        stroke.normalizedPoints,
+        isClosedStroke(stroke.normalizedPoints),
+        [](const QPointF& point) { return point; });
+    QPainterPath drawingZonePath;
+    drawingZonePath.addRect(m_safetyDrawingZoneNormalized);
+    return !drawingZonePath.contains(strokePath);
 }
 
 qreal MockUltrasoundView::sliceRatio() const

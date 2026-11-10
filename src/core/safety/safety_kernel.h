@@ -24,6 +24,7 @@ public:
     void setTemperatureHealthy(bool healthy);
     void setPowerReady(bool ready);
     void setMotionReady(bool ready);
+    void setRobotMotionHealthy(bool healthy);
     void setEmergencyStopReleased(bool released);
     void setUltrasoundAvailable(bool available);
     void enterPlanningMode();
@@ -51,6 +52,9 @@ private:
     bool m_temperatureHealthy {true};
     bool m_powerReady {true};
     bool m_motionReady {true};
+    // Kept separate from simulated/general motion readiness so a real DOBOT
+    // alarm cannot be cleared by the simulation facade's periodic update.
+    bool m_robotMotionHealthy {true};
     bool m_emergencyStopReleased {true};
     bool m_ultrasoundAvailable {true};
     SafetySnapshot m_snapshot;

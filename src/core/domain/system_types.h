@@ -5,6 +5,7 @@
 #include <QMetaType>
 #include <QPointF>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <array>
@@ -337,6 +338,27 @@ struct AlarmRecord {
     QString source;
 };
 
+// AlarmEvent is the process-wide notification contract for hardware alarms.
+// The source adapter owns detection/reset; UI consumers only present the data
+// and request an operator-initiated reset through the owning service.
+struct AlarmEvent {
+    QDateTime occurredAt;
+    QString id;
+    QString source;
+    QString title;
+    AlarmLevel level {AlarmLevel::Warning};
+    QStringList codes;
+    QString reason;
+    QString suggestion;
+    QString details;
+    int deviceMode {-1};
+    bool active {false};
+    bool collision {false};
+    bool communicationHealthy {true};
+    bool requiresManualReset {true};
+    bool restartRequired {false};
+};
+
 // SafetySnapshot 表示安全内核综合流程前提和设备健康状态后的判定结果。
 // 治疗页是否允许开始/暂停/继续，应以这里的结果为准。
 struct SafetySnapshot {
@@ -369,3 +391,4 @@ Q_DECLARE_METATYPE(panthera::core::TemperatureModuleTelemetry)
 Q_DECLARE_METATYPE(panthera::core::DeviceSnapshot)
 Q_DECLARE_METATYPE(panthera::core::SafetySnapshot)
 Q_DECLARE_METATYPE(panthera::core::AuditEntry)
+Q_DECLARE_METATYPE(panthera::core::AlarmEvent)

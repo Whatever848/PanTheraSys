@@ -15,6 +15,7 @@
 #include <QMainWindow>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPointer>
 #include <QResource>
 #include <QScreen>
 #include <QSettings>
@@ -32,6 +33,7 @@
 
 #include "adapters/config/local_settings_store.h"
 #include "adapters/dobot/dobot_tcp_client.h"
+#include "adapters/dobot/dobot_alarm_manager.h"
 #include "adapters/mysql/mysql_auth_repository.h"
 #include "adapters/mysql/mysql_clinical_data_repository.h"
 #include "adapters/seed/seed_clinical_data_repository.h"
@@ -47,6 +49,7 @@
 #include "modules/dashboard/device_monitor_page.h"
 #include "modules/planning/planning_page.h"
 #include "modules/shared/usb_camera_frame_source.h"
+#include "modules/shared/dobot_alarm_dialog.h"
 #include "modules/shell/main_window.h"
 #include "modules/treatment/treatment_page.h"
 
@@ -358,11 +361,13 @@ public:
         panthera::core::IClinicalDataRepository* clinicalDataRepository,
         panthera::adapters::SimulationDeviceFacade* simulationDevice,
         panthera::adapters::dobot::DobotControllerClient* robotArmClient,
+        panthera::adapters::dobot::DobotAlarmManager* robotAlarmManager,
         QWidget* parent = nullptr)
         : QMainWindow(parent)
         , m_context(context)
         , m_safetyKernel(safetyKernel)
         , m_robotArmClient(robotArmClient)
+        , m_robotAlarmManager(robotAlarmManager)
     {
         auto* centralWidget = new QWidget(this);
         auto* rootLayout = new QVBoxLayout(centralWidget);
@@ -572,7 +577,7 @@ private:
         switch (role) {
         case ClinicalDisplayRole::Dashboard: {
             m_dashboardStack = new QStackedWidget();
-            m_dashboardStack->addWidget(new DeviceMonitorPage(simulationDevice, m_safetyKernel, m_robotArmClient));
+            m_dashboardStack->addWidget(new DeviceMonitorPage(simulationDevice, m_safetyKernel, m_robotArmClient, m_robotAlarmManager));
             m_dataManagementPage = new DataManagementPage(m_context, auditService, clinicalDataRepository);
             m_dashboardStack->addWidget(m_dataManagementPage);
             showDashboardMonitor();
@@ -802,6 +807,7 @@ private:
     panthera::core::ApplicationContext* m_context {nullptr};
     panthera::core::SafetyKernel* m_safetyKernel {nullptr};
     panthera::adapters::dobot::DobotControllerClient* m_robotArmClient {nullptr};
+    panthera::adapters::dobot::DobotAlarmManager* m_robotAlarmManager {nullptr};
     QLabel* m_statusLabel {nullptr};
     QStackedWidget* m_dashboardStack {nullptr};
     panthera::modules::DataManagementPage* m_dataManagementPage {nullptr};
@@ -872,6 +878,8 @@ int main(int argc, char* argv[])
     qRegisterMetaType<panthera::core::DeviceSnapshot>();
     qRegisterMetaType<panthera::core::SafetySnapshot>();
     qRegisterMetaType<panthera::core::AuditEntry>();
+    qRegisterMetaType<panthera::core::AlarmEvent>();
+    qRegisterMetaType<panthera::adapters::dobot::DobotAlarmStatus>();
 
     QFile styleFile(QStringLiteral(":/styles/panthera.qss"));
     if (styleFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -887,6 +895,11 @@ int main(int argc, char* argv[])
     panthera::adapters::MySqlClinicalDataRepository mysqlClinicalDataRepository;
     panthera::adapters::SimulationDeviceFacade simulationDevice;
     panthera::adapters::dobot::DobotControllerClient robotArmClient;
+    panthera::adapters::dobot::DobotAlarmManager robotAlarmManager(
+        &robotArmClient,
+        &safetyKernel,
+        &eventBus,
+        &application);
     panthera::core::IClinicalDataRepository* clinicalDataRepository = &seedClinicalDataRepository;
 
     Q_UNUSED(settingsStore)
@@ -1057,7 +1070,8 @@ int main(int argc, char* argv[])
             &auditService,
             clinicalDataRepository,
             &simulationDevice,
-            &robotArmClient));
+            &robotArmClient,
+            &robotAlarmManager));
         topLevelWindows.push_back(new ClinicalDisplayWindow(
             ClinicalDisplayRole::Planning,
             &context,
@@ -1065,7 +1079,8 @@ int main(int argc, char* argv[])
             &auditService,
             clinicalDataRepository,
             &simulationDevice,
-            &robotArmClient));
+            &robotArmClient,
+            &robotAlarmManager));
         topLevelWindows.push_back(new ClinicalDisplayWindow(
             ClinicalDisplayRole::Treatment,
             &context,
@@ -1073,7 +1088,8 @@ int main(int argc, char* argv[])
             &auditService,
             clinicalDataRepository,
             &simulationDevice,
-            &robotArmClient));
+            &robotArmClient,
+            &robotAlarmManager));
 
         QTimer::singleShot(0, &application, [displaySettings, clinicalScreenIndexes, screens, &application, &topLevelWindows]() {
             for (int index = 0; index < topLevelWindows.size(); ++index) {
@@ -1089,7 +1105,14 @@ int main(int argc, char* argv[])
             return 1;
         }
 
-        auto* mainWindow = new panthera::modules::MainWindow(&context, &safetyKernel, &auditService, clinicalDataRepository, &simulationDevice, &robotArmClient);
+        auto* mainWindow = new panthera::modules::MainWindow(
+            &context,
+            &safetyKernel,
+            &auditService,
+            clinicalDataRepository,
+            &simulationDevice,
+            &robotArmClient,
+            &robotAlarmManager);
         topLevelWindows.push_back(mainWindow);
         QTimer::singleShot(0, &application, [&application, mainWindow]() {
             mainWindow->show();
@@ -1106,6 +1129,96 @@ int main(int argc, char* argv[])
             }
         });
     }
+
+    QPointer<panthera::modules::DobotAlarmDialog> dobotAlarmDialog;
+    QObject::connect(
+        &eventBus,
+        &panthera::core::EventBus::alarmEventPublished,
+        &application,
+        [&application, &topLevelWindows, &dobotAlarmDialog, &robotAlarmManager](const panthera::core::AlarmEvent& event) {
+            if (event.source.compare(QStringLiteral("DOBOT"), Qt::CaseInsensitive) != 0) {
+                return;
+            }
+
+            if (!event.active) {
+                if (dobotAlarmDialog != nullptr) {
+                    dobotAlarmDialog->resolveAndClose(event.details);
+                }
+                return;
+            }
+
+            if (dobotAlarmDialog == nullptr) {
+                QWidget* owner = QApplication::activeWindow();
+                if (owner == nullptr || !owner->isVisible()) {
+                    for (QMainWindow* window : topLevelWindows) {
+                        if (window != nullptr && window->isVisible()) {
+                            owner = window;
+                            break;
+                        }
+                    }
+                }
+                if (owner == nullptr && !topLevelWindows.isEmpty()) {
+                    owner = topLevelWindows.constFirst();
+                }
+                if (owner == nullptr) {
+                    return;
+                }
+
+                dobotAlarmDialog = new panthera::modules::DobotAlarmDialog(owner);
+                dobotAlarmDialog->setAttribute(Qt::WA_DeleteOnClose, true);
+                QObject::connect(
+                    dobotAlarmDialog,
+                    &panthera::modules::DobotAlarmDialog::resetRequested,
+                    &robotAlarmManager,
+                    &panthera::adapters::dobot::DobotAlarmManager::requestReset,
+                    Qt::QueuedConnection);
+            }
+
+            dobotAlarmDialog->setAlarmEvent(event);
+            if (!dobotAlarmDialog->isVisible()) {
+                dobotAlarmDialog->showOverParent();
+            } else {
+                dobotAlarmDialog->raise();
+                dobotAlarmDialog->activateWindow();
+            }
+        });
+    QObject::connect(
+        &robotAlarmManager,
+        &panthera::adapters::dobot::DobotAlarmManager::resetStarted,
+        &application,
+        [&dobotAlarmDialog]() {
+            if (dobotAlarmDialog != nullptr) {
+                dobotAlarmDialog->setResetInProgress(true);
+            }
+        });
+    QObject::connect(
+        &robotAlarmManager,
+        &panthera::adapters::dobot::DobotAlarmManager::resetFinished,
+        &application,
+        [&dobotAlarmDialog](bool success, const QString& message) {
+            if (!success && dobotAlarmDialog != nullptr) {
+                dobotAlarmDialog->setResetInProgress(false, message);
+            }
+        });
+    QObject::connect(
+        &eventBus,
+        &panthera::core::EventBus::alarmEventPublished,
+        &auditService,
+        [&auditService, &context](const panthera::core::AlarmEvent& event) {
+            const QString actor = context.hasCurrentOperator()
+                ? context.currentOperator().username
+                : QStringLiteral("system");
+            auditService.appendEntry(
+                actor,
+                QStringLiteral("alarm"),
+                QStringLiteral("%1 | active=%2 | mode=%3 | codes=%4 | %5")
+                    .arg(event.title)
+                    .arg(event.active)
+                    .arg(event.deviceMode)
+                    .arg(event.codes.join(QLatin1Char(',')))
+                    .arg(event.details));
+        });
+    robotAlarmManager.startMonitoring();
 
     const int exitCode = QApplication::exec();
     for (QMainWindow* window : topLevelWindows) {

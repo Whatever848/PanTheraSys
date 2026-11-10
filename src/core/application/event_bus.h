@@ -17,12 +17,14 @@ public slots:
     void publishPlanActivated(const TherapyPlan& plan);
     void publishAuditEntry(const AuditEntry& entry);
     void publishDeviceSnapshot(const DeviceSnapshot& snapshot);
+    void publishAlarmEvent(const AlarmEvent& event);
 
 signals:
     void patientSelected(const PatientRecord& patient);
     void planActivated(const TherapyPlan& plan);
     void auditEntryPublished(const AuditEntry& entry);
     void deviceSnapshotPublished(const DeviceSnapshot& snapshot);
+    void alarmEventPublished(const AlarmEvent& event);
 };
 
 }  // panthera::core 命名空间
