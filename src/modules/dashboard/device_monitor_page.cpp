@@ -629,10 +629,10 @@ DeviceMonitorPage::DeviceMonitorPage(
             &adapters::dobot::DobotAlarmManager::statusChanged,
             this,
             [this](const adapters::dobot::DobotAlarmStatus& status) {
-                // The dashboard switch is a reflection of the controller, not
-                // of the last successful EnableRobot() command.  A reset
-                // leaves restartRequired=true until a later, verified
-                // operator enable, so it must not turn the switch on.
+                // m_robotEnabled is the motion-permission/interlock state.
+                // The visible switch is updated separately so an active
+                // yellow/red controller alarm can still show the physical
+                // enabled (green LED) state without re-enabling motion UI.
                 const bool controllerReportsEnabled =
                     status.communicationHealthy
                     && !status.active
@@ -2205,9 +2205,8 @@ void DeviceMonitorPage::noteRobotArmSafetyWallAlarm(int robotMode, const QString
                               .arg(robotSafeWallLabel())
                               .arg(robotMode)
                               .arg(alarmPayload));
-    } else {
-        refreshRobotArmUi();
     }
+    refreshRobotArmUi();
 }
 
 bool DeviceMonitorPage::confirmAndClearRobotArmAlarm(int robotMode, const QString& alarmPayload, int commandErrorId, bool forcePrompt)
@@ -5047,6 +5046,37 @@ void DeviceMonitorPage::logRobotArmCommand(
     appendRobotArmLog(QStringLiteral("%1 => %2").arg(action, commandResultSummary(result, commandError)));
 }
 
+bool DeviceMonitorPage::robotArmEnableIndicatorOn() const
+{
+    if (m_robotEnabled) {
+        return true;
+    }
+
+    // Alarm state and motion permission are intentionally different.  The
+    // controller can keep the arm physically enabled (green LED) while it
+    // reports a yellow/red alarm.  Keep the indicator on for both the active
+    // alarm and the post-reset restart-required state, but keep
+    // m_robotEnabled false so motion controls remain interlocked.
+    if (m_robotAlarmManager != nullptr) {
+        const adapters::dobot::DobotAlarmStatus& status = m_robotAlarmManager->status();
+        if (status.communicationHealthy
+            && (status.active || status.restartRequired)
+            && status.robotMode >= 0
+            && status.robotMode != 3
+            && status.robotMode != 4) {
+            return true;
+        }
+    }
+
+    // Keep the legacy safety-wall polling path consistent when no alarm
+    // manager is injected (for example, standalone dashboard tests).
+    return m_robotArmClient.isConnected()
+        && m_robotSafeWallAlarmLatched
+        && m_robotLastSafeWallMode >= 0
+        && m_robotLastSafeWallMode != 3
+        && m_robotLastSafeWallMode != 4;
+}
+
 void DeviceMonitorPage::refreshRobotArmUi()
 {
     const bool connected = m_robotArmClient.isConnected();
@@ -5095,8 +5125,9 @@ void DeviceMonitorPage::syncRobotArmSwitches()
         m_robotArmConnectionSwitch->setText(m_robotArmClient.isConnected() ? QStringLiteral("ON") : QStringLiteral("OFF"));
     }
     if (m_robotArmEnableSwitch != nullptr) {
-        m_robotArmEnableSwitch->setChecked(m_robotEnabled);
-        m_robotArmEnableSwitch->setText(m_robotEnabled ? QStringLiteral("ON") : QStringLiteral("OFF"));
+        const bool indicatorOn = robotArmEnableIndicatorOn();
+        m_robotArmEnableSwitch->setChecked(indicatorOn);
+        m_robotArmEnableSwitch->setText(indicatorOn ? QStringLiteral("ON") : QStringLiteral("OFF"));
     }
     if (m_robotArmDragSwitch != nullptr) {
         m_robotArmDragSwitch->setChecked(m_robotArmDragging);

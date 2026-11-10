@@ -131,6 +131,7 @@ private:
     void setRobotArmStatus(const QString& message);
     void appendRobotArmLog(const QString& message);
     void logRobotArmCommand(const QString& action, const panthera::adapters::dobot::DobotCommandResult& result, const QString& commandError);
+    bool robotArmEnableIndicatorOn() const;
     void refreshRobotArmUi();
     void syncRobotArmSwitches();
     bool setRobotArmDragMode(bool checked, QString* errorMessage, bool logDiagnostics = true);
